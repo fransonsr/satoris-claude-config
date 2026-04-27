@@ -1,0 +1,38 @@
+# Sensitive data
+*.token
+*.key
+credentials.json
+.env
+secrets/
+
+# Machine-specific settings
+settings.local.json
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# State files (from skills)
+/tmp/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+Thumbs.db

@@ -1,0 +1,37 @@
+{
+  "skill_name": "pre-pr-audit",
+  "evals": [
+    {
+      "id": 1,
+      "name": "broadcast-without-destroy",
+      "prompt": "I'm about to create a PR. Can you check my code for quality issues?\n\nChanged file: FullExportJob.java\nAdded broadcast variable without cleanup in finally block.",
+      "expected_output": "Should detect .broadcast() without .destroy() and offer to add cleanup in finally block",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 2,
+      "name": "duplicate-key-validation",
+      "prompt": "Ready to push my changes. Please run a quality check.\n\nChanged file: MetadataProcessor.java\nUsing Collectors.toMap() without checking for duplicate keys.",
+      "expected_output": "Should detect Collectors.toMap() without duplicate validation and offer to add pre-check or merge function",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 3,
+      "name": "silent-failure-warning",
+      "prompt": "Before I create the PR, check for issues.\n\nChanged file: DataValidator.java\nLogging warnings for duplicate records instead of failing fast.",
+      "expected_output": "Should detect LOGGER.warn with data quality keywords and suggest throwing exception instead",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 4,
+      "name": "missing-test-coverage",
+      "prompt": "Quality check before PR creation.\n\nChanged files: RecordProcessor.java (new class), no test file created.",
+      "expected_output": "Should detect new class without corresponding test file and offer to create test structure",
+      "files": [],
+      "assertions": []
+    }
+  ]
+}
