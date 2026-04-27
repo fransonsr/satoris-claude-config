@@ -59,7 +59,7 @@ fetch_pr_threads() {
       }
     }
   ' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$pr_number" \
-    | jq '.data.repository.pullRequest.reviewThreads.nodes[] | {
+    | jq -c '.data.repository.pullRequest.reviewThreads.nodes[] | {
       threadId: .id,
       commentId: .comments.nodes[0].databaseId,
       author: .comments.nodes[0].author.login,

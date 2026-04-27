@@ -1453,7 +1453,3 @@ Common issues:
 - Incorrect paths in `sonar-project.properties`
 - Java version mismatch: Check `sonar.java.source` setting
 
-## Example Session
-
-```
-User: /address-pr-issues 42

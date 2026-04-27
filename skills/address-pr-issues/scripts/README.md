@@ -106,6 +106,8 @@ Resolve a single GitHub review thread (with optional threaded reply if API avail
 #### `resolve-threads-bulk.sh <pr_number> [options]` (NEW)
 Resolve multiple GitHub review threads at once.
 
+**Implementation**: Python script (`.py`) with bash wrapper for compatibility. Uses batched GraphQL mutations for efficiency.
+
 **Options**:
 - `--threads <id1,id2,...>` - Resolve specific thread IDs (comma-separated)
 - `--file <path>` - Read thread IDs from file (one per line)
