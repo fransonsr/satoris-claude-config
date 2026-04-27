@@ -1,5 +1,56 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-04-27 - Bug Fixes: Bulk Resolution & GitHub API
+
+### Problem: Bulk Thread Resolution Failed After First Thread
+
+**Issue identified in PR #68**:
+- Bulk resolution script (`resolve-threads-bulk.sh`) resolved first thread successfully
+- Script exited with error code 1 after first resolution
+- Remaining threads were not resolved
+- Root cause: `jq` cache update corrupted newline-delimited JSON file
+
+**Technical Details**:
+- threads.json uses newline-delimited JSON (not array)
+- Cache update used `jq` without `-s` flag
+- Command processed only first JSON object, corrupting file structure
+- Subsequent thread lookups failed on corrupted cache
+
+**Fix Applied** (commit 91bccc3):
+```bash
+# Before (line 152-154):
+jq --arg tid "$thread_id" \
+  'if .threadId == $tid then .isResolved = true else . end' \
+  "$THREADS_FILE" > "${THREADS_FILE}.tmp"
+
+# After:
+jq -s --arg tid "$thread_id" \
+  'map(if .threadId == $tid then .isResolved = true else . end) | .[]' \
+  "$THREADS_FILE" > "${THREADS_FILE}.tmp"
+```
+
+**Verified**: Tested with 3-object newline-delimited JSON, all objects preserved correctly.
+
+### Problem: GitHub Projects (classic) Deprecation Warnings
+
+**Issue**: `gh pr view` without `--json` queries deprecated Projects (classic) API
+- Non-fatal GraphQL errors clutter output
+- Affects `gh pr view` and `gh pr edit` commands
+
+**Fix Applied** (commit 91bccc3):
+- Added note to SKILL.md Prerequisites section
+- All script examples already use `--json` correctly
+- Issue only affects manual workflow commands
+
+**Workaround**: Always use `gh pr view --json <fields>` to avoid deprecated API
+
+**Impact**:
+- ✅ Bulk resolution now works for multiple threads (87.5% token savings realized)
+- ✅ Cleaner output without deprecation warnings
+- ✅ Scripts future-proofed against GitHub API changes
+
+---
+
 ## 2026-04-24 - State Management & Caching
 
 ### Problem: Redundant API Calls and Manual Tracking
