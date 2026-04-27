@@ -148,9 +148,9 @@ for thread_id in "${THREADS_TO_RESOLVE[@]}"; do
     echo "✅"
     ((RESOLVED_COUNT++))
 
-    # Update cache to mark thread as resolved
-    jq --arg tid "$thread_id" \
-      'if .threadId == $tid then .isResolved = true else . end' \
+    # Update cache to mark thread as resolved (use -s to handle newline-delimited JSON)
+    jq -s --arg tid "$thread_id" \
+      'map(if .threadId == $tid then .isResolved = true else . end) | .[]' \
       "$THREADS_FILE" > "${THREADS_FILE}.tmp" && mv "${THREADS_FILE}.tmp" "$THREADS_FILE"
   else
     echo "❌ (failed)"

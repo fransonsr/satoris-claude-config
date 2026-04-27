@@ -106,6 +106,8 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 - `sonar-project.properties` configured (created if missing)
 - Automation scripts in `~/.claude/skills/address-pr-issues/scripts/` (bundled with skill)
 
+**Important**: Always use `gh pr view --json <fields>` instead of `gh pr view` alone to avoid GitHub Projects (classic) deprecation warnings. The `--json` flag queries only the modern GraphQL API.
+
 ## Step 1: Gather PR Information
 
 ### Get PR Number and Details
