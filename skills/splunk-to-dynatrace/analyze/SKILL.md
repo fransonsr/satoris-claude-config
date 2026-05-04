@@ -28,6 +28,14 @@ This skill handles codebases of any size by using progressive disclosure:
 
 The skill automatically detects codebase size and adapts the approach.
 
+## Output Location
+
+**All analysis reports are written to**: `{project-root}/.claude/analyze-reports/`
+
+This is the project-local `.claude/` directory, which should be added to `.gitignore` to avoid committing analysis results to version control.
+
+**Example**: For project at `/home/user/myapp/`, reports go to `/home/user/myapp/.claude/analyze-reports/`
+
 ## What This Skill Does
 
 Scans the codebase and produces hierarchical reports with:
@@ -46,13 +54,20 @@ Scans the codebase and produces hierarchical reports with:
 
 ## Analysis Process
 
-### Step 0: Detect Codebase Size and Choose Strategy
+### Step 0: Initial Questions and Setup
 
-First, do a quick scan to determine scale:
+**Ask the user these questions before starting analysis:**
+
+1. **"Should I analyze test files too? (y/n, default: n)"**
+   - **If yes**: Analyze `src/main/java/**/*.java` AND `src/test/java/**/*.java`
+   - **If no**: Analyze only `src/main/java/**/*.java` (production code)
+   - **Note**: Test logs are marked LOW priority (typically don't go to observability platforms)
+
+2. **Detect codebase size** to determine analysis strategy:
 
 ```bash
-# Count total log statements across all modules
-find . -name "*.java" -type f -exec grep -c "logger\.\|log\.\|LOGGER\." {} \; | awk '{sum+=$1} END {print sum}'
+# Count total log statements in production code
+find . -path "*/src/main/java/**/*.java" -type f -exec grep -c "logger\.\|log\.\|LOGGER\." {} \; | awk '{sum+=$1} END {print sum}'
 
 # Count modules
 find . -name "pom.xml" -o -name "build.gradle" | wc -l
@@ -63,13 +78,27 @@ Based on results:
 - **100-500 logs**: Full analysis, write to files, show summary
 - **500+ logs**: Interactive mode (ask user for approach)
 
+3. **Create output directory**:
+
+```bash
+# Create project-local .claude directory for analysis reports
+mkdir -p .claude/analyze-reports/modules
+```
+
 ### Step 1: Scan for Log Statements
 
 Search the codebase for all logging patterns:
 
+**Production code (always analyzed):**
 ```bash
-# Find all Java files with log statements
-find . -name "*.java" -type f -exec grep -l "logger\.\|log\.\|LOGGER\." {} \;
+# Find all production Java files with log statements
+find . -path "*/src/main/java/**/*.java" -type f -exec grep -l "logger\.\|log\.\|LOGGER\." {} \;
+```
+
+**Test code (if user opted in):**
+```bash
+# Find all test Java files with log statements
+find . -path "*/src/test/java/**/*.java" -type f -exec grep -l "logger\.\|log\.\|LOGGER\." {} \;
 ```
 
 Look for:
@@ -82,6 +111,7 @@ Organize findings by:
 - **Module** (from Maven/Gradle structure)
 - **Package** (from Java package structure)
 - **File** (individual Java files)
+- **Source Type** (production vs test)
 
 ### Step 2: Categorize by Type
 
@@ -180,16 +210,21 @@ Logs that track numerical measurements should be metrics:
 - Gauges: "Queue depth", "Active connections", "Pool size"
 - Timers/Histograms: "Operation took Xms" (if custom timing, not auto-captured)
 
-**Examples**:
+**Recommendation Format** (suggestions and patterns, not full runnable code):
 ```java
 // METRIC: Use Micrometer counter instead
 logger.info("Ordinance reservation completed. type={} count={}", type, count);
-// Recommend: meterRegistry.counter("gofr.ordinance.reservation.count", Tag.of("type", type)).increment(count);
+// Suggested metric name: "gofr.ordinance.reservation.count"
+// Pattern: counter with tag "ordinance.type", increment by count
+// Keep minimal INFO log for trace correlation
 
 // METRIC: Use gauge for resource tracking
 logger.info("Connection pool at {}% capacity", utilization);
-// Recommend: Gauge.builder("pool.utilization", () -> getUtilization()).register(registry);
+// Suggested metric name: "pool.utilization.percent"
+// Pattern: gauge that supplies current utilization value
 ```
+
+**Note**: Provide metric naming suggestions and patterns only. Teams will implement based on their Micrometer setup.
 
 #### Rule 4: Missing Required Fields
 
@@ -306,7 +341,7 @@ Analyze parameter names in log statements for standardization opportunities:
 - `userId` → `user.id` (dot.notation, hierarchical)
 
 **Trade-off Assessment**:
-- **Effort**: 150 log statements would need field name updates
+- **Scope**: 150 log statements would need field name updates
 - **Splunk Impact**: All dashboards using these fields would need query updates
 - **Benefit**: Cleaner Dynatrace queries, better field grouping
 
@@ -354,16 +389,32 @@ Group recommendations by priority:
 - Field naming conventions (snake_case, dot.notation)
 - Only if user opts in during convert-logs phase
 
+## README Generation
+
+**ALWAYS generate README.md as the entry point** to help users navigate analysis results.
+
+The README should include:
+1. **Quick Start** section with top 3 actions
+2. **Navigation Guide** with links to all reports and descriptions
+3. **Summary Statistics** table
+4. **Migration Path** recommendation
+5. **Next Steps** checklist
+
+See detailed README template in the "Executive Summary Format" section below.
+
 ## Output File Structure
 
 Based on codebase size, generate hierarchical reports:
+
+**All reports written to**: `{project-root}/.claude/analyze-reports/`
 
 ### For Medium/Large Codebases (100+ logs)
 
 Create structured directory:
 
 ```
-analysis-reports/
+.claude/analyze-reports/
+├── README.md                         # NAVIGATION ENTRY POINT - start here!
 ├── 00-executive-summary.md          # High-level overview, compliance score
 ├── 01-quick-wins.md                  # Top 20-30 deletion candidates
 ├── 02-metrics-conversion.md          # Metric conversion candidates
@@ -382,6 +433,109 @@ analysis-reports/
 │   └── gofr-acceptance/
 │       └── (same structure)
 └── standards-reference.md            # Quick reference to observability standards
+```
+
+### README Format (`README.md`) - ALWAYS GENERATE FIRST
+
+The README is the navigation entry point. Generate it with actual data from the analysis:
+
+```markdown
+# [Project Name] Structured Logging Migration - Analysis Results
+
+**Analysis Date**: [YYYY-MM-DD]  
+**Codebase**: [absolute path]  
+**Modules Analyzed**: [list modules]  
+[**Test Files Included**: Yes/No - if user opted in]
+
+---
+
+## Quick Start
+
+**Top 3 Actions** (start here for immediate impact):
+
+1. [Action with highest impact - could be DELETE, METRIC, or LEVEL_CHANGE]
+2. [Second highest impact action]
+3. [Third highest impact action]
+
+---
+
+## Navigation Guide
+
+### Start Here
+
+- **[00-executive-summary.md](00-executive-summary.md)** - High-level findings, statistics, priorities
+  - Read this first for overall picture
+  - 5-10 minute read
+
+### Priority Actions
+
+- **[01-quick-wins.md](01-quick-wins.md)** - Deletion candidates [or "None found" if 0]
+  - [Description of what's in this report]
+  
+- **[02-metrics-conversion.md](02-metrics-conversion.md)** - Logs that should be metrics
+  - [Number of candidates] metric conversions recommended
+  
+- **[03-level-corrections-summary.md](03-level-corrections-summary.md)** - Incorrect log levels
+  - [Number of logs] need level changes
+
+### Context & Planning
+
+- **[04-business-events.md](04-business-events.md)** - Business event identification
+  - Separates operational reporting from troubleshooting
+  
+- **[05-field-naming-analysis.md](05-field-naming-analysis.md)** - Field standardization plan
+  - **Decision required before conversion**
+  - Three strategies: standardize now, defer, or hybrid
+
+### Detailed Analysis
+
+[List module reports with brief descriptions]
+
+---
+
+## Summary Statistics
+
+- **Total Log Statements**: [N] (production code [+ test if included])
+- **Modules**: [N] ([breakdown])
+- **Overall Compliance**: [X]% adherence to FamilySearch Observability Standards
+
+### Action Summary
+
+| Action Type | Count | Priority | Complexity |
+|-------------|-------|----------|-----------|
+| DELETE (Dynatrace auto-captures) | [N] | [priority] | Low |
+| METRIC (convert to Micrometer) | [N] | [priority] | Medium |
+| LEVEL_CHANGE (fix incorrect levels) | [N] | [priority] | Low |
+| STRUCTURED_FIELDS (convert to fluent API) | [N] | [priority] | Medium |
+
+---
+
+## Migration Path
+
+**Recommended approach for [Project Name]** ([small/medium/large] codebase):
+
+[Specific recommendation based on codebase size and findings]
+
+**Note**: Effort estimation should occur during your team's planning phase. These reports provide objective data (file counts, log counts, complexity) to inform your estimates.
+
+---
+
+## Next Steps
+
+1. Read executive summary: [00-executive-summary.md](00-executive-summary.md)
+2. Review priority actions: [Links to top priority reports]
+3. Choose field naming strategy: [05-field-naming-analysis.md](05-field-naming-analysis.md)
+4. Start conversion: Use `/splunk-to-dynatrace:convert-logs` skill
+
+---
+
+## Standards Reference
+
+All analysis based on: [FamilySearch Observability Standards v1.3](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards)
+
+---
+
+**Questions?** Review the detailed module reports or consult the FamilySearch Observability Standards documentation.
 ```
 
 ### Executive Summary Format (`00-executive-summary.md`)
@@ -449,8 +603,7 @@ The convert-logs skill will ask for your preference.
    - Low-hanging fruit: Start with gofr-acceptance (highest compliance, easy wins)
    - Sequential: Work through modules in dependency order
 
-**Estimated Effort**: [X] developer-days
-**Estimated Cost Savings**: [Y]% log volume reduction → $[Z] per month
+**Planning Note**: Effort estimation should occur during your team's planning phase, not as part of this analysis. The reports provide objective data (file counts, log counts, complexity) to inform your estimates.
 ```
 
 ### Quick Wins Format (`01-quick-wins.md`)
@@ -463,7 +616,7 @@ Sorted by impact (volume × simplicity).
 ## 1. DELETE: HTTP Request Timing (15 occurrences)
 
 **Impact**: ~10% volume reduction
-**Effort**: Low (simple deletion)
+**Complexity**: Low (simple deletion)
 
 **Files**:
 - `gofr-ws/src/main/java/.../ RestController.java:45`
@@ -484,7 +637,7 @@ logger.info("Request completed in {}ms with status {}", duration, statusCode);
 ## 2. METRIC: Ordinance Reservations (8 occurrences)
 
 **Impact**: Better aggregation, enables dashboards
-**Effort**: Medium (add Micrometer counter + keep minimal INFO log)
+**Complexity**: Medium (add Micrometer counter + keep minimal INFO log)
 
 **Files**:
 - `gofr-service/.../ReservationService.java:67`
@@ -516,7 +669,7 @@ logger.atInfo()
 ## 3. LEVEL_CHANGE: Cache Operations (12 occurrences)
 
 **Impact**: Reduce noise (DEBUG instead of INFO)
-**Effort**: Low (change log level)
+**Complexity**: Low (change log level)
 
 **Files**:
 - `gofr-service/.../CacheService.java:34`
