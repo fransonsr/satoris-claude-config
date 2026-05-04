@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "description": "Anti-pattern library for identifying logs that Dynatrace auto-captures (DELETE candidates) per FamilySearch Observability Standards",
+  "version": "1.0",
+  "standards_reference": "https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards",
+  "categories": {
+    "http_timing": {
+      "description": "HTTP request/response timing and status codes (OneAgent auto-captures)",
+      "priority": "HIGH",
+      "patterns": [
+        "(?i)request.*completed.*\\d+.*ms",
+        "(?i)response.*time.*\\d+.*ms",
+        "(?i)http.*duration.*\\d+",
+        "(?i)request.*took.*\\d+.*ms",
+        "(?i)processing.*time.*\\d+.*milliseconds",
+        "(?i)request.*finished.*\\d+.*ms.*status.*\\d{3}",
+        "(?i)completed.*in.*\\d+.*ms.*with.*status",
+        "(?i)http.*call.*\\d+.*ms"
+      ],
+      "examples": [
+        "Request completed in 250ms with status 200",
+        "HTTP call took 1500ms",
+        "Processing time: 345 milliseconds"
+      ]
+    },
+    "http_status": {
+      "description": "HTTP status codes per request (OneAgent auto-captures)",
+      "priority": "HIGH",
+      "patterns": [
+        "(?i)status.*code.*\\d{3}",
+        "(?i)returned.*status.*\\d{3}",
+        "(?i)response.*status.*\\d{3}",
+        "(?i)http.*\\d{3}"
+      ],
+      "examples": [
+        "Returned status code 404",
+        "Response status: 500"
+      ]
+    },
+    "database_timing": {
+      "description": "Database query execution time (OTel auto-instruments)",
+      "priority": "HIGH",
+      "patterns": [
+        "(?i)query.*executed.*\\d+.*ms",
+        "(?i)database.*query.*took.*\\d+",
+        "(?i)sql.*execution.*time.*\\d+",
+        "(?i)db.*call.*\\d+.*ms",
+        "(?i)jdbc.*query.*\\d+"
+      ],
+      "examples": [
+        "Query executed in 45ms",
+        "Database query took 120ms",
+        "SQL execution time: 89ms"
+      ]
+    },
+    "jvm_metrics": {
+      "description": "JVM heap, GC, thread metrics (OneAgent process monitoring auto-captures)",
+      "priority": "HIGH",
+      "patterns": [
+        "(?i)jvm.*heap.*\\d+",
+        "(?i)memory.*usage.*\\d+.*mb",
+        "(?i)garbage.*collection",
+        "(?i)gc.*took.*\\d+.*ms",
+        "(?i)thread.*count.*\\d+",
+        "(?i)heap.*size.*\\d+"
+      ],
+      "examples": [
+        "JVM heap usage: 512MB",
+        "Garbage collection took 15ms",
+        "Thread count: 45"
+      ]
+    },
+    "container_metrics": {
+      "description": "Container CPU, memory, restart metrics (Kubernetes integration auto-captures)",
+      "priority": "HIGH",
+      "patterns": [
+        "(?i)container.*cpu.*\\d+",
+        "(?i)pod.*memory.*\\d+",
+        "(?i)container.*restart",
+        "(?i)kubernetes.*resource"
+      ],
+      "examples": [
+        "Container CPU: 75%",
+        "Pod memory usage: 1.2GB"
+      ]
+    },
+    "nodejs_metrics": {
+      "description": "Node.js event loop lag (OneAgent process monitoring auto-captures)",
+      "priority": "MEDIUM",
+      "patterns": [
+        "(?i)event.*loop.*lag",
+        "(?i)node.*event.*loop"
+      ],
+      "examples": [
+        "Event loop lag: 12ms"
+      ]
+    },
+    "health_checks": {
+      "description": "Health check endpoint 200 OK responses (Synthetic monitoring)",
+      "priority": "MEDIUM",
+      "patterns": [
+        "(?i)health.*check.*200",
+        "(?i)health.*endpoint.*ok",
+        "(?i)/health.*returned.*200"
+      ],
+      "examples": [
+        "Health check returned 200 OK",
+        "/health endpoint OK"
+      ]
+    },
+    "message_queue_timing": {
+      "description": "Message queue timing (OTel auto-instruments messaging)",
+      "priority": "MEDIUM",
+      "patterns": [
+        "(?i)message.*processed.*\\d+.*ms",
+        "(?i)kafka.*consumer.*\\d+.*ms",
+        "(?i)rabbitmq.*message.*\\d+",
+        "(?i)jms.*message.*took"
+      ],
+      "examples": [
+        "Message processed in 34ms",
+        "Kafka consumer lag: 500ms"
+      ]
+    }
+  },
+  "usage_notes": [
+    "Patterns use regex format (case-insensitive by default)",
+    "Match against log message templates, not interpolated values",
+    "HIGH priority = definite DELETE (Dynatrace 100% captures this)",
+    "MEDIUM priority = probable DELETE (Dynatrace likely captures this)",
+    "When in doubt, flag for human review rather than auto-delete"
+  ],
+  "false_positive_hints": [
+    "Custom timing for non-HTTP operations may be valuable (e.g., 'Algorithm X took 500ms')",
+    "Business-level timing may be worth keeping (e.g., 'User signup flow completed in 2.3s')",
+    "Status codes for external systems (not this service) may provide context",
+    "Always check context: Is this about the current service or a downstream dependency?"
+  ]
+}

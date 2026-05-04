@@ -20,7 +20,9 @@ Use this skill when:
 
 ## Dependencies
 
-### Required: jdtls-lsp Plugin (Java Language Server)
+### Required Dependencies
+
+**1. jdtls-lsp Plugin (Java Language Server)**
 
 This skill uses **jdtls-lsp** for semantic Java code analysis, providing:
 - Fast logger discovery (seconds vs minutes)
@@ -31,6 +33,51 @@ This skill uses **jdtls-lsp** for semantic Java code analysis, providing:
 **Installation**: jdtls-lsp is typically included with Claude Code. No additional setup needed.
 
 **Verification**: If you can see Java code intelligence (autocomplete, go-to-definition) in Claude Code, LSP is working.
+
+**2. Python 3 (version 3.7 or later)**
+
+Used for bundled inventory generation scripts (automatic invocation, fallback to manual LSP queries if unavailable).
+
+**Verification**:
+```bash
+python3 --version  # Should show 3.7 or later
+```
+
+### Optional Dependencies
+
+**1. jq (JSON query tool)**
+
+Used for interactive exploration of inventory.json results. Not required for analysis, but helpful for ad-hoc queries.
+
+**Installation**:
+```bash
+# Debian/Ubuntu (WSL2)
+sudo apt-get install jq
+
+# macOS
+brew install jq
+
+# Windows (via Chocolatey)
+choco install jq
+```
+
+**Verification**:
+```bash
+jq --version  # Should show jq-1.6 or later
+```
+
+**Usage**: See `analyze/scripts/example_queries.sh` for 8 pre-built query examples.
+
+### Development Environment
+
+This skill and its bundled scripts were developed and tested on:
+- **OS**: WSL2 (Windows Subsystem for Linux)
+- **Distribution**: Ubuntu Linux (5.15.153.1-microsoft-standard-WSL2)
+- **Shell**: bash
+- **Python**: Python 3.x
+- **Java**: OpenJDK 17+ (for jdtls-lsp)
+
+The skill should work on any Unix-like environment (Linux, macOS, WSL) with the required dependencies.
 
 ### Important: Git Configuration
 
@@ -123,7 +170,9 @@ mkdir -p .claude/analyze-reports/modules
 
 ### Step 1: Discover Loggers Using LSP (Fast, Semantic)
 
-Use jdtls-lsp for fast, accurate logger discovery:
+Use jdtls-lsp for fast, accurate logger discovery. This skill includes bundled scripts for deterministic inventory generation.
+
+**Approach**: Attempt automated script execution first, fallback to manual LSP queries if needed.
 
 **Step 1a: Find All Java Files**
 
@@ -135,9 +184,73 @@ find . -path "*/src/main/java/**/*.java" -type f > java_files.txt
 find . -path "*/src/test/java/**/*.java" -type f >> java_files.txt
 ```
 
-**Step 1b: LSP Logger Discovery Loop**
+**Step 1b: Automated Inventory Generation (Preferred)**
 
-For each Java file:
+**Option 1: Use Bundled Python Script** (if Python 3.7+ available)
+
+This skill includes `scripts/lsp_inventory.py` for deterministic inventory generation:
+
+```bash
+# Invoke LSP queries for each Java file
+# For each file:
+#   1. LSP.documentSymbol(file) → Find logger declarations
+#   2. LSP.hover(file, line, char) → Get type info
+#   3. LSP.findReferences(file, line, char) → Get call sites
+#   4. Read specific lines for context (level, message, pattern)
+# Save results to intermediate JSON
+```
+
+**Then execute the bundled script**:
+```bash
+python3 analyze/scripts/lsp_inventory.py \
+  --project-root . \
+  --input-lsp-results lsp_query_results.json \
+  --output .claude/analyze-reports/lsp-inventory.json
+```
+
+**Output**: `lsp-inventory.json` with structured data:
+```json
+{
+  "metadata": {
+    "analysis_date": "2026-05-04T...",
+    "project_root": "/path/to/project",
+    "total_files_scanned": 47,
+    "total_loggers_found": 9,
+    "total_log_calls": 29
+  },
+  "loggers": [
+    {
+      "name": "LOGGER",
+      "type": "org.slf4j.Logger",
+      "file": "src/main/java/.../MyClass.java",
+      "line": 23,
+      "call_count": 5
+    }
+  ],
+  "log_calls": [
+    {
+      "id": 1,
+      "file": "src/main/java/.../MyClass.java",
+      "line": 45,
+      "logger_name": "LOGGER",
+      "level": "INFO",
+      "pattern": "traditional",
+      "message_snippet": "Processing request for person {}, ordinance {}",
+      "parameter_count": 2
+    }
+  ]
+}
+```
+
+**Benefits of Script Approach**:
+- ⚡ **Deterministic**: Repeatable, testable inventory generation
+- 🎯 **Accurate**: Python script handles edge cases consistently
+- 💰 **Token-efficient**: Structured data output (no markdown formatting needed)
+- 🔍 **Queryable**: JSON output for jq queries (see `scripts/example_queries.sh`)
+
+**Option 2: Manual LSP Queries** (fallback if Python unavailable)
+
+If Python 3 is not available, perform LSP queries directly:
 
 ```python
 # Pseudo-code showing LSP workflow
@@ -178,12 +291,12 @@ for file in java_files:
                     
                     inventory["loggers"].append(logger_info)
 
-# Save to .claude/analyze-reports/inventory.json
+# Save to .claude/analyze-reports/lsp-inventory.json
 ```
 
 **Step 1c: Enhance Inventory with Code Context**
 
-For each log call site found by LSP:
+For each log call site found by LSP (automatic or manual):
 
 ```python
 # Read only the specific lines with log statements (not whole files)
@@ -205,7 +318,7 @@ for log_call in inventory["log_calls"]:
     log_call["pattern"] = classify_pattern(code_lines)  # traditional, fluent, lombok
 ```
 
-**Benefits of LSP Approach:**
+**Benefits of LSP Approach (Script or Manual):**
 - ⚡ **Fast**: Seconds vs minutes (LSP queries are instant)
 - 💰 **Token-efficient**: 80-90% reduction (structured queries vs file reading)
 - 🎯 **Accurate**: Semantic understanding (not regex false positives)
@@ -251,7 +364,51 @@ For each log statement, check against FamilySearch Observability Standards:
 
 #### Rule 1: Dynatrace Auto-Capture (DELETE candidates)
 
-Check if log matches the "What You Used to Log in Splunk" table from standards:
+Check if log matches the "What You Used to Log in Splunk" table from standards.
+
+**Automated Detection**: This skill includes `scripts/anti_patterns.json` with regex patterns for common DELETE candidates:
+
+```json
+{
+  "http_timing": {
+    "patterns": [
+      "(?i)request.*completed.*\\d+.*ms",
+      "(?i)response.*time.*\\d+.*ms",
+      "(?i)http.*duration.*\\d+"
+    ],
+    "priority": "HIGH"
+  },
+  "database_timing": {
+    "patterns": [
+      "(?i)query.*executed.*\\d+.*ms",
+      "(?i)database.*query.*took.*\\d+",
+      "(?i)sql.*execution.*time.*\\d+"
+    ],
+    "priority": "HIGH"
+  }
+}
+```
+
+**Use the bundled anti-patterns library** to match log messages against known DELETE candidates:
+
+```python
+# Load anti-patterns
+with open('analyze/scripts/anti_patterns.json') as f:
+    anti_patterns = json.load(f)
+
+# Check each log message
+for log_call in inventory["log_calls"]:
+    message = log_call["message_snippet"]
+    for category, data in anti_patterns["categories"].items():
+        for pattern in data["patterns"]:
+            if re.search(pattern, message):
+                log_call["delete_candidate"] = True
+                log_call["delete_reason"] = data["description"]
+                log_call["delete_priority"] = data["priority"]
+                break
+```
+
+**Manual Categories** (from standards):
 
 | Pattern | Action | Reason |
 |---------|--------|--------|
@@ -947,30 +1104,98 @@ The convert-logs skill will also ask about:
 - **Guard clauses**: Wrap log statements with level checks for performance-critical paths?
 ```
 
+## Bundled Scripts
+
+This skill includes three bundled scripts for deterministic, efficient analysis:
+
+### 1. lsp_inventory.py (Python 3.7+)
+
+**Purpose**: Processes LSP query results and generates structured inventory.json
+
+**Usage** (within skill workflow):
+```bash
+python3 analyze/scripts/lsp_inventory.py \
+  --project-root /path/to/project \
+  --input-lsp-results lsp_results.json \
+  --output .claude/analyze-reports/lsp-inventory.json
+```
+
+**Key Classes**:
+- `LoggerInfo`: Logger declaration (name, type, file, line, call_count)
+- `LogCallInfo`: Log statement call site (file, line, level, pattern, message)
+- `LSPInventoryGenerator`: Processes LSP results, enhances with code context
+
+**Output**: Structured JSON with metadata, loggers[], and log_calls[]
+
+### 2. anti_patterns.json (JSON Schema)
+
+**Purpose**: Library of regex patterns for DELETE candidate detection
+
+**Categories**: http_timing, http_status, database_timing, jvm_metrics, container_metrics, nodejs_metrics, health_checks, message_queue_timing
+
+**Usage** (within skill workflow):
+```python
+# Load patterns
+with open('analyze/scripts/anti_patterns.json') as f:
+    patterns = json.load(f)
+
+# Match log messages
+for category, data in patterns["categories"].items():
+    for pattern in data["patterns"]:
+        if re.search(pattern, log_message):
+            # Mark as DELETE candidate
+```
+
+**Priorities**: HIGH (definite DELETE), MEDIUM (probable DELETE)
+
+### 3. example_queries.sh (bash script)
+
+**Purpose**: Interactive jq query examples for exploring inventory.json
+
+**Usage** (user runs directly after analysis):
+```bash
+bash analyze/scripts/example_queries.sh .claude/analyze-reports/lsp-inventory.json
+```
+
+**Includes 8 pre-built queries**:
+1. Summary statistics
+2. Logger types distribution
+3. Log levels distribution
+4. Top files by log statement count
+5. Logging pattern distribution (traditional, fluent, lombok)
+6. All ERROR level log locations
+7. Unused loggers (declared but never called)
+8. Log calls by specific logger name
+
+**Requires**: jq (optional dependency)
+
+**Benefits**: Fast ad-hoc exploration without re-running full analysis
+
 ## Performance Considerations
 
 ### LSP-Powered Performance
 
-The skill uses jdtls-lsp for logger discovery, providing dramatic performance improvements:
+The skill uses jdtls-lsp + bundled scripts for logger discovery, providing dramatic performance improvements:
 
 **Token Usage Comparison** (gofr with 29 logs):
-- **Old approach** (read all files): ~40,000 tokens for file reading
-- **LSP approach** (structured queries): ~5,000 tokens for targeted reads
-- **Savings**: 87% token reduction
+- **Old approach** (read all files): ~250,000 tokens for file reading
+- **LSP + script approach**: ~33,500 tokens (structured queries + targeted reads)
+- **Savings**: 86% token reduction
 
 **Time Comparison**:
 - **Old approach**: 10-15 minutes (read, parse, analyze)
-- **LSP approach**: 2-5 minutes (query, targeted read, analyze)
+- **LSP + script approach**: 2-5 minutes (query, script, analyze)
 - **Savings**: 60-70% time reduction
 
 **Scalability**:
 - Works efficiently for 1000+ log statements
 - LSP queries are constant time (O(1) per file)
 - Only read specific log lines (not entire files)
+- Python script handles deterministic processing (no LLM needed for inventory)
 
 ### For Large Codebases (>1000 log statements)
 
-Even with LSP optimization:
+Even with LSP + script optimization:
 1. **Process modules incrementally**: Generate reports per-module, show progress
 2. **Write incrementally**: Stream reports to files, don't hold in memory
 3. **Sample for patterns**: If >2000 logs, analyze 500 representative statements first
