@@ -1,11 +1,11 @@
 ---
 name: splunk-to-dynatrace:analyze
-description: Analyze Spring Boot application logging patterns and generate compliance report against FamilySearch Observability Standards. Use this skill when starting a Splunk-to-Dynatrace migration, auditing existing log statements, checking standards compliance, or generating an inventory of logging patterns. This skill identifies logs that Dynatrace auto-captures (candidates for deletion), incorrect log levels, missing required fields, business events vs application logs, and provides a prioritized action list with compliance scoring.
+description: Analyze Spring Boot application logging patterns and generate hierarchical compliance report against FamilySearch Observability Standards. Automatically adapts to codebase size (small/medium/large) and uses progressive disclosure for large multi-module projects. Use this skill when starting a Splunk-to-Dynatrace migration, auditing existing log statements, checking standards compliance, or generating an inventory of logging patterns. Identifies logs that Dynatrace auto-captures (deletion candidates), incorrect log levels, missing required fields, business events vs application logs, field naming issues, and provides prioritized action list with compliance scoring. For large codebases, offers interactive module-by-module analysis or focus on high-priority quick wins.
 ---
 
 # Splunk-to-Dynatrace Log Analysis Skill
 
-Analyzes current logging patterns in a Spring Boot codebase and generates a comprehensive compliance report against [FamilySearch Observability Standards](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards).
+Analyzes current logging patterns in a Spring Boot codebase and generates a comprehensive, hierarchical compliance report against [FamilySearch Observability Standards](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards).
 
 ## When to Use This Skill
 
@@ -16,28 +16,59 @@ Use this skill when:
 - Identifying logs that waste money (Dynatrace auto-captures them)
 - Finding logs with incorrect levels (INFO that should be DEBUG, etc.)
 - Separating business events from application logs
+- Planning incremental migration for large multi-module codebases
+
+## Scalability Strategy
+
+This skill handles codebases of any size by using progressive disclosure:
+
+- **Small (<100 logs)**: Generate full report in conversation
+- **Medium (100-500 logs)**: Write detailed reports to files, show summary in conversation
+- **Large (500+ logs)**: Interactive mode, analyze modules incrementally, offer focus areas
+
+The skill automatically detects codebase size and adapts the approach.
 
 ## What This Skill Does
 
-Scans the codebase and produces a detailed report with:
+Scans the codebase and produces hierarchical reports with:
 
 1. **Log Inventory**: Count and categorization by level (ERROR, WARN, INFO, DEBUG, TRACE)
-2. **Standards Compliance Analysis**: Evaluation against FamilySearch Observability Standards
-3. **Deletion Candidates**: Logs Dynatrace auto-captures (HTTP timing, status codes, DB queries)
-4. **Level Corrections**: Logs using wrong levels per decision tree
-5. **Missing Fields**: Logs missing required fields (dt.trace_id, event.name, etc.)
-6. **Business Events**: Identification of business/functional logs vs application logs
-7. **Prioritized Action List**: DELETE > METRIC > LEVEL_CHANGE > STRUCTURED_FIELDS
-8. **Compliance Score**: Percentage adhering to standards
+2. **Module Breakdown**: Per-module statistics and compliance scores
+3. **Standards Compliance Analysis**: Evaluation against FamilySearch Observability Standards
+4. **Deletion Candidates**: Logs Dynatrace auto-captures (HTTP timing, status codes, DB queries)
+5. **Level Corrections**: Logs using wrong levels per decision tree
+6. **Metric Conversions**: Counters/timers that should use Micrometer
+7. **Missing Fields**: Logs missing required fields (dt.trace_id, event.name, etc.)
+8. **Business Events**: Identification of business/functional logs vs application logs
+9. **Field Naming Analysis**: Recommendations for standardizing field names (with trade-off assessment)
+10. **Prioritized Action List**: DELETE > METRIC > LEVEL_CHANGE > STRUCTURED_FIELDS > RENAME
+11. **Overall Compliance Score**: Percentage adhering to standards
 
 ## Analysis Process
+
+### Step 0: Detect Codebase Size and Choose Strategy
+
+First, do a quick scan to determine scale:
+
+```bash
+# Count total log statements across all modules
+find . -name "*.java" -type f -exec grep -c "logger\.\|log\.\|LOGGER\." {} \; | awk '{sum+=$1} END {print sum}'
+
+# Count modules
+find . -name "pom.xml" -o -name "build.gradle" | wc -l
+```
+
+Based on results:
+- **<100 logs**: Proceed with full analysis, present in conversation
+- **100-500 logs**: Full analysis, write to files, show summary
+- **500+ logs**: Interactive mode (ask user for approach)
 
 ### Step 1: Scan for Log Statements
 
 Search the codebase for all logging patterns:
 
 ```bash
-# Find all log statements (SLF4J, Lombok @Slf4j, Log4j)
+# Find all Java files with log statements
 find . -name "*.java" -type f -exec grep -l "logger\.\|log\.\|LOGGER\." {} \;
 ```
 
@@ -46,6 +77,11 @@ Look for:
 - `log.error()`, `log.warn()`, `log.info()`, `log.debug()`, `log.trace()` (Lombok)
 - `LOGGER.atError()`, `LOGGER.atInfo()` (fluent API)
 - Named loggers (e.g., `LogManager.getLogger(class.getName() + ".metricsReport")`)
+
+Organize findings by:
+- **Module** (from Maven/Gradle structure)
+- **Package** (from Java package structure)
+- **File** (individual Java files)
 
 ### Step 2: Categorize by Type
 
@@ -67,6 +103,12 @@ For each log statement, determine:
 - Service calls (external dependencies)
 - Configuration/startup
 - Error handling
+
+**D. Field Names** (extract parameter names):
+```java
+logger.info("Processing person {} ordinance {}", personId, ordinanceType);
+// Fields: personId, ordinanceType
+```
 
 ### Step 3: Evaluate Against Standards
 
@@ -217,6 +259,65 @@ logger.atWarn()
     .log("Circuit breaker opened");
 ```
 
+#### Rule 6: Field Naming Analysis (NEW)
+
+Analyze parameter names in log statements for standardization opportunities:
+
+**Common Naming Patterns**:
+- **camelCase**: `personId`, `ordinanceType`, `userId`
+- **snake_case**: `person_id`, `ordinance_type`, `user_id`
+- **dot.notation**: `person.id`, `ordinance.type`, `user.id`
+
+**Standards Recommendation** (from FamilySearch Observability Standards):
+- Use **dot.notation** for hierarchical fields: `person.id`, `request.duration`
+- Use **snake_case** for flat fields: `user_age`, `retry_count`
+
+**Trade-off Assessment**:
+
+**Pros of Standardizing**:
+- ✅ Cleaner Dynatrace queries (hierarchical grouping)
+- ✅ Better field organization in dashboards
+- ✅ Consistency across teams
+
+**Cons of Standardizing**:
+- ❌ Breaking change for existing Splunk dashboards
+- ❌ Requires updating all dashboard queries during migration
+- ❌ Higher upfront effort
+
+**Recommendation Logic**:
+
+1. **Count existing Splunk dashboards**: If user mentions "we have 50+ dashboards", recommend AGAINST field renaming
+2. **Check field usage frequency**: If a field appears in <10 logs, renaming is low-risk
+3. **Assess migration timeline**: If Phase 1 is "validate with Splunk first", recommend keeping names initially
+4. **Calculate impact**: Show how many logs would need changes
+
+**Example Analysis**:
+```markdown
+### Field Naming Analysis
+
+**Current Usage**:
+- `personId` (camelCase): 45 occurrences across 12 files
+- `ordinanceType` (camelCase): 38 occurrences across 9 files
+- `userId` (camelCase): 67 occurrences across 18 files
+
+**Standards-Compliant Alternatives**:
+- `personId` → `person.id` (dot.notation, hierarchical)
+- `ordinanceType` → `ordinance.type` (dot.notation, hierarchical)
+- `userId` → `user.id` (dot.notation, hierarchical)
+
+**Trade-off Assessment**:
+- **Effort**: 150 log statements would need field name updates
+- **Splunk Impact**: All dashboards using these fields would need query updates
+- **Benefit**: Cleaner Dynatrace queries, better field grouping
+
+**Recommendation**: 
+- **Option A (Recommended for small dashboard count)**: Standardize field names now. Update Splunk dashboards to use new names in Phase 4, ensuring Dynatrace migration uses consistent naming from the start.
+- **Option B (Recommended for 10+ dashboards)**: Keep existing field names during Phase 1-4 (validate with Splunk). Standardize only if Dynatrace migration reveals query complexity issues. This reduces upfront effort and dashboard churn.
+- **Option C (Hybrid)**: Standardize new log statements only. Leave existing logs unchanged unless they're being modified for other reasons (level change, metric conversion).
+
+**User Decision Required**: The convert-logs skill will ask which approach you prefer.
+```
+
 ### Step 4: Calculate Compliance Score
 
 For each log statement, assign compliance status:
@@ -226,6 +327,8 @@ For each log statement, assign compliance status:
 - ❌ **NON_COMPLIANT**: Wrong level, missing fields, or should be deleted/metric
 
 **Compliance Score** = (COMPLIANT count) / (total logs) × 100%
+
+Calculate per-module scores as well.
 
 ### Step 5: Generate Prioritized Action List
 
@@ -249,132 +352,350 @@ Group recommendations by priority:
 
 **Priority 5: RENAME** (cosmetic, but improves consistency)
 - Field naming conventions (snake_case, dot.notation)
+- Only if user opts in during convert-logs phase
 
-## Output Format
+## Output File Structure
 
-Generate a Markdown report with these sections:
+Based on codebase size, generate hierarchical reports:
 
-### 1. Executive Summary
+### For Medium/Large Codebases (100+ logs)
+
+Create structured directory:
+
+```
+analysis-reports/
+├── 00-executive-summary.md          # High-level overview, compliance score
+├── 01-quick-wins.md                  # Top 20-30 deletion candidates
+├── 02-metrics-conversion.md          # Metric conversion candidates
+├── 03-level-corrections-summary.md   # Summary of level issues
+├── 04-business-events.md             # Business event identification
+├── 05-field-naming-analysis.md       # Field naming recommendations
+├── modules/                          # Per-module detailed reports
+│   ├── gofr-service/
+│   │   ├── module-summary.md         # Module overview
+│   │   ├── deletion-candidates.md    # DELETE list for this module
+│   │   ├── level-corrections.md      # LEVEL_CHANGE list
+│   │   ├── metric-conversions.md     # METRIC list
+│   │   └── detailed-findings.md      # All issues with code examples
+│   ├── gofr-ws/
+│   │   └── (same structure)
+│   └── gofr-acceptance/
+│       └── (same structure)
+└── standards-reference.md            # Quick reference to observability standards
+```
+
+### Executive Summary Format (`00-executive-summary.md`)
 
 ```markdown
-# Splunk-to-Dynatrace Log Analysis Report
+# Logging Analysis: [Project Name]
 
-**Project**: [project-name]
 **Analysis Date**: [date]
-**Compliance Score**: [X]% ([Y] of [Z] logs compliant)
+**Overall Compliance Score**: [X]%
 
-## Key Findings
+## Codebase Overview
 
-- **Total Logs**: [N] statements across [M] files
-- **Delete Candidates**: [X] logs (Dynatrace auto-captures)
-- **Metric Candidates**: [Y] logs (should use Micrometer)
-- **Level Changes**: [Z] logs (incorrect severity)
-- **Business Events**: [B] logs (separate from app logs)
+- **Total Modules**: [N]
+- **Total Log Statements**: [N]
 - **Estimated Volume Reduction**: [P]% (via deletions + metrics)
-```
 
-### 2. Log Inventory by Level
+## Module Breakdown
 
-```markdown
-## Log Inventory
+| Module | Logs | DELETE | METRIC | LEVEL_CHG | STRUCT | Compliance |
+|--------|------|--------|--------|-----------|--------|------------|
+| gofr-service | 145 | 23 | 12 | 34 | 56 | 68% |
+| gofr-ws | 78 | 15 | 8 | 19 | 28 | 72% |
+| gofr-acceptance | 43 | 3 | 2 | 8 | 15 | 83% |
+| **TOTAL** | **266** | **41** | **22** | **61** | **99** | **73%** |
 
-| Level | Count | % of Total | Standards Volume Target |
-|-------|-------|------------|--------------------------|
-| ERROR | X     | Y%         | <0.1%                    |
-| WARN  | X     | Y%         | 1-2%                     |
-| INFO  | X     | Y%         | 10-20%                   |
-| DEBUG | X     | Y%         | OFF in prod              |
-| TRACE | X     | Y%         | OFF in prod              |
+## Priority Actions
 
-**Volume Assessment**: [Analysis of whether current distribution matches standards]
-```
+### 1. Delete 41 logs (15% volume reduction)
+Dynatrace auto-captures these. Pure waste.
+→ See `01-quick-wins.md` for top candidates
 
-### 3. Detailed Findings
+### 2. Convert 22 logs to metrics (Better observability)
+Use Micrometer for counters, gauges, timers.
+→ See `02-metrics-conversion.md`
 
-For each non-compliant log, include:
+### 3. Fix 61 log levels (Reduce noise)
+Incorrect ERROR/WARN → DEBUG changes.
+→ See `03-level-corrections-summary.md`
 
-```markdown
-### [File:LineNumber] - [ACTION]
+### 4. Add structured fields to 99 logs (Enable querying)
+Convert to fluent API with addKeyValue().
+→ See per-module detailed findings
 
-**Current Code**:
-```java
-logger.info("Request completed in {}ms", duration);
-```
+## Field Naming Recommendation
 
-**Issue**: Dynatrace OneAgent automatically captures request timing. This log provides no additional value.
+**Current State**: 87% of fields use camelCase (personId, userId, ordinanceType)
+**Standards Target**: dot.notation for hierarchical fields (person.id, user.id, ordinance.type)
 
-**Recommendation**: DELETE
+**Assessment**: [See detailed analysis in `05-field-naming-analysis.md`]
 
-**Standards Reference**: "What You Used to Log in Splunk" table - HTTP call duration
+**Recommendation**: 
+- **If <5 Splunk dashboards**: Standardize now (Option A)
+- **If 10+ dashboards**: Defer standardization (Option B)
+- **If unsure**: Use hybrid approach (Option C - new logs only)
 
-**Priority**: 1 (DELETE)
+The convert-logs skill will ask for your preference.
 
----
-```
+## Next Steps
 
-### 4. Business Events Analysis
-
-```markdown
-## Business Events Identified
-
-Business events should be routed to `/var/log/fs/business-events.json` for eventual S3/Databricks ingestion.
-
-| Logger Name | Location | Volume Estimate |
-|-------------|----------|-----------------|
-| `CounterMetricsListeners.metricsReport` | `CounterMetricsListeners.java:45` | High |
-
-**Recommendation**: Configure separate appender in logback-spring.xml for these loggers.
-```
-
-### 5. Prioritized Action List
-
-```markdown
-## Prioritized Action List
-
-### Priority 1: DELETE ([N] logs, [P]% volume reduction)
-1. `ServiceImpl.java:123` - HTTP request timing
-2. `DatabaseDao.java:45` - DB query duration
-3. ...
-
-### Priority 2: METRIC ([N] logs)
-1. `ReservationService.java:67` - Ordinance count
-2. `BatchProcessor.java:89` - Records processed
-3. ...
-
-### Priority 3: LEVEL_CHANGE ([N] logs)
-1. `CacheService.java:34` - Cache miss (INFO → DEBUG)
-2. `FilterChain.java:12` - Per-request (INFO → DEBUG)
-3. ...
-
-### Priority 4: STRUCTURED_FIELDS ([N] logs)
-1. `AsyncRunner.java:56` - Missing event.name
-2. `RetryService.java:78` - Missing warn.category
-3. ...
-
-### Priority 5: RENAME ([N] logs)
-1. `TokenStore.java:23` - Field naming (personId → person.id)
-2. ...
-```
-
-### 6. Next Steps
-
-```markdown
-## Recommended Next Steps
-
-1. **Review Findings**: Validate recommendations with team
-2. **Prioritize Quick Wins**: Start with DELETE candidates (immediate cost savings)
-3. **Convert Metrics**: Add Micrometer counters for metric candidates
-4. **Apply Level Changes**: Fix incorrect ERROR/WARN levels
-5. **Add Structured Fields**: Convert to fluent API with addKeyValue()
-6. **Run Conversion Skill**: Use `/splunk-to-dynatrace:convert-logs` to automate transformations
-7. **Setup Logback**: Use `/splunk-to-dynatrace:setup-logback` to generate configuration
-8. **Test Locally**: Enable JSON file verification in logback-spring.xml
-9. **Deploy to Integration**: Validate Splunk ingestion of structured JSON
-10. **Update Dashboards**: Migrate Splunk queries to use new JSON fields
+1. **Review Quick Wins**: Start with `01-quick-wins.md` (immediate cost savings)
+2. **Choose Field Naming Strategy**: Review `05-field-naming-analysis.md`
+3. **Plan Incremental Conversion**: Use `/splunk-to-dynatrace:convert-logs` with task creation
+4. **Focus Areas** (user choice):
+   - High-impact: Start with gofr-service (most logs, lowest compliance)
+   - Low-hanging fruit: Start with gofr-acceptance (highest compliance, easy wins)
+   - Sequential: Work through modules in dependency order
 
 **Estimated Effort**: [X] developer-days
 **Estimated Cost Savings**: [Y]% log volume reduction → $[Z] per month
 ```
+
+### Quick Wins Format (`01-quick-wins.md`)
+
+```markdown
+# Top 30 Quick Wins
+
+Sorted by impact (volume × simplicity).
+
+## 1. DELETE: HTTP Request Timing (15 occurrences)
+
+**Impact**: ~10% volume reduction
+**Effort**: Low (simple deletion)
+
+**Files**:
+- `gofr-ws/src/main/java/.../ RestController.java:45`
+- `gofr-ws/src/main/java/.../FilterChain.java:89`
+- `gofr-service/src/main/java/.../ServiceGateway.java:123`
+- (12 more...)
+
+**Code Pattern**:
+```java
+logger.info("Request completed in {}ms with status {}", duration, statusCode);
+```
+
+**Recommendation**: DELETE
+**Reason**: Dynatrace OneAgent auto-captures HTTP timing and status codes per FamilySearch Observability Standards
+
+---
+
+## 2. METRIC: Ordinance Reservations (8 occurrences)
+
+**Impact**: Better aggregation, enables dashboards
+**Effort**: Medium (add Micrometer counter + keep minimal INFO log)
+
+**Files**:
+- `gofr-service/.../ReservationService.java:67`
+- `gofr-service/.../AsyncRunner.java:145`
+- (6 more...)
+
+**Current Code**:
+```java
+logger.info("Ordinance reservation completed. type={} count={}", ordinanceType, count);
+```
+
+**Recommended Change**:
+```java
+// Add metric
+meterRegistry.counter("gofr.ordinance.reservation.count",
+        Tag.of("ordinance.type", ordinanceType))
+    .increment(count);
+
+// Keep minimal INFO log for trace correlation
+logger.atInfo()
+    .addKeyValue("event.name", "ordinance.reservation.completed")
+    .addKeyValue("ordinance.type", ordinanceType)
+    .addKeyValue("reservation.count", count)
+    .log("Ordinance reservation completed");
+```
+
+---
+
+## 3. LEVEL_CHANGE: Cache Operations (12 occurrences)
+
+**Impact**: Reduce noise (DEBUG instead of INFO)
+**Effort**: Low (change log level)
+
+**Files**:
+- `gofr-service/.../CacheService.java:34`
+- `gofr-service/.../TokenStore.java:78`
+- (10 more...)
+
+**Current Code**:
+```java
+logger.info("Cache miss for key {}", cacheKey);
+```
+
+**Recommended Change**:
+```java
+logger.atDebug()
+    .addKeyValue("cache.name", "ordinance-status")
+    .addKeyValue("cache.key", cacheKey)
+    .addKeyValue("cache.result", "MISS")
+    .log("Cache miss");
+```
+
+**Reason**: Per standards, cache operations are diagnostic details → DEBUG, not INFO
+
+---
+
+(Continue for top 30...)
+```
+
+### Module Summary Format (`modules/gofr-service/module-summary.md`)
+
+```markdown
+# gofr-service Module Analysis
+
+**Compliance Score**: 68%
+**Total Logs**: 145
+
+## Summary Statistics
+
+| Category | Count | % of Module |
+|----------|-------|-------------|
+| COMPLIANT | 99 | 68% |
+| NEEDS_STRUCTURED_FIELDS | 23 | 16% |
+| NON_COMPLIANT | 23 | 16% |
+
+## Priority Actions
+
+| Priority | Action | Count | Files Affected |
+|----------|--------|-------|----------------|
+| 1 | DELETE | 23 | 8 |
+| 2 | METRIC | 12 | 5 |
+| 3 | LEVEL_CHANGE | 34 | 12 |
+| 4 | STRUCTURED_FIELDS | 56 | 18 |
+
+## Package Breakdown
+
+| Package | Logs | Compliance | Top Issue |
+|---------|------|------------|-----------|
+| org.familysearch.gofr.service.impl | 67 | 65% | Level changes (23) |
+| org.familysearch.gofr.service.remote | 45 | 70% | Deletions (15) |
+| org.familysearch.gofr.service.metrics | 18 | 78% | Business events (5) |
+| org.familysearch.gofr.service.config | 15 | 80% | Structured fields (8) |
+
+## Detailed Reports
+
+See:
+- `deletion-candidates.md` - All DELETE recommendations
+- `level-corrections.md` - All LEVEL_CHANGE recommendations
+- `metric-conversions.md` - All METRIC recommendations
+- `detailed-findings.md` - Full file-by-file analysis
+```
+
+## Handling Large Codebases (500+ logs)
+
+For very large codebases, use **interactive mode**:
+
+### Step 1: Quick Scan and Present Options
+
+After initial scan, show:
+
+```markdown
+## Codebase Analysis Complete
+
+Found **743 log statements** across **5 modules**:
+
+| Module | Logs | Compliance | Top Issue |
+|--------|------|------------|-----------|
+| gofr-service | 312 | 64% | Level changes (89) |
+| gofr-ws | 198 | 71% | Deletions (45) |
+| gofr-batch | 145 | 58% | Metrics (34) |
+| gofr-acceptance | 88 | 85% | Structured fields (12) |
+
+**How would you like to proceed?**
+
+**Option A: Analyze All Modules** (recommended)
+- Generates complete analysis reports
+- Takes ~5-10 minutes
+- Output: `analysis-reports/` directory with all findings
+
+**Option B: Focus on Quick Wins First**
+- Top 30 deletion candidates across all modules
+- Immediate cost savings
+- Then decide on detailed analysis
+
+**Option C: Analyze Specific Modules**
+- Pick which modules to analyze in detail
+- Good for phased migration
+
+**Option D: Interactive Module-by-Module**
+- Analyze one module at a time
+- Review results, then continue or stop
+- Good for learning the process
+
+Which option would you prefer? (A/B/C/D)
+```
+
+### Step 2: Execute Based on User Choice
+
+**If Option A**: Generate all reports, write to files, show executive summary
+
+**If Option B**: Generate `01-quick-wins.md` only, show top 20 in conversation, ask if they want full analysis
+
+**If Option C**: Ask "Which modules?" then analyze those modules only
+
+**If Option D**: 
+1. Start with first module (or user-selected)
+2. Generate module reports
+3. Show module summary in conversation
+4. Ask: "Continue to next module (Y), focus on specific files in this module (F), or stop (N)?"
+5. Repeat until user satisfied
+
+## Integration with convert-logs Skill
+
+After analysis is complete, recommend next steps:
+
+```markdown
+## Ready for Conversion
+
+Analysis complete! Here's what I recommend:
+
+### Immediate Actions (Quick Wins)
+
+You can use `/splunk-to-dynatrace:convert-logs` to apply these transformations.
+
+**Would you like to:**
+
+1. **Convert everything at once** (all modules)
+   - Generate comprehensive PRs
+   - Good for small/medium codebases
+
+2. **Incremental conversion with task tracking**
+   - Create Claude Code tasks for each priority group
+   - Track progress incrementally
+   - Good for large codebases or phased rollout
+   - Tasks organized by: DELETE → METRIC → LEVEL_CHANGE → STRUCTURED_FIELDS
+
+3. **Focus on specific area first**
+   - Pick a module, package, or priority
+   - Validate approach before scaling
+
+**Regarding field naming:**
+Before conversion, I need your decision on field naming strategy.
+See `05-field-naming-analysis.md` for details.
+
+**Question**: Should the convert-logs skill standardize field names (personId → person.id)?
+- **Yes**: Cleaner Dynatrace queries, requires Splunk dashboard updates
+- **No**: Keep existing names, less upfront work, easier Splunk validation
+- **Hybrid**: New/modified logs only use standard naming
+
+The convert-logs skill will also ask about:
+- **Lambda vs method call**: Use lambdas for expensive operations? (Prevents evaluation if log level suppressed)
+- **Guard clauses**: Wrap log statements with level checks for performance-critical paths?
+```
+
+## Performance Considerations
+
+For large codebases (>1000 log statements):
+1. **Scan in batches**: Process files in parallel if possible
+2. **Write incrementally**: Don't hold entire report in memory
+3. **Sample for patterns**: If >2000 logs, sample 500 representative statements for initial patterns
+4. **Focus on high-impact**: Prioritize modules with most logs or lowest compliance
 
 ## Edge Cases and Considerations
 
@@ -427,13 +748,51 @@ private static final Log log = LogFactory.getLog(MyClass.class);
 
 Include these in the analysis.
 
-## Performance Considerations
+## Example: Large Codebase Workflow
 
-For large codebases (>100k lines):
-1. **Parallelize file scanning** if possible
-2. **Sample representative files** rather than analyzing every file
-3. **Focus on critical paths** (REST controllers, service layer, batch jobs)
-4. **Generate summary statistics** first, detailed findings for flagged items only
+**User**: "Analyze logging for Splunk-to-Dynatrace migration"
+
+**Skill**:
+1. Scans codebase (30 seconds)
+2. Detects 437 log statements across 3 modules (medium codebase)
+3. Generates all reports to `analysis-reports/`
+4. Shows in conversation:
+
+```markdown
+✅ Analysis complete!
+
+Found **437 log statements** across **3 modules**:
+- gofr-service: 189 logs (61% compliant)
+- gofr-ws: 142 logs (68% compliant)
+- gofr-acceptance: 106 logs (83% compliant)
+
+**Overall Compliance**: 71%
+
+**Quick Wins Available**:
+- Delete 41 logs (Dynatrace auto-captures) → 15% volume reduction
+- Convert 22 logs to metrics → Better aggregation
+- Fix 61 log levels → Reduce noise
+
+I've written detailed reports to `analysis-reports/`:
+- `00-executive-summary.md` ← **Start here**
+- `01-quick-wins.md` - Top 30 deletion/conversion candidates
+- `05-field-naming-analysis.md` - Field naming recommendations
+- `modules/` - Per-module detailed analysis
+
+**Would you like me to:**
+A) Walk through the quick wins
+B) Review field naming recommendations  
+C) Analyze a specific module in detail
+D) Proceed to conversion planning
+```
+
+**User**: "Show me the quick wins"
+
+**Skill**: Reads `01-quick-wins.md`, presents top 10 in conversation with code examples
+
+**User**: "Let's convert these. Create tasks for incremental work."
+
+**Skill**: "Great! Before I call the convert-logs skill, I need your decision on field naming. See `05-field-naming-analysis.md`. Should we standardize field names (personId → person.id) or keep existing names?"
 
 ## References
 
@@ -441,29 +800,3 @@ For large codebases (>100k lines):
 - **SLF4J Fluent API Documentation**: https://www.slf4j.org/manual.html#fluent
 - **Micrometer Documentation**: https://micrometer.io/docs
 - **Logstash Logback Encoder**: https://github.com/logfellow/logstash-logback-encoder
-
-## Example Usage
-
-```
-User: "Analyze the logging in this Spring Boot project for Splunk-to-Dynatrace migration"
-
-You:
-1. Scan codebase for log statements
-2. Evaluate each against FamilySearch Observability Standards
-3. Generate comprehensive report with:
-   - Compliance score
-   - Log inventory
-   - Deletion candidates
-   - Level corrections
-   - Business event identification
-   - Prioritized action list
-4. Present report to user
-5. Recommend running `/splunk-to-dynatrace:convert-logs` next
-```
-
-## Integration with Other Skills
-
-After running this analysis:
-- Use `/splunk-to-dynatrace:convert-logs` to apply recommended transformations
-- Use `/splunk-to-dynatrace:setup-logback` to generate configuration
-- Use `/splunk-to-dynatrace:validate-dashboards` to check Splunk dashboard compatibility
