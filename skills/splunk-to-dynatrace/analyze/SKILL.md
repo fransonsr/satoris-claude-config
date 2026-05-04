@@ -1177,21 +1177,31 @@ bash analyze/scripts/example_queries.sh .claude/analyze-reports/lsp-inventory.js
 
 The skill uses jdtls-lsp + bundled scripts for logger discovery, providing dramatic performance improvements:
 
-**Token Usage Comparison** (gofr with 29 logs):
+**Token Usage Comparison** (gofr with 33 logs, 71 files):
 - **Old approach** (read all files): ~250,000 tokens for file reading
 - **LSP + script approach**: ~33,500 tokens (structured queries + targeted reads)
 - **Savings**: 86% token reduction
 
-**Time Comparison**:
-- **Old approach**: 10-15 minutes (read, parse, analyze)
-- **LSP + script approach**: 2-5 minutes (query, script, analyze)
-- **Savings**: 60-70% time reduction
+**Wall-Clock Time** (gofr testing, March 2026):
+- **LSP approach**: ~38 minutes total (inventory: 12.5 min, analysis: 26 min)
+- **Expected without LSP**: ~7-11 minutes (but would use 250K tokens)
 
-**Scalability**:
-- Works efficiently for 1000+ log statements
-- LSP queries are constant time (O(1) per file)
-- Only read specific log lines (not entire files)
-- Python script handles deterministic processing (no LLM needed for inventory)
+**Trade-offs Discovered**:
+- **Token efficiency**: LSP wins decisively (86% reduction)
+- **Wall-clock time**: Agent orchestration overhead adds latency for small codebases
+- **Accuracy**: LSP provides perfect semantic understanding (finds Lombok loggers, no false positives)
+- **Scalability**: LSP essential for large codebases (>500 logs) to avoid token limits
+
+**When LSP Excels**:
+- Large codebases (500+ log statements) where token limits are real
+- Multi-module projects requiring incremental analysis
+- Codebases with Lombok `@Slf4j` (requires semantic analysis)
+- Repeat analysis (LSP results can be cached)
+
+**When Direct Reading Might Be Faster**:
+- Small codebases (<100 logs) with plenty of token headroom
+- Single-module projects
+- One-time analysis where setup cost dominates
 
 ### For Large Codebases (>1000 log statements)
 
@@ -1200,6 +1210,56 @@ Even with LSP + script optimization:
 2. **Write incrementally**: Stream reports to files, don't hold in memory
 3. **Sample for patterns**: If >2000 logs, analyze 500 representative statements first
 4. **Focus on high-impact**: Prioritize modules with most logs or lowest compliance
+
+## Future Optimization Ideas
+
+Based on real-world testing (March 2026), these optimizations could improve wall-clock time:
+
+### 1. Batch LSP Queries
+**Current**: Sequential queries (documentSymbol → hover → findReferences per file)
+**Proposed**: Batch 10-20 files per LSP query cycle
+**Expected Impact**: 40-60% wall-clock time reduction
+
+### 2. Parallel Module Analysis
+**Current**: Single agent processes all modules sequentially
+**Proposed**: Spawn parallel agents per module (gofr-service, gofr-ws, gofr-acceptance)
+**Expected Impact**: Near-linear speedup for multi-module projects
+
+### 3. Adaptive Strategy Selection
+**Current**: Always use LSP approach
+**Proposed**: Heuristic-based selection
+```python
+if total_logs < 100 and token_budget > 250000:
+    use_direct_reading()  # Faster wall-clock for small codebases
+else:
+    use_lsp_approach()    # Token-efficient for large codebases
+```
+**Expected Impact**: Optimal performance across all codebase sizes
+
+### 4. LSP Result Caching
+**Current**: Re-run LSP queries on every analysis
+**Proposed**: Cache LSP results keyed by (file_path, last_modified_timestamp)
+**Expected Impact**: Sub-second re-analysis if code unchanged
+
+### 5. Inline Analysis (Skip Agent Spawning)
+**Current**: Spawn agents for inventory + analysis
+**Proposed**: For small codebases, run LSP queries + analysis inline in main conversation
+**Expected Impact**: Eliminate agent orchestration overhead (5-10 min savings)
+
+### 6. Incremental File Processing
+**Current**: Discover all loggers, then analyze all logs
+**Proposed**: Stream processing - analyze each file as LSP results arrive
+**Expected Impact**: Report generation starts immediately, perceived faster
+
+### Testing Notes (March 2026)
+
+**Experiment**: gofr codebase (71 files, 15 loggers, 33 log calls)
+- Token efficiency: Excellent (86% reduction validated)
+- Wall-clock time: 38 minutes (higher than expected for small codebase)
+- Bottlenecks identified: Agent orchestration, sequential LSP queries, report generation
+- Recommendation: LSP is essential for large codebases, but consider fast path for <100 logs
+
+**Key Insight**: The value of LSP grows with codebase size. For enterprise codebases (500-2000+ logs), the token efficiency and semantic accuracy make LSP indispensable. For small codebases, the trade-off is less clear.
 
 ## Edge Cases and Considerations
 
