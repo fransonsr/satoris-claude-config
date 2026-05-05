@@ -263,6 +263,358 @@ Convert one Maven module at a time:
 - Phase 2: Convert `gofr-ws` module
 - Phase 3: Convert `gofr-acceptance` module
 
+## Execution Strategy
+
+This section defines HOW the skill executes conversions safely and efficiently.
+
+### Critical Safety Requirements
+
+**1. ALWAYS Create Feature Branch First**
+
+Before ANY code modifications:
+
+```bash
+# Check current branch
+git branch --show-current
+
+# If on main/master/develop, create feature branch
+git checkout -b feature/structured-logging-conversion-{module-or-scope}
+```
+
+**Rationale**: Enables safe rollback, isolation from main branch, easy code review.
+
+**If user is already on a feature branch**: Ask "Continue on `{branch-name}` or create new branch?"
+
+**2. ALWAYS Enter Plan Mode**
+
+**MANDATORY**: Use plan mode to create detailed conversion plan and get user approval before making changes.
+
+```
+EnterPlanMode()
+```
+
+**Plan must include**:
+- Specific logs to convert (file:line references)
+- Action type per log (CONVERT, DELETE, METRIC, LEVEL_CHANGE)
+- Field naming strategy chosen (Option 1, 2, or 3)
+- Files that will be modified (full list)
+- Estimated time and token usage
+- Testing strategy
+- Rollback plan if issues arise
+
+**User must approve plan** before exiting plan mode and executing conversions.
+
+**Rationale**: Large-scale code changes require explicit approval. Plan mode provides structured review and approval gate.
+
+### User Interaction Flow
+
+**Phase 1: Gather Context (5 questions)**
+
+1. **Conversion Scope**
+   ```
+   "I found 33 log statements to convert across 3 modules. How would you like to proceed?
+   
+   A. Full conversion (all 33 logs, all modules)
+   B. Module-by-module (gofr-service: 17, gofr-ws: 14, gofr-acceptance: 2)
+   C. Task-based (choose: DELETE/METRIC/LEVEL_CHANGE/STRUCTURED)
+   D. Specific classes (you specify class names)
+   E. Custom scope (you describe)
+   
+   Recommended: B (module-by-module) for incremental testing"
+   ```
+
+2. **Field Naming Strategy**
+   ```
+   "Field naming strategy? (See 05-field-naming-analysis.md for details)
+   
+   Option 1: Standardize now (personId → person.id)
+     ✅ Clean, standard queries in Dynatrace
+     ❌ Breaks Splunk dashboards immediately
+   
+   Option 2: Defer standardization (keep personId)
+     ✅ Splunk dashboards keep working
+     ❌ Non-standard names, eventual refactor needed
+   
+   Option 3: Hybrid (include both personId AND person.id)
+     ✅ Smooth migration, both systems work
+     ❌ Higher log volume temporarily
+   
+   Which option? (1/2/3)"
+   ```
+
+3. **Performance Optimizations**
+   ```
+   "Performance optimizations needed?
+   
+   - Lambda wrapping for expensive operations? (y/n)
+     (Defers execution if log level suppressed)
+   
+   - Guard clauses for performance-critical paths? (y/n)
+     (Adds if (logger.isDebugEnabled()) checks)
+   
+   Recommended: y for lambdas, n for guard clauses (add manually if needed)"
+   ```
+
+4. **Testing Strategy**
+   ```
+   "After conversion, should I:
+   
+   A. Run compilation only (mvn compile)
+   B. Run tests (mvn clean compile test)
+   C. Skip automated testing (you'll test manually)
+   
+   Recommended: B (catch issues early)"
+   ```
+
+5. **Plan Mode Confirmation**
+   ```
+   "I'll create a detailed conversion plan for your review.
+   
+   After you approve the plan, I'll:
+   - Create/verify feature branch
+   - Convert log statements per plan
+   - Run tests (if selected)
+   - Generate conversion summary report
+   
+   Ready to proceed? (y/n)"
+   ```
+
+**Phase 2: Create Plan (Plan Mode)**
+
+**ENTER PLAN MODE** and create detailed plan:
+
+```markdown
+# Conversion Plan: [Scope Description]
+
+## Summary
+- Scope: [module/task/full]
+- Field Naming: Option [1/2/3]
+- Performance: Lambda wrapping [yes/no], Guard clauses [yes/no]
+- Logs to convert: [N]
+- Files to modify: [N]
+
+## Branch Safety
+- Current branch: [name]
+- Action: [create feature branch / use existing]
+- Branch name: feature/structured-logging-conversion-[scope]
+
+## Conversions by File
+
+### File: gofr-service/.../RedisTokenStore.java
+- Line 45: CONVERT (INFO → structured fields)
+  - Before: logger.info("Initializing token keys. token={}, tokenMeta={}", token, tokenMetadata);
+  - After: logger.atInfo().addKeyValue("token.id", token).addKeyValue("token.metadata", tokenMetadata).log(...)
+  - Fields: token.id, token.metadata, event.name
+  
+- Line 67: DELETE (HTTP timing auto-captured)
+  - Will comment out with explanation
+  
+- Line 89: LEVEL_CHANGE (INFO → DEBUG, cache operation)
+  - Will change to DEBUG + structured fields
+
+### File: gofr-service/.../NextOrdinanceServiceImpl.java
+[... continue for all files ...]
+
+## Testing Plan
+1. Run: mvn clean compile test -pl [module]
+2. Expected: All tests pass
+3. If tests fail: [analyze, fix, or rollback strategy]
+
+## Estimated Effort
+- Wall-clock time: 10-15 minutes
+- Token usage: ~50K tokens
+- Files modified: [N] files
+
+## Rollback Plan
+If issues arise:
+1. git checkout [original-branch]
+2. git branch -D [feature-branch]
+3. Analysis reports preserved for future attempt
+
+## Approval Required
+User must approve this plan to proceed.
+```
+
+**Phase 3: Get Approval**
+
+Present plan to user, wait for explicit approval:
+```
+"Plan created. Please review above.
+
+Approve and proceed with conversion? (y/n)
+If no, I can adjust the plan or cancel."
+```
+
+**If approved**: Exit plan mode, proceed to Phase 4
+**If not approved**: Adjust plan based on feedback, re-present
+
+**Phase 4: Execute Conversions**
+
+**4.1 Safety Checks**
+- Verify/create feature branch
+- Verify analyze reports exist and are current
+- Verify FamilySearch standards loaded
+
+**4.2 Agent Orchestration Strategy**
+
+**For Small Scope (<50 logs, <10 files):**
+- **Single agent, sequential execution**
+- Read analyze report → convert logs → write files → generate report
+- Pro: Simple, predictable, low overhead
+- Con: Slower for large scopes
+- Wall-clock: ~10-15 minutes
+
+**For Medium Scope (50-200 logs, multiple modules):**
+- **Parallel agents per module**
+- Spawn 1 agent per module (max 3-4 parallel)
+- Each agent: reads module report → converts module logs → writes files
+- Main agent: waits for completion → aggregates reports
+- Pro: Faster (parallel work), module isolation
+- Con: More complex orchestration
+- Wall-clock: ~15-20 minutes
+
+**For Large Scope (200+ logs, full codebase):**
+- **Task-based batching with sequential agents**
+- Break into tasks: DELETE (first), METRIC (second), LEVEL_CHANGE (third), STRUCTURED (last)
+- Run 1 task at a time, sequential agents per task
+- Progress reporting: "Completed task 2/4: METRIC conversions (25/33 total logs)"
+- Pro: Manageable chunks, clear progress, can pause between tasks
+- Con: Slower than parallel
+- Wall-clock: ~30-60 minutes
+
+**4.3 Per-File Conversion Process**
+
+For each file to modify:
+
+1. **Read file** (full content if <500 lines, targeted if larger)
+2. **Identify log statements** (use analyze report line numbers)
+3. **Apply transformations**:
+   - Parse current format
+   - Apply standards-based conversion
+   - Generate fluent API code
+   - Add explanatory comment
+   - Preserve original as comment
+4. **Write file** (Edit tool, atomic operation)
+5. **Track progress** (log to conversion report)
+
+**4.4 Error Handling**
+
+If conversion encounters issues:
+
+- **Syntax error**: Skip log, document in report, continue with others
+- **Ambiguous field name**: Use analyze report field name, document if uncertain
+- **Missing context**: Skip log, flag for manual review in report
+- **File read/write error**: Halt, report error, ask user for guidance
+
+**Never guess or assume** - when uncertain, skip and document for manual review.
+
+**Phase 5: Validation**
+
+**5.1 Compilation Check**
+
+If user selected testing:
+```bash
+mvn clean compile test -pl [module]
+```
+
+**If compilation fails**:
+- Show error output
+- Offer to fix syntax errors
+- Offer to rollback if unfixable
+
+**If tests fail**:
+- Analyze failures (log output expectations vs structured format)
+- Offer to fix test expectations
+- Offer to rollback if complex
+
+**5.2 Generate Conversion Report**
+
+Create `conversion-summary-{scope}.md` with:
+- Statistics (total converted, breakdown by action)
+- Files modified with line-by-line actions
+- Testing results (pass/fail, issues encountered)
+- Next steps (commit, PR, continue to next module)
+
+**Phase 6: Commit (Optional)**
+
+Offer to create commit:
+```
+"Conversion complete! Create git commit?
+
+I'll generate a commit message following your standards:
+- feat/refactor prefix
+- Scope in subject line
+- Before/after summary in body
+- Co-authored-by tag
+
+Create commit now? (y/n)"
+```
+
+If yes, generate commit message and create commit.
+If no, provide manual commit instructions.
+
+### Performance Scaling Strategies
+
+**Small Codebases (<100 logs):**
+- Single agent sequential
+- Read full files into context
+- ~15K tokens per file × 10 files = ~150K tokens
+- Wall-clock: 10-15 minutes
+
+**Medium Codebases (100-500 logs):**
+- Parallel agents per module (max 3-4)
+- Targeted file reads (Edit tool for specific lines)
+- ~30K tokens per module × 3 modules = ~90K tokens
+- Wall-clock: 15-25 minutes
+
+**Large Codebases (500+ logs):**
+- Task-based sequential batching
+- Process 50-100 logs per batch
+- Progress reporting between batches
+- ~50K tokens per batch × 6 batches = ~300K tokens
+- Wall-clock: 45-90 minutes
+
+### Validation Gates
+
+Before considering conversion complete:
+
+1. ✅ **Plan approved** by user in plan mode
+2. ✅ **Feature branch** created/verified
+3. ✅ **All planned conversions** attempted
+4. ✅ **Compilation** succeeds (if testing enabled)
+5. ✅ **Tests pass** (if testing enabled)
+6. ✅ **Conversion report** generated with statistics
+7. ✅ **User notified** of completion with next steps
+
+If any gate fails, halt and report issue to user.
+
+### Rollback Strategy
+
+If critical issues arise during conversion:
+
+**Option 1: Git Rollback (Safest)**
+```bash
+git checkout [original-branch]
+git branch -D [feature-branch]
+```
+All changes discarded, clean slate.
+
+**Option 2: Revert Specific Files**
+```bash
+git checkout HEAD -- path/to/file.java
+```
+Undo changes to specific files, keep others.
+
+**Option 3: Commit and Fix Forward**
+```bash
+git add -A
+git commit -m "WIP: Partial conversion with issues"
+# Then fix issues in subsequent commits
+```
+Preserve work, fix incrementally.
+
+**Present options to user** when issues arise, let them choose.
+
 ## Conversion Process
 
 ### Step 1: Load Context
