@@ -21,9 +21,13 @@ if [[ ! -d "$CLAUDE_DIR" ]]; then
   mkdir -p "$CLAUDE_DIR"
 fi
 
-# Ensure ~/.claude/skills directory exists
+# Ensure ~/.claude/skills and plugins directories exist
 if [[ ! -d "$CLAUDE_DIR/skills" ]]; then
   mkdir -p "$CLAUDE_DIR/skills"
+fi
+
+if [[ ! -d "$CLAUDE_DIR/plugins" ]]; then
+  mkdir -p "$CLAUDE_DIR/plugins"
 fi
 
 # Function to create symlink with backup
@@ -61,11 +65,19 @@ if [[ -f "$REPO_DIR/CLAUDE.md" ]]; then
   create_symlink "$REPO_DIR/CLAUDE.md" "$CLAUDE_DIR/CLAUDE.md" "CLAUDE.md"
 fi
 
-# Install skills
-for skill_dir in "$REPO_DIR/skills"/*; do
-  if [[ -d "$skill_dir" ]]; then
-    skill_name=$(basename "$skill_dir")
-    create_symlink "$skill_dir" "$CLAUDE_DIR/skills/$skill_name" "skills/$skill_name/"
+# Install skills and plugins
+for item_dir in "$REPO_DIR/skills"/*; do
+  if [[ -d "$item_dir" ]]; then
+    item_name=$(basename "$item_dir")
+
+    # Check if this is a plugin (has .claude-plugin directory)
+    if [[ -d "$item_dir/.claude-plugin" ]]; then
+      # It's a plugin - install to plugins directory
+      create_symlink "$item_dir" "$CLAUDE_DIR/plugins/$item_name" "plugins/$item_name/"
+    else
+      # It's a standalone skill - install to skills directory
+      create_symlink "$item_dir" "$CLAUDE_DIR/skills/$item_name" "skills/$item_name/"
+    fi
   fi
 done
 
@@ -84,6 +96,7 @@ echo ""
 echo "To verify:"
 echo "  ls -la ~/.claude/CLAUDE.md"
 echo "  ls -la ~/.claude/skills/"
+echo "  ls -la ~/.claude/plugins/"
 echo ""
 echo "To update after making changes:"
 echo "  cd $REPO_DIR"
