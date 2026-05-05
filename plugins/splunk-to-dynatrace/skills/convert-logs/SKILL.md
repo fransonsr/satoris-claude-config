@@ -28,14 +28,25 @@ Converts traditional parameterized logging to fluent API with structured fields:
 logger.info("Processing request for person {} with ordinance {}", personId, ordinanceType);
 ```
 
-**After:**
+**After (Minimal - Default):**
+```java
+logger.atInfo()
+    .addKeyValue("person.id", personId)
+    .addKeyValue("ordinance.type", ordinanceType)
+    .log("Processing ordinance request");
+```
+
+**After (Full Context - Optional):**
 ```java
 logger.atInfo()
     .addKeyValue("person.id", personId)
     .addKeyValue("ordinance.type", ordinanceType)
     .addKeyValue("event.name", "ordinance.request.processing")
+    .addKeyValue("request.source", "related-ready-api")
     .log("Processing ordinance request");
 ```
+
+**Note**: By default, only convert fields present in the original log. Add context fields only when explicitly requested or when they add significant troubleshooting value (startup/config logs, errors, business events).
 
 ### 2. Delete Logs Dynatrace Auto-Captures
 
@@ -94,14 +105,22 @@ Applies log level decision tree from FamilySearch Observability Standards:
 logger.info("Cache miss for key {}", cacheKey);
 ```
 
-**After:**
+**After (Minimal - Default):**
 ```java
 // LEVEL CHANGED: Cache operations are diagnostic details → DEBUG, not INFO
 // Per FamilySearch Observability Standards: INFO is for meaningful operational milestones
 logger.atDebug()
+    .addKeyValue("cache.key", cacheKey)
+    .log("Cache miss");
+```
+
+**After (Full Context - Optional):**
+```java
+logger.atDebug()
     .addKeyValue("cache.name", "ordinance-status")
     .addKeyValue("cache.key", cacheKey)
     .addKeyValue("cache.result", "MISS")
+    .addKeyValue("cache.hit_rate", getCacheHitRate())
     .log("Cache miss");
 ```
 
@@ -114,15 +133,26 @@ Converts exception logging to use `setCause()`:
 logger.error("Failed to fetch person data for {}", personId, exception);
 ```
 
-**After:**
+**After (Minimal - Default):**
+```java
+logger.atError()
+    .addKeyValue("person.id", personId)
+    .setCause(exception)  // Stack trace automatically included and filtered per logback config
+    .log("Failed to fetch person data");
+```
+
+**After (Full Context - Recommended for errors):**
 ```java
 logger.atError()
     .addKeyValue("person.id", personId)
     .addKeyValue("external.dependency", "tree-foundation.familysearch.org")
     .addKeyValue("retry.count", 3)
-    .setCause(exception)  // Stack trace automatically included and filtered per logback config
+    .addKeyValue("retry.strategy", "exponential-backoff")
+    .setCause(exception)
     .log("Failed to fetch person data after retries");
 ```
+
+**Note**: For ERROR-level logs, full context is often valuable for troubleshooting. Consider adding retry details, dependency names, and operation context.
 
 ### 6. Lambda Wrapping for Performance
 
@@ -157,6 +187,58 @@ if (logger.isDebugEnabled()) {
         .log("Full request dump");
 }
 ```
+
+## Field Enrichment Guidelines
+
+The skill supports two levels of field enrichment when converting logs:
+
+### Minimal Enrichment (Default)
+
+Only convert fields that are present in the original log statement. This is the safest, cleanest approach.
+
+**When to use:**
+- General-purpose conversions
+- High-volume logs (per-request, per-record)
+- Simple state transitions
+- When the original log already has sufficient context
+
+**Example:**
+```java
+// Original: logger.info("Processing user {}", userId);
+// Minimal: logger.atInfo().addKeyValue("user.id", userId).log("Processing user");
+```
+
+### Full Context Enrichment (Opt-In)
+
+Add related context fields to provide complete configuration snapshot or troubleshooting details.
+
+**When to use:**
+- **Configuration/startup logs** (fires once at startup, rich context valuable)
+- **ERROR-level logs** (needs full context for troubleshooting: retries, dependencies, timeouts)
+- **Business event logs** (reporting/analytics needs complete data)
+- **Complex operations** (multi-step workflows, external dependencies)
+
+**When NOT to use:**
+- High-volume DEBUG logs
+- Simple cache hits/misses
+- Per-record iteration logs
+- Logs that already have sufficient context
+
+**Example:**
+```java
+// Original: logger.info("Initializing executor with {} threads", corePoolSize);
+// Full context:
+logger.atDebug()
+    .addKeyValue("executor.name", "asyncTaskExecutor")
+    .addKeyValue("executor.type", "ThreadPoolTaskExecutor")
+    .addKeyValue("pool.core_size", corePoolSize)
+    .addKeyValue("pool.max_size", corePoolSize)
+    .addKeyValue("pool.queue_capacity", 0)
+    .addKeyValue("thread.name_prefix", "async-task-exec")
+    .log("Initializing async executor");
+```
+
+**Default behavior**: Skill uses minimal enrichment unless user explicitly requests full context.
 
 ## Field Naming Strategies
 
@@ -308,7 +390,7 @@ EnterPlanMode()
 
 ### User Interaction Flow
 
-**Phase 1: Gather Context (5 questions)**
+**Phase 1: Gather Context (6 questions)**
 
 1. **Conversion Scope**
    ```
@@ -342,7 +424,26 @@ EnterPlanMode()
    Which option? (1/2/3)"
    ```
 
-3. **Performance Optimizations**
+3. **Field Enrichment Level**
+   ```
+   "Field enrichment strategy?
+   
+   Minimal: Only convert fields present in original log statement
+     ✅ Clean, minimal changes (1-3 fields per log typically)
+     ✅ Matches original log's intent
+     ❌ Less context for troubleshooting
+   
+   Full: Add related context fields for complete configuration/error snapshot
+     ✅ Rich context for troubleshooting (5-7 fields per log)
+     ✅ Better for startup/config/error logs
+     ❌ More verbose, may be over-logging for high-volume logs
+   
+   Which level? (minimal/full, default: minimal)
+   
+   Note: You can specify 'full' for specific log types (e.g., 'minimal, but full for errors and config logs')"
+   ```
+
+4. **Performance Optimizations**
    ```
    "Performance optimizations needed?
    
@@ -355,7 +456,7 @@ EnterPlanMode()
    Recommended: y for lambdas, n for guard clauses (add manually if needed)"
    ```
 
-4. **Testing Strategy**
+5. **Testing Strategy**
    ```
    "After conversion, should I:
    
@@ -366,7 +467,7 @@ EnterPlanMode()
    Recommended: B (catch issues early)"
    ```
 
-5. **Plan Mode Confirmation**
+6. **Plan Mode Confirmation**
    ```
    "I'll create a detailed conversion plan for your review.
    
@@ -389,6 +490,7 @@ EnterPlanMode()
 ## Summary
 - Scope: [module/task/full]
 - Field Naming: Option [1/2/3]
+- Field Enrichment: [minimal/full/selective]
 - Performance: Lambda wrapping [yes/no], Guard clauses [yes/no]
 - Logs to convert: [N]
 - Files to modify: [N]
@@ -490,10 +592,14 @@ For each file to modify:
 2. **Identify log statements** (use analyze report line numbers)
 3. **Apply transformations**:
    - Parse current format
-   - Apply standards-based conversion
+   - Apply standards-based conversion (log level, fluent API)
+   - **Field enrichment**:
+     - **Minimal**: Only convert fields present in original log
+     - **Full**: Add context fields based on log type (config, error, business event)
+     - **Selective**: Apply full enrichment only to specified log types (e.g., errors, startup)
    - Generate fluent API code
-   - Add explanatory comment
-   - Preserve original as comment
+   - Add explanatory comment if action type is DELETE, METRIC, or LEVEL_CHANGE
+   - Preserve original as comment (optional, for review)
 4. **Write file** (Edit tool, atomic operation)
 5. **Track progress** (log to conversion report)
 
@@ -632,6 +738,7 @@ Read necessary context for conversion:
 
 3. **User Preferences**: Confirm conversion scope and options
    - Field naming strategy (Option 1, 2, or 3)
+   - Field enrichment level (minimal or full)
    - Performance optimization needs (lambda wrapping, guard clauses)
    - Conversion scope (full codebase, module, specific task)
 
@@ -655,7 +762,14 @@ For each log statement:
    - Determine correct log level per decision tree
    - Identify required fields for that level
    - Apply field naming strategy (Option 1, 2, or 3)
-   - Add standard fields: `event.name` (INFO), `warn.category` (WARN)
+   - **Apply field enrichment**:
+     - **Minimal (default)**: Only convert fields present in original log
+     - **Full**: Add context fields based on log characteristics:
+       - **Config/startup logs**: executor config, pool settings, connection params
+       - **Error logs**: retry details, dependency names, timeout values
+       - **Business events**: complete metric set, user demographics
+     - **Selective**: Apply full enrichment to specific log types (e.g., "full for errors and config, minimal otherwise")
+   - Add required standard fields only if enrichment is "full": `event.name` (INFO), `warn.category` (WARN)
 
 3. **Handle Special Cases**
    - DELETE: Comment out and explain why
@@ -705,6 +819,7 @@ Saved to workspace as `conversion-summary-{task-name}.md`:
 **Date**: 2026-05-04
 **Scope**: {module or task description}
 **Field Naming Strategy**: {Option 1, 2, or 3}
+**Field Enrichment**: {minimal/full/selective}
 
 ## Summary Statistics
 
@@ -888,11 +1003,18 @@ Before considering a log conversion complete, verify:
 // Before
 logger.info("User {} submitted {} ordinances", userId, count);
 
-// After (Option 1: dot.notation)
+// After (Minimal - Default)
+logger.atInfo()
+    .addKeyValue("user.id", userId)
+    .addKeyValue("ordinance.count", count)
+    .log("User submitted ordinances");
+
+// After (Full Context - if user requested)
 logger.atInfo()
     .addKeyValue("user.id", userId)
     .addKeyValue("ordinance.count", count)
     .addKeyValue("event.name", "ordinance.submission.completed")
+    .addKeyValue("submission.source", "web-ui")
     .log("User submitted ordinances");
 ```
 
@@ -902,13 +1024,22 @@ logger.atInfo()
 // Before
 logger.error("Failed to connect to Redis: {}", ex.getMessage(), ex);
 
-// After (Option 1: dot.notation)
+// After (Minimal - Default)
 logger.atError()
-    .addKeyValue("external.dependency", "redis")
-    .addKeyValue("error.message", ex.getMessage())
     .setCause(ex)
     .log("Failed to connect to Redis");
+
+// After (Full Context - Recommended for errors)
+logger.atError()
+    .addKeyValue("external.dependency", "redis")
+    .addKeyValue("redis.host", redisConfig.getHost())
+    .addKeyValue("redis.port", redisConfig.getPort())
+    .addKeyValue("retry.count", attemptNumber)
+    .setCause(ex)
+    .log("Failed to connect to Redis after retries");
 ```
+
+**Note**: For ERROR-level logs, full context is often valuable for troubleshooting.
 
 ### Pattern 3: WARN with Retry
 
