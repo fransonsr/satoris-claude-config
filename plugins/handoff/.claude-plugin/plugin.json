@@ -1,0 +1,15 @@
+{
+  "name": "handoff",
+  "version": "1.0.0",
+  "description": "Create comprehensive handoff documents for tasks to be implemented in fresh sessions",
+  "author": {
+    "name": "Satori Franson",
+    "email": "fransonsr@familysearch.org"
+  },
+  "keywords": [
+    "handoff",
+    "documentation",
+    "task-management",
+    "productivity"
+  ]
+}

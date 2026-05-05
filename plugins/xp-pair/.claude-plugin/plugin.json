@@ -1,0 +1,16 @@
+{
+  "name": "xp-pair",
+  "version": "1.0.0",
+  "description": "XP pair programming with navigator (design oversight) and driver (implementation)",
+  "author": {
+    "name": "Satori Franson",
+    "email": "fransonsr@familysearch.org"
+  },
+  "keywords": [
+    "xp",
+    "pair-programming",
+    "tdd",
+    "code-review",
+    "development"
+  ]
+}

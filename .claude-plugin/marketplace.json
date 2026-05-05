@@ -1,0 +1,57 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "satoris-claude-config",
+  "version": "1.0.0",
+  "description": "Custom Claude Code plugins for Satori's development workflow",
+  "owner": {
+    "name": "Satori Franson",
+    "email": "fransonsr@familysearch.org"
+  },
+  "plugins": [
+    {
+      "name": "splunk-to-dynatrace",
+      "description": "Migrate Spring Boot apps from Splunk to Dynatrace structured logging",
+      "author": {
+        "name": "FamilySearch Engineering - SATORIS Team"
+      },
+      "source": "./plugins/splunk-to-dynatrace",
+      "category": "development"
+    },
+    {
+      "name": "xp-pair",
+      "description": "XP pair programming with navigator and driver",
+      "author": {
+        "name": "Satori Franson"
+      },
+      "source": "./plugins/xp-pair",
+      "category": "development"
+    },
+    {
+      "name": "handoff",
+      "description": "Create comprehensive handoff documents for tasks",
+      "author": {
+        "name": "Satori Franson"
+      },
+      "source": "./plugins/handoff",
+      "category": "productivity"
+    },
+    {
+      "name": "pre-pr-audit",
+      "description": "Proactive code quality audit before creating pull requests",
+      "author": {
+        "name": "Satori Franson"
+      },
+      "source": "./plugins/pre-pr-audit",
+      "category": "development"
+    },
+    {
+      "name": "address-pr-issues",
+      "description": "Systematically address GitHub Copilot and SonarQube PR issues",
+      "author": {
+        "name": "Satori Franson"
+      },
+      "source": "./plugins/address-pr-issues",
+      "category": "development"
+    }
+  ]
+}
