@@ -77,26 +77,106 @@ Use named logger routing to separate business events:
 
 ### Step 1: Detect Current Configuration
 
-Identify existing logging configuration:
+**CRITICAL**: Always check for existing configuration before generating. Real-world projects often have logging already configured.
 
-1. **Check for existing logback files**:
-   - `src/main/resources/logback.xml`
-   - `src/main/resources/logback-spring.xml`
-   - `src/test/resources/logback-test.xml`
+#### 1.1 Check for Existing Logback Files
 
-2. **Read application properties**:
-   - `application*.properties` files
-   - Extract log levels, patterns, file paths
-   - Identify profiles (local, production, staging, integ, canary)
+```bash
+find . -name "logback*.xml" -o -name "logback*.groovy"
+```
 
-3. **Analyze current log patterns**:
-   - Console vs file logging
-   - Async configuration
-   - Rolling policies
+**Possible states**:
+- **A. `logback-spring.xml` exists**: Enhance/merge (most common in Spring Boot projects)
+- **B. `logback.xml` exists**: Migrate to `logback-spring.xml` (add Spring profile support)
+- **C. `logback-test.xml` only**: Properties-based logging in main, create `logback-spring.xml`
+- **D. No logback files**: Properties-based logging, create from scratch
 
-### Step 2: Confirm Configuration Preferences
+#### 1.2 Read Existing Configuration (if found)
 
-Ask user for preferences:
+For each existing file:
+
+1. **Parse XML structure**:
+   - Extract existing appenders (console, file, async, syslog, etc.)
+   - Extract existing loggers (custom routing, level overrides)
+   - Extract existing properties/variables
+   - Identify async wrappers, filters, custom encoders
+
+2. **Identify customizations to preserve**:
+   - Custom appenders (Slack, email, database, etc.)
+   - Custom loggers (third-party library level overrides)
+   - Custom patterns or formats
+   - Async configuration (queue size, discarding policies)
+   - Custom filters (threshold, marker, evaluator)
+
+3. **Check for Spring profiles**:
+   - If `<springProfile>` tags exist → already Spring-aware
+   - If not → needs migration to logback-spring.xml
+
+#### 1.3 Read Application Properties
+
+```bash
+grep -r "logging\." src/main/resources/application*.properties
+```
+
+**Extract**:
+- Log levels: `logging.level.root`, `logging.level.{package}`
+- File paths: `logging.file.name`, `logging.file.path`
+- Patterns: `logging.pattern.console`, `logging.pattern.file`
+- Profiles: List all `application-{profile}.properties` files
+
+#### 1.4 Categorize Configuration State
+
+Based on findings, determine approach:
+
+**State A: `logback-spring.xml` exists (Enhance/Merge)**
+- Preserve all existing appenders and loggers
+- Add JSON appenders for Phase 1 (Splunk)
+- Add Phase 2 section (Dynatrace, commented)
+- Add business event routing if not present
+- Update encoder to LoggingEventCompositeJsonEncoder if needed
+
+**State B: `logback.xml` exists (Migrate)**
+- Rename to `logback-spring.xml` (or create new, deprecate old)
+- Wrap existing config in `<springProfile>` tags
+- Add profile-specific sections (local vs deployed)
+- Add JSON appenders for Phase 1
+- Preserve all custom loggers and appenders
+
+**State C/D: Properties-only or no logging config (Create from scratch)**
+- Generate full `logback-spring.xml` from template
+- Use detected profiles from application properties
+- Use detected log levels as defaults
+
+### Step 2: Confirm Configuration Approach
+
+Ask user to confirm approach based on detected state:
+
+**If existing configuration found (State A or B)**:
+```
+"I found existing logback configuration:
+- File: {logback-spring.xml or logback.xml}
+- Existing appenders: {list detected appenders}
+- Existing loggers: {list custom loggers}
+- Spring profiles: {present/not present}
+
+Approach: {Enhance/Migrate}
+- Preserve all existing custom appenders and loggers
+- Add JSON appenders for structured logging to Splunk
+- Add commented Phase 2 section for future Dynatrace
+- {If logback.xml: Migrate to logback-spring.xml with profile support}
+
+Proceed with this approach? (y/n)
+If no, I can show you what will be preserved/changed."
+```
+
+**If no existing configuration (State C/D)**:
+```
+"No logback configuration found. I'll create logback-spring.xml from scratch.
+Detected profiles: {list from application-{profile}.properties}
+Proceed? (y/n)"
+```
+
+**Then ask standard configuration questions**:
 
 1. **Migration Phase**: Which phase to configure?
    - Phase 1: Splunk only (default for initial setup)
@@ -120,7 +200,74 @@ Ask user for preferences:
    - Default: Dynatrace, Reactor, Netty, Spring Security, Catalina
    - Add project-specific packages if needed
 
-### Step 3: Generate logback-spring.xml
+### Step 3: Generate or Enhance Configuration
+
+**For State A (logback-spring.xml exists) - ENHANCE/MERGE**:
+
+1. **Read existing file completely**
+2. **Identify insertion points**:
+   - Add JSON appenders to appropriate `<springProfile>` sections
+   - If no profile sections exist, wrap existing config in profiles
+   - Add business event logger routing before `<root>` element
+3. **Preserve existing elements**:
+   - Keep all custom appenders (email, Slack, syslog, etc.)
+   - Keep all custom loggers with their configurations
+   - Keep all properties/variables
+   - Keep async wrappers and filters
+4. **Add new elements**:
+   - APPLICATION_LOGS appender (JSON for Splunk)
+   - BUSINESS_EVENTS appender (JSON separate file)
+   - Phase 2 section (commented Dynatrace appender)
+   - Business event logger routing
+5. **Update existing elements** (if needed):
+   - Add appender-ref to root logger for new JSON appenders
+   - Update encoder if using old format
+
+**Example enhancement**:
+```xml
+<!-- EXISTING (preserved) -->
+<appender name="CUSTOM_EMAIL" class="ch.qos.logback.classic.net.SMTPAppender">
+  <!-- ... existing config ... -->
+</appender>
+
+<!-- NEW (added by skill) -->
+<appender name="APPLICATION_LOGS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+  <file>/var/log/fs/app.json</file>
+  <!-- ... JSON encoder config ... -->
+</appender>
+
+<!-- EXISTING (preserved) -->
+<logger name="com.example.MyClass" level="DEBUG"/>
+
+<!-- NEW (added by skill) -->
+<logger name="org.example.metrics.MetricsLogger.metricsReport" level="INFO" additivity="false">
+  <appender-ref ref="BUSINESS_EVENTS" />
+</logger>
+
+<!-- EXISTING root (enhanced with new appender) -->
+<root level="INFO">
+  <appender-ref ref="CONSOLE" />
+  <appender-ref ref="CUSTOM_EMAIL" />
+  <appender-ref ref="APPLICATION_LOGS" /> <!-- ADDED -->
+</root>
+```
+
+**For State B (logback.xml exists) - MIGRATE**:
+
+1. **Read existing logback.xml**
+2. **Create new logback-spring.xml**:
+   - Wrap existing configuration in `<springProfile>` tags
+   - Duplicate sections for local vs deployed profiles
+   - Add JSON appenders to deployed profile sections
+3. **Preserve all existing elements** within profile sections
+4. **Leave old logback.xml in place** (Spring Boot prefers logback-spring.xml)
+5. **Add comment in logback.xml**: "Deprecated: Use logback-spring.xml"
+
+**For State C/D (No config) - CREATE**:
+
+Generate complete configuration from template (existing behavior).
+
+### Step 4: Generate or Enhance logback-spring.xml
 
 Create complete configuration with:
 
@@ -668,12 +815,16 @@ When ready to add Dynatrace:
 
 ## Best Practices
 
-1. **Always generate commented Phase 2 section** even when configuring Phase 1 - makes transition easier
-2. **Keep console appender pattern-based** (not JSON) for Kubernetes log aggregation
-3. **Use time-based rolling with compression** to save disk space
-4. **Separate business events early** even if routing to same destination initially
-5. **Test locally with JSON verification** before deploying to environment
-6. **Document stack trace exclusions** specific to your application
+1. **Always detect existing configuration first** - never blindly overwrite
+2. **Preserve custom appenders and loggers** when enhancing existing config
+3. **Always generate commented Phase 2 section** even when configuring Phase 1 - makes transition easier
+4. **Keep console appender pattern-based** (not JSON) for Kubernetes log aggregation
+5. **Use time-based rolling with compression** to save disk space
+6. **Separate business events early** even if routing to same destination initially
+7. **Test locally with JSON verification** before deploying to environment
+8. **Document stack trace exclusions** specific to your application
+9. **When migrating from logback.xml** - create logback-spring.xml, leave old file with deprecation comment
+10. **Backup existing configuration** before making changes (git commit or copy to .bak file)
 
 ## References
 
