@@ -7,24 +7,17 @@ description: Validates Splunk dashboards work with structured JSON logging and g
 
 Validates that Splunk dashboards will continue working after converting to structured JSON logging, and generates equivalent Dynatrace DQL queries for migration.
 
-## ⚠️ CRITICAL LIMITATIONS
+## Limitations
 
-This skill provides **BEST-EFFORT** validation only. It cannot:
-
-❌ **Determine query relevance with certainty** - Shared indexes, complex filters, and non-standard hostname patterns may be misclassified  
-❌ **Parse all SPL variations** - Subsearches, complex eval logic, and nested macros may not be fully understood  
-❌ **Understand business context** - Cannot determine why a query exists or who owns it  
-❌ **Account for all edge cases** - Non-standard Splunk configurations may behave differently
-
-**HUMAN REVIEW IS MANDATORY**. This skill's output is a starting point for focused manual review, not a complete validation.
+This skill uses simple text matching to identify relevant queries and may not catch all edge cases. Complex SPL logic, dynamic filters, and non-standard configurations may need manual review. Always test in non-production before deploying.
 
 ## When to Use This Skill
 
-- Validating Splunk dashboards before deploying structured logging (with manual review)
-- Migrating dashboards from Splunk to Dynatrace (starting point)
+- Validating Splunk dashboards before deploying structured logging
+- Migrating dashboards from Splunk to Dynatrace
 - Checking field naming compatibility between old and new log format
-- Generating Dynatrace query equivalents from SPL (review before use)
-- Identifying dashboard breakage risks during migration (best-effort only)
+- Generating Dynatrace query equivalents from SPL
+- Identifying dashboard breakage risks during migration
 
 ## Validation Capabilities
 
@@ -102,28 +95,6 @@ paas-splunk-object-backup/
 
 ## Skill Workflow
 
-### Step 0: Set Expectations with User
-
-**Before starting validation, explain limitations clearly:**
-
-```
-"I'll help validate Splunk dashboards against structured logging changes, but this is 
-BEST-EFFORT analysis only. You'll need to:
-
-✅ Manually review all queries I flag as 'unclear' or 'low confidence'
-✅ Verify field mappings in actual Splunk queries (not just in code)
-✅ Test dashboards after migration in a non-production environment first
-✅ Consult with dashboard owners about intended query scope
-✅ Review dashboards I don't analyze (generic filenames, unfiltered)
-
-This validation helps focus your manual review work, but doesn't replace it. 
-The report will include disclaimers and manual review checklists.
-
-Ready to proceed? (y/n)"
-```
-
-**Wait for user confirmation before continuing.**
-
 ### Step 1: Identify Splunk Application and Validate Repository
 
 **Critical: Always start by identifying the Splunk application.**
@@ -190,11 +161,9 @@ Ready to proceed? (y/n)"
    ```
    "Found {N} dashboards and {M} saved searches in {app-name} application.
    
-   ⚠️ Important limitations:
-   - Validation covers ONLY shared objects in 'nobody' directory
-   - Dashboard filtering is filename-based (may miss queries in generic dashboards)
-   - Query relevance uses simple text matching (manual review required)
-   - Individual developer queries and private dashboards are NOT evaluated
+   Note: Validation covers shared objects in 'nobody' directory only.
+   Dashboard filtering is filename-based, so dashboards with generic names
+   may be missed and will need manual review.
    
    Would you like to:
    A. Validate all dashboards for a specific service (e.g., 'gofr')
@@ -371,17 +340,16 @@ For each dashboard and query:
    
    **Pattern Detected**: host=*gofr* (appears to target this service)
    **Confidence**: MEDIUM - text matching found service name in hostname filter
-   ⚠️ **Action Required**: Verify this query actually includes {service} logs in Splunk
+   **Note**: Verify this query filters to {service} in actual Splunk
    ```
    
    OR for unclear queries:
    ```markdown
-   #### Query Relevance (Best-Effort)
+   #### Query Relevance (Simple Text Matching)
    
    **Pattern Detected**: index=production (no service-specific filter detected)
    **Confidence**: LOW - shared index without obvious service identifiers
-   ⚠️ **MANUAL REVIEW REQUIRED**: Determine if this query includes {service} data or is 
-   service-agnostic. Check with dashboard owner if unsure.
+   **Note**: Manually verify if this query includes {service} data
    ```
 
 2. **Check field existence**:
@@ -428,26 +396,13 @@ For each dashboard and query:
 
 Create comprehensive report with:
 
-**MANDATORY HEADER DISCLAIMER**:
+**Report Header**:
 ```markdown
 # Dashboard Validation Report
 
-⚠️ **CRITICAL DISCLAIMER**
-
-This is a **BEST-EFFORT** automated analysis. It CANNOT:
-- Determine query-level relevance with certainty (shared indexes, complex filters)
-- Parse all SPL logic variations (subsearches, eval, complex macros)
-- Understand business context (query purpose, ownership, intended scope)
-- Account for non-standard hostname patterns or Splunk configurations
-
-**YOU MUST**:
-✅ Manually review ALL queries marked "LOW confidence" or "unclear"
-✅ Verify field mappings in actual Splunk (not just in code)
-✅ Test dashboard queries after migration in NON-PRODUCTION environment
-✅ Consult with dashboard owners about intended query scope
-✅ Review dashboards NOT analyzed (generic names, see list below)
-
-This report is a starting point for focused manual review, not a complete validation.
+**Limitations**: This analysis uses simple text matching to identify relevant queries.
+Complex SPL logic, dynamic filters, and non-standard configurations may need manual review.
+Always test in non-production before deploying to production.
 ```
 
 **Report sections**:
@@ -455,14 +410,14 @@ This report is a starting point for focused manual review, not a complete valida
 - **Application context**: Splunk app name, total dashboards/alerts, blueprint info (if available)
 - **Service filter**: Which service was validated (if filtered)
 - **Query type breakdown**: Metrics vs application logs
-- **Query relevance summary**: HIGH/MEDIUM/LOW confidence counts, manual review required count
-- Dashboard inventory (name, panels, metrics vs log queries, relevance confidence)
-- Alert inventory (alert names, triggers, fields referenced, relevance confidence)
+- **Query relevance summary**: HIGH/MEDIUM/LOW confidence counts
+- Dashboard inventory (name, panels, metrics vs log queries)
+- Alert inventory (alert names, triggers, fields referenced)
 - Field reference analysis per query (with relevance confidence level)
 - Breakage risk assessment (GREEN/YELLOW/RED with clear definitions)
 - Required updates for each dashboard/alert
-- Dynatrace DQL equivalents (with "Test before use" disclaimer)
-- **MANDATORY: Manual review checklist at end**
+- Dynatrace DQL equivalents
+- **Action items and next steps at end**
 
 **Risk Definitions** (include in report):
 - ✅ **GREEN (No Risk)**: Field preserved with same name/value - no changes needed
@@ -1121,95 +1076,40 @@ Before marking dashboard validation complete:
 - Medium app (10-30 dashboards): 30-60 minutes
 - Large app (>30 dashboards): 1-2 hours (recommend service-specific filtering)
 
-## Manual Review Checklist (REQUIRED)
+## Action Items and Next Steps
 
-**Every validation report MUST end with this checklist:**
+**Every validation report should end with clear, actionable next steps:**
 
 ```markdown
-## Next Steps: MANUAL REVIEW REQUIRED
+## Next Steps
 
-This automated validation is incomplete. You MUST complete these manual review steps:
+### Immediate Actions
 
-### Phase 1: Review Query Relevance (Before Field Validation)
+- [ ] **Review LOW confidence queries** ({N} queries) - Verify they filter to your service
+- [ ] **Check unanalyzed dashboards** ({X} dashboards) - Scan for queries matching your service
+- [ ] **Verify dynamic filters** - Confirm `$host$` and similar variables have correct values
 
-- [ ] **Review all LOW confidence queries** ({N} queries)
-  - Check actual Splunk query results to confirm they include your service data
-  - Consult dashboard owners if query intent is unclear
-  - Document which queries are actually relevant vs service-agnostic
+### Before Production Deployment
 
-- [ ] **Review unanalyzed dashboards** ({X} dashboards with generic filenames)
-  - Manually open each dashboard in list below
-  - Check if any panels contain queries for your service
-  - Run validation on those dashboards if relevant queries found
+- [ ] **Test in non-production** - Deploy to integration/staging first
+- [ ] **Verify queries return data** - Check all dashboard panels after migration
+- [ ] **Test DQL equivalents** - Validate Dynatrace queries before using
 
-- [ ] **Verify blueprint-based hostname patterns**
-  - If queries use hostname filters, verify pattern matches actual hosts
-  - Check for non-standard hostname patterns not detected by text matching
+### Unanalyzed Dashboards
 
-### Phase 2: Validate Field Mappings (Core Validation)
+The following {X} dashboards weren't analyzed (generic filenames). 
+Check them for queries matching your service:
 
-- [ ] **Verify field mappings in actual Splunk**
-  - Run queries in Splunk to confirm field names match expectations
-  - Check that field values are correct format (not just field names)
-  - Look for fields the code analysis might have missed
+{List dashboards that were skipped}
 
-- [ ] **Review all YELLOW and RED risk queries**
-  - YELLOW: Plan find/replace operations, test in dev first
-  - RED: Design query rewrites, consider alternatives
+**How to check**: Open in Splunk UI, search for: `host={service}*` or `source=/var/log/{service}/*`
 
-- [ ] **Test Dynatrace DQL equivalents**
-  - Copy-paste DQL to Dynatrace query editor
-  - Verify syntax is correct (this report may have errors)
-  - Compare results against Splunk to ensure equivalence
+### Migration to Dynatrace
 
-### Phase 3: Non-Production Testing (Before Prod Deployment)
-
-- [ ] **Deploy structured logging to non-production environment**
-  - Integration or staging environment with Splunk forwarder
-
-- [ ] **Test updated dashboards in non-prod**
-  - Update dashboard XML with new field names (YELLOW risks)
-  - Verify all panels return expected data
-  - Check that counts, aggregations, filters work correctly
-
-- [ ] **Monitor for unexpected issues**
-  - Check for panels that return no data
-  - Look for performance degradation
-  - Verify business event routing works (if applicable)
-
-### Phase 4: Production Deployment
-
-- [ ] **Get dashboard owner sign-off**
-  - Show before/after screenshots
-  - Confirm updated dashboards meet requirements
-  - Document any known limitations or changes
-
-- [ ] **Deploy to production with rollback plan**
-  - Deploy structured logging
-  - Monitor dashboards for first 24 hours
-  - Have rollback procedure ready if critical dashboards break
-
-- [ ] **Create Dynatrace equivalents during Phase 2 (dual ingestion)**
-  - Build Dynatrace dashboards while Splunk still running
-  - Validate both show same data
-  - Fix discrepancies before Splunk decommission
-
-### Unanalyzed Dashboards (Require Manual Review)
-
-The following dashboards were NOT analyzed because they don't match the service 
-name pattern. They may contain queries for your service - manually review them:
-
-{List all dashboards that were skipped}
-
-Example:
-- platform_overview.xml (47KB) - May contain {service} queries
-- system_health_dashboard.xml (23KB) - May contain {service} queries
-- error_tracking.xml (15KB) - May contain {service} queries
-
-**How to check**: Open each dashboard in Splunk UI, scan for queries with:
-- host={service-pattern}
-- source=/var/log/{service}/*
-- Your service name in query text
+- [ ] **Create Dynatrace dashboards** using DQL equivalents above
+- [ ] **Run dual ingestion** (Phase 2) to validate both systems show same data
+- [ ] **Compare results** between Splunk and Dynatrace
+- [ ] **Fix discrepancies** before decommissioning Splunk
 ```
 
 **END OF REPORT**
@@ -1229,9 +1129,7 @@ Example:
 ---
 
 **Remember**: 
-- This is BEST-EFFORT validation - human review is mandatory
-- Always validate **before** deploying structured logging to production
-- Only shared objects in 'nobody' directory are evaluated
-- Query relevance uses simple text matching - verify in actual Splunk
-- Test updated dashboards in non-production before prod deployment
-- Consult dashboard owners for unclear queries
+- Test in non-production before deploying to production
+- Verify LOW confidence queries in actual Splunk
+- Check unanalyzed dashboards for service-specific queries
+- Test DQL equivalents before using in Dynatrace
