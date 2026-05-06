@@ -7,13 +7,24 @@ description: Validates Splunk dashboards work with structured JSON logging and g
 
 Validates that Splunk dashboards will continue working after converting to structured JSON logging, and generates equivalent Dynatrace DQL queries for migration.
 
+## ⚠️ CRITICAL LIMITATIONS
+
+This skill provides **BEST-EFFORT** validation only. It cannot:
+
+❌ **Determine query relevance with certainty** - Shared indexes, complex filters, and non-standard hostname patterns may be misclassified  
+❌ **Parse all SPL variations** - Subsearches, complex eval logic, and nested macros may not be fully understood  
+❌ **Understand business context** - Cannot determine why a query exists or who owns it  
+❌ **Account for all edge cases** - Non-standard Splunk configurations may behave differently
+
+**HUMAN REVIEW IS MANDATORY**. This skill's output is a starting point for focused manual review, not a complete validation.
+
 ## When to Use This Skill
 
-- Validating Splunk dashboards before deploying structured logging
-- Migrating dashboards from Splunk to Dynatrace
+- Validating Splunk dashboards before deploying structured logging (with manual review)
+- Migrating dashboards from Splunk to Dynatrace (starting point)
 - Checking field naming compatibility between old and new log format
-- Generating Dynatrace query equivalents from SPL
-- Identifying dashboard breakage risks during migration
+- Generating Dynatrace query equivalents from SPL (review before use)
+- Identifying dashboard breakage risks during migration (best-effort only)
 
 ## Validation Capabilities
 
@@ -91,6 +102,28 @@ paas-splunk-object-backup/
 
 ## Skill Workflow
 
+### Step 0: Set Expectations with User
+
+**Before starting validation, explain limitations clearly:**
+
+```
+"I'll help validate Splunk dashboards against structured logging changes, but this is 
+BEST-EFFORT analysis only. You'll need to:
+
+✅ Manually review all queries I flag as 'unclear' or 'low confidence'
+✅ Verify field mappings in actual Splunk queries (not just in code)
+✅ Test dashboards after migration in a non-production environment first
+✅ Consult with dashboard owners about intended query scope
+✅ Review dashboards I don't analyze (generic filenames, unfiltered)
+
+This validation helps focus your manual review work, but doesn't replace it. 
+The report will include disclaimers and manual review checklists.
+
+Ready to proceed? (y/n)"
+```
+
+**Wait for user confirmation before continuing.**
+
 ### Step 1: Identify Splunk Application and Validate Repository
 
 **Critical: Always start by identifying the Splunk application.**
@@ -121,12 +154,47 @@ paas-splunk-object-backup/
    grep -c "^\[" ~/github/paas-splunk-object-backup/nobody/{app-name}/savedsearches.conf
    ```
 
-4. **Inform user of scope**:
+4. **Check for blueprint.yml (optional context)**:
+   
+   If working from a repository root, check for `blueprint.yml`:
+   ```bash
+   test -f blueprint.yml && echo "Found blueprint" || echo "No blueprint"
+   ```
+   
+   **If found**, read basic context:
+   ```yaml
+   name: gofr  # Blueprint name
+   systems:
+     - name: canary
+       properties:
+         services:
+           webapp: ...    # Service names under this system
+   ```
+   
+   **Report to user**:
+   ```
+   "I found blueprint.yml for the '{blueprint-name}' blueprint. 
+   
+   Services that may produce logs:
+   - {blueprint}-{system}-{service} (e.g., gofr-canary-webapp)
+   - {blueprint}-{system}-{service} (e.g., gofr-production-webapp)
+   
+   Note: Splunk queries may use hostname patterns like '{blueprint}-{system}-{service}-*' 
+   or source paths like '/var/log/{service}/*'. I'll use simple text matching to flag 
+   potentially relevant queries, but this is low-confidence - you must manually verify."
+   ```
+   
+   **If not found**, skip this step and proceed with filename-based filtering only.
+
+5. **Inform user of scope**:
    ```
    "Found {N} dashboards and {M} saved searches in {app-name} application.
    
-   Note: This validation covers ONLY shared objects in the 'nobody' directory.
-   Individual developer queries and private dashboards are not evaluated.
+   ⚠️ Important limitations:
+   - Validation covers ONLY shared objects in 'nobody' directory
+   - Dashboard filtering is filename-based (may miss queries in generic dashboards)
+   - Query relevance uses simple text matching (manual review required)
+   - Individual developer queries and private dashboards are NOT evaluated
    
    Would you like to:
    A. Validate all dashboards for a specific service (e.g., 'gofr')
@@ -134,14 +202,14 @@ paas-splunk-object-backup/
    C. Validate specific dashboards (you provide names)"
    ```
 
-### Step 2: Filter to Service-Specific Dashboards
+### Step 2: Filter to Service-Specific Dashboards (Filename-Based)
 
 **For large Splunk applications (>20 dashboards), filter to service-specific dashboards first.**
 
 1. **Ask user for service name pattern**:
    ```
    "What service are you migrating? (e.g., 'gofr', 'suggest', 'watch', etc.)
-   I'll filter dashboards matching this pattern."
+   I'll filter dashboards with this name in the filename."
    ```
 
 2. **List matching dashboards**:
@@ -154,19 +222,32 @@ paas-splunk-object-backup/
    grep "^\[.*{service-name}" ~/github/paas-splunk-object-backup/nobody/{app-name}/savedsearches.conf
    ```
 
-4. **Confirm scope with user**:
+4. **List dashboards NOT analyzed (for manual review)**:
+   ```bash
+   ls ~/github/paas-splunk-object-backup/nobody/{app-name}/data/ui/views/ | grep -v -i {service-name}
    ```
-   "Found {N} dashboards and {M} saved searches for '{service-name}'.
+
+5. **Confirm scope with user**:
+   ```
+   "Found {N} dashboards matching '{service-name}' in filename:
    
-   Dashboards:
+   Dashboards to validate:
    - {dashboard1}.xml ({size})
    - {dashboard2}.xml ({size})
    
-   Saved Searches:
+   Saved Searches to validate:
    - {alert1}
    - {alert2}
    
-   Validate all of these? (y/n)"
+   ⚠️ Dashboards NOT analyzed ({X} total):
+   - platform_overview.xml (may contain {service} queries - manual review needed)
+   - system_health.xml (may contain {service} queries - manual review needed)
+   - ... ({X-2} more)
+   
+   These dashboards have generic names and may contain queries for your service.
+   You should manually check them after this validation completes.
+   
+   Validate the {N} matching dashboards and {M} saved searches? (y/n)"
    ```
 
 ### Step 3: Parse Dashboards and Identify Query Types
@@ -200,14 +281,37 @@ For each dashboard:
      Definition: index=main sourcetype=json source="/var/log/fs/business-events.json"
      ```
 
-5. **Report query distribution**:
+5. **Perform simple query relevance check (best-effort)**:
+   
+   **For each application log query, use simple text matching**:
+   - Contains blueprint name (e.g., "gofr")? → **Likely relevant**
+   - Contains service name (e.g., "webapp")? → **Likely relevant**
+   - Contains hostname pattern (e.g., "gofr-canary-webapp-*")? → **Likely relevant**
+   - Only shared index with no filters (e.g., "index=production")? → **⚠️ Unclear - manual review required**
+   
+   **Assign confidence level**:
+   - **HIGH**: Dedicated service index (`index=gofr`) or exact hostname match
+   - **MEDIUM**: Pattern match (contains service name, source path with service)
+   - **LOW**: Shared index without obvious service filters
+   
+   **Important**: This is SIMPLE TEXT MATCHING only. Cannot handle:
+   - Complex SPL logic (subsearches, eval conditions)
+   - Non-standard hostname patterns
+   - Queries that filter service data through other means
+
+6. **Report query distribution**:
    ```
    "Dashboard: {name}
    - Total panels: {total}
-   - Metrics queries: {N} (not affected by log format changes)
-   - Application log queries: {M} (will validate these)
+   - Metrics queries: {N} (skipped - not affected by log format changes)
+   - Application log queries: {M} total
+     - Likely relevant (HIGH/MEDIUM confidence): {X}
+     - Unclear (LOW confidence - manual review required): {Y}
    
-   Proceeding to validate {M} application log queries..."
+   ⚠️ Note: Relevance detection uses simple text matching and may be incorrect.
+   All queries marked LOW confidence require manual verification.
+   
+   Proceeding to validate field references in all {M} application log queries..."
    ```
 
 ### Step 4: Parse SPL Queries and Extract Field References
@@ -261,19 +365,38 @@ Read field naming analysis from analyze skill output:
 
 For each dashboard and query:
 
-1. **Check field existence**:
+1. **Report query relevance (from Step 3)**:
+   ```markdown
+   #### Query Relevance (Best-Effort)
+   
+   **Pattern Detected**: host=*gofr* (appears to target this service)
+   **Confidence**: MEDIUM - text matching found service name in hostname filter
+   ⚠️ **Action Required**: Verify this query actually includes {service} logs in Splunk
+   ```
+   
+   OR for unclear queries:
+   ```markdown
+   #### Query Relevance (Best-Effort)
+   
+   **Pattern Detected**: index=production (no service-specific filter detected)
+   **Confidence**: LOW - shared index without obvious service identifiers
+   ⚠️ **MANUAL REVIEW REQUIRED**: Determine if this query includes {service} data or is 
+   service-agnostic. Check with dashboard owner if unsure.
+   ```
+
+2. **Check field existence**:
    - Does each referenced field exist in new structured format?
    - If renamed, is mapping documented?
 
-2. **Assess breakage risk**:
+3. **Assess breakage risk**:
    - ✅ **GREEN (No Risk)**: Field preserved with same name or value
    - ⚠️ **YELLOW (Low Risk)**: Field renamed, dashboard needs simple find/replace
    - ❌ **RED (High Risk)**: Field removed, query logic needs rework or redesign
 
-3. **Generate required updates**:
+4. **Generate required updates**:
    - Find/replace operations for renamed fields
    - Query rewrite suggestions for removed fields
-   - Equivalent Dynatrace DQL query
+   - Equivalent Dynatrace DQL query (with disclaimer to test before use)
 
 ### Step 7: Parse Saved Searches and Alerts
 
@@ -305,21 +428,51 @@ For each dashboard and query:
 
 Create comprehensive report with:
 
-- **Scope statement**: "Validated shared objects in 'nobody' directory only"
-- **Application context**: Splunk app name, total dashboards/alerts
+**MANDATORY HEADER DISCLAIMER**:
+```markdown
+# Dashboard Validation Report
+
+⚠️ **CRITICAL DISCLAIMER**
+
+This is a **BEST-EFFORT** automated analysis. It CANNOT:
+- Determine query-level relevance with certainty (shared indexes, complex filters)
+- Parse all SPL logic variations (subsearches, eval, complex macros)
+- Understand business context (query purpose, ownership, intended scope)
+- Account for non-standard hostname patterns or Splunk configurations
+
+**YOU MUST**:
+✅ Manually review ALL queries marked "LOW confidence" or "unclear"
+✅ Verify field mappings in actual Splunk (not just in code)
+✅ Test dashboard queries after migration in NON-PRODUCTION environment
+✅ Consult with dashboard owners about intended query scope
+✅ Review dashboards NOT analyzed (generic names, see list below)
+
+This report is a starting point for focused manual review, not a complete validation.
+```
+
+**Report sections**:
+- **Scope statement**: "Validated shared objects in 'nobody' directory only" + list of unanalyzed dashboards
+- **Application context**: Splunk app name, total dashboards/alerts, blueprint info (if available)
 - **Service filter**: Which service was validated (if filtered)
 - **Query type breakdown**: Metrics vs application logs
-- Dashboard inventory (name, panels, metrics vs log queries)
-- Alert inventory (alert names, triggers, fields referenced)
-- Field reference analysis per query
+- **Query relevance summary**: HIGH/MEDIUM/LOW confidence counts, manual review required count
+- Dashboard inventory (name, panels, metrics vs log queries, relevance confidence)
+- Alert inventory (alert names, triggers, fields referenced, relevance confidence)
+- Field reference analysis per query (with relevance confidence level)
 - Breakage risk assessment (GREEN/YELLOW/RED with clear definitions)
 - Required updates for each dashboard/alert
-- Dynatrace DQL equivalents
+- Dynatrace DQL equivalents (with "Test before use" disclaimer)
+- **MANDATORY: Manual review checklist at end**
 
 **Risk Definitions** (include in report):
 - ✅ **GREEN (No Risk)**: Field preserved with same name/value - no changes needed
 - ⚠️ **YELLOW (Low Risk)**: Field renamed - simple find/replace in dashboard XML
 - ❌ **RED (High Risk)**: Field removed or semantic change - requires manual query rewrite
+
+**Query Relevance Levels** (include in report):
+- **HIGH**: Dedicated service index or exact hostname match
+- **MEDIUM**: Pattern match (service name in query, source path)
+- **LOW**: Shared index without obvious service filters - **REQUIRES MANUAL REVIEW**
 
 ### Step 9: Generate Dynatrace Migration Guide
 
@@ -968,6 +1121,99 @@ Before marking dashboard validation complete:
 - Medium app (10-30 dashboards): 30-60 minutes
 - Large app (>30 dashboards): 1-2 hours (recommend service-specific filtering)
 
+## Manual Review Checklist (REQUIRED)
+
+**Every validation report MUST end with this checklist:**
+
+```markdown
+## Next Steps: MANUAL REVIEW REQUIRED
+
+This automated validation is incomplete. You MUST complete these manual review steps:
+
+### Phase 1: Review Query Relevance (Before Field Validation)
+
+- [ ] **Review all LOW confidence queries** ({N} queries)
+  - Check actual Splunk query results to confirm they include your service data
+  - Consult dashboard owners if query intent is unclear
+  - Document which queries are actually relevant vs service-agnostic
+
+- [ ] **Review unanalyzed dashboards** ({X} dashboards with generic filenames)
+  - Manually open each dashboard in list below
+  - Check if any panels contain queries for your service
+  - Run validation on those dashboards if relevant queries found
+
+- [ ] **Verify blueprint-based hostname patterns**
+  - If queries use hostname filters, verify pattern matches actual hosts
+  - Check for non-standard hostname patterns not detected by text matching
+
+### Phase 2: Validate Field Mappings (Core Validation)
+
+- [ ] **Verify field mappings in actual Splunk**
+  - Run queries in Splunk to confirm field names match expectations
+  - Check that field values are correct format (not just field names)
+  - Look for fields the code analysis might have missed
+
+- [ ] **Review all YELLOW and RED risk queries**
+  - YELLOW: Plan find/replace operations, test in dev first
+  - RED: Design query rewrites, consider alternatives
+
+- [ ] **Test Dynatrace DQL equivalents**
+  - Copy-paste DQL to Dynatrace query editor
+  - Verify syntax is correct (this report may have errors)
+  - Compare results against Splunk to ensure equivalence
+
+### Phase 3: Non-Production Testing (Before Prod Deployment)
+
+- [ ] **Deploy structured logging to non-production environment**
+  - Integration or staging environment with Splunk forwarder
+
+- [ ] **Test updated dashboards in non-prod**
+  - Update dashboard XML with new field names (YELLOW risks)
+  - Verify all panels return expected data
+  - Check that counts, aggregations, filters work correctly
+
+- [ ] **Monitor for unexpected issues**
+  - Check for panels that return no data
+  - Look for performance degradation
+  - Verify business event routing works (if applicable)
+
+### Phase 4: Production Deployment
+
+- [ ] **Get dashboard owner sign-off**
+  - Show before/after screenshots
+  - Confirm updated dashboards meet requirements
+  - Document any known limitations or changes
+
+- [ ] **Deploy to production with rollback plan**
+  - Deploy structured logging
+  - Monitor dashboards for first 24 hours
+  - Have rollback procedure ready if critical dashboards break
+
+- [ ] **Create Dynatrace equivalents during Phase 2 (dual ingestion)**
+  - Build Dynatrace dashboards while Splunk still running
+  - Validate both show same data
+  - Fix discrepancies before Splunk decommission
+
+### Unanalyzed Dashboards (Require Manual Review)
+
+The following dashboards were NOT analyzed because they don't match the service 
+name pattern. They may contain queries for your service - manually review them:
+
+{List all dashboards that were skipped}
+
+Example:
+- platform_overview.xml (47KB) - May contain {service} queries
+- system_health_dashboard.xml (23KB) - May contain {service} queries
+- error_tracking.xml (15KB) - May contain {service} queries
+
+**How to check**: Open each dashboard in Splunk UI, scan for queries with:
+- host={service-pattern}
+- source=/var/log/{service}/*
+- Your service name in query text
+```
+
+**END OF REPORT**
+
 ## References
 
 - **Splunk Object Backup Repository**: https://github.com/fs-eng/paas-splunk-object-backup
@@ -983,9 +1229,9 @@ Before marking dashboard validation complete:
 ---
 
 **Remember**: 
-- Dashboard validation prevents operational blind spots during migration
-- Always validate **before** deploying structured logging
+- This is BEST-EFFORT validation - human review is mandatory
+- Always validate **before** deploying structured logging to production
 - Only shared objects in 'nobody' directory are evaluated
-- Distinguish metrics (not affected) from application logs (must validate)
-- Expand macros before validating queries
-- Communicate RED risks clearly to dashboard owners
+- Query relevance uses simple text matching - verify in actual Splunk
+- Test updated dashboards in non-production before prod deployment
+- Consult dashboard owners for unclear queries
