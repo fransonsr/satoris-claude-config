@@ -1,24 +1,84 @@
 # Splunk-to-Dynatrace Migration Plugin
 
-A comprehensive plugin for migrating Spring Boot applications from Splunk to Dynatrace observability, with structured JSON logging and compliance with FamilySearch Observability Standards.
+**Start your Splunk-to-Dynatrace migration your way** - Comprehensive, Quick, or Incremental
 
-## Overview
+A flexible plugin for migrating Spring Boot applications from Splunk to Dynatrace observability, with structured JSON logging and compliance with FamilySearch Observability Standards.
 
-This plugin provides skills to help teams migrate from traditional Splunk logging to Dynatrace observability using structured JSON logging. It automates the analysis, conversion, and validation of log statements while ensuring compliance with [FamilySearch Observability Standards](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards).
+## Three Ways to Use This Plugin
 
-## Migration Strategy
+### 🚀 Quick Migration (1-2 weeks)
+Skip the analysis, deploy structured JSON to Dynatrace immediately, optimize later.
 
-The plugin supports a phased approach:
+**Skills**: setup-logback → deploy → (improve over time)
 
-1. **Phase 1-2**: Convert logs to structured format and deploy to Splunk
-2. **Phase 3-4**: Update Splunk dashboards to use JSON fields
-3. **Phase 5**: Add Dynatrace (dual ingestion with separate files)
-4. **Phase 6**: Cut over to Dynatrace only
+**Best for**: Urgent deadlines, minimal dashboards, can tolerate iterative improvements
+
+---
+
+### 🔍 Comprehensive Migration (6-12 weeks)
+Analyze, fix logs, validate dashboards, then migrate with confidence.
+
+**Skills**: analyze → convert-logs → validate-dashboards → setup-logback → cutover
+
+**Best for**: Teams with many dashboards, strong test coverage, time to invest upfront
+
+---
+
+### 📈 Progressive Enhancement (your pace)
+Use any skill standalone, stop when you've achieved "good enough" for your needs.
+
+**Skills**: Pick what adds value today (analyze only? DELETE logs? Fix levels?)
+
+**Best for**: Limited bandwidth, want to validate value before full investment
+
+---
+
+**Not sure which path?** Run `/splunk-to-dynatrace:choose-approach` for a personalized recommendation based on your context.
+
+---
+
+## Skills Add Value Independently
+
+You don't need to run a full migration to benefit from this plugin:
+
+- **analyze**: Improve logging quality even staying on Splunk (30-60% log volume reduction possible)
+- **convert-logs**: Reduce ingest costs by deleting auto-captured logs
+- **validate-dashboards**: Audit dashboard health (catches brittle queries, documents dependencies)
+- **setup-logback**: Get structured JSON without leaving Splunk infrastructure
+
+Each skill returns value on its own. **Use what you need, when you need it.**
+
+---
 
 ## Skills in This Plugin
 
+### `/splunk-to-dynatrace:choose-approach` ⭐ START HERE
+
+**Interactive questionnaire that recommends migration approach based on your context.**
+
+Asks 7 questions about:
+- Dashboard count and ownership
+- Migration urgency and timeline
+- Current logging quality (% compliant)
+- Test coverage and team bandwidth
+- Risk tolerance
+
+**Produces**:
+- Personalized migration plan with phased workflow
+- Effort estimates (developer-weeks, calendar duration)
+- Risk assessment and mitigation strategies
+- Progressive enhancement path (stop points along the way)
+- Claude Code best practices for multi-phase work
+
+**Use when**: Starting migration planning, building stakeholder consensus, estimating effort
+
+**Teaches**: Session management, task tracking, handoff documents, git hygiene, approval gates
+
+---
+
 ### `/splunk-to-dynatrace:analyze`
-Analyzes current logging patterns and generates compliance reports against FamilySearch Observability Standards.
+
+**Analyzes current logging patterns and generates compliance reports against FamilySearch Observability Standards.**
 
 **Capabilities:**
 - Scans codebase for all log statements (SLF4J, Log4j, Lombok)
@@ -40,18 +100,22 @@ Analyzes current logging patterns and generates compliance reports against Famil
 - `05-field-naming-analysis.md` (field naming trade-off assessment)
 - `modules/{module-name}/` (per-module detailed reports)
 
-**Use when**: Starting migration, auditing existing logs, checking standards compliance
+**Use standalone?**: YES - valuable even if you never migrate to Dynatrace
+
+**Time**: 10-15 minutes
 
 ---
 
 ### `/splunk-to-dynatrace:convert-logs`
-Converts traditional log statements to SLF4J fluent API with structured arguments per observability standards.
+
+**Converts traditional log statements to SLF4J fluent API with structured arguments per observability standards.**
 
 **Capabilities:**
 - Converts to SLF4J fluent API with `addKeyValue()` structured fields
 - Applies log level corrections per FamilySearch decision tree
 - Deletes logs Dynatrace auto-captures (with explanation comments)
 - Converts counter/timing logs to Micrometer metrics
+- **CRITICAL**: Validates metrics cardinality (prevents explosion)
 - Handles exception logging with `setCause()` method
 - Adds lambda wrapping for expensive operations
 - Adds guard clauses for performance-critical paths
@@ -74,12 +138,15 @@ Converts traditional log statements to SLF4J fluent API with structured argument
 - Modified Java files with converted logs
 - `conversion-summary-{task}.md` (statistics, files modified, next steps)
 
-**Use when**: Refactoring log statements, applying standards-based transformations, incremental migration
+**Use standalone?**: YES - improves observability even staying on Splunk
+
+**Time**: Varies (30 mins - 8 hours depending on scope)
 
 ---
 
 ### `/splunk-to-dynatrace:setup-logback`
-Generates logback-spring.xml configuration for structured JSON logging with profile-based appenders.
+
+**Generates logback-spring.xml configuration for structured JSON logging with profile-based appenders.**
 
 **Capabilities:**
 - Detects current configuration (logback.xml, application.properties)
@@ -105,12 +172,15 @@ Generates logback-spring.xml configuration for structured JSON logging with prof
 - Updated `pom.xml` (logstash-logback-encoder dependency)
 - `setup-logback-summary.md` (configuration details, next steps)
 
-**Use when**: Setting up logging infrastructure, configuring appenders for different environments, transitioning between phases
+**Use standalone?**: YES - can setup structured JSON to Splunk only (Phase 1)
+
+**Time**: 5-10 minutes
 
 ---
 
 ### `/splunk-to-dynatrace:validate-dashboards`
-Validates Splunk dashboards work with structured logging and generates Dynatrace equivalents.
+
+**Validates Splunk dashboards work with structured logging and generates Dynatrace equivalents.**
 
 **Capabilities:**
 - Parses Splunk dashboard definitions (JSON, XML, saved searches)
@@ -140,12 +210,15 @@ Validates Splunk dashboards work with structured logging and generates Dynatrace
 - `dashboard-validation-report.md` (comprehensive validation results)
 - Dynatrace dashboard JSON templates (ready to import)
 
-**Use when**: Migrating dashboards, validating field mappings, preventing dashboard breakage during migration
+**Use standalone?**: YES - validates dashboard health even without migration
+
+**Time**: 15-30 minutes
 
 ---
 
 ### `/splunk-to-dynatrace:migrate`
-Orchestrates the full migration process from analysis through deployment.
+
+**Orchestrates the full migration process from analysis through deployment. This is the "full meal deal" option.**
 
 **Capabilities:**
 - Orchestrates all plugin skills in phased workflow
@@ -177,19 +250,197 @@ Orchestrates the full migration process from analysis through deployment.
 - After dual ingestion (validate Dynatrace)
 - Before cutover (final approval)
 
-**Deployment Checklists:**
-- Pre-deployment validation (tests, reviews, dependencies)
-- Deployment steps (build, deploy, verify)
-- Post-deployment validation (logs, dashboards, monitoring)
-- Rollback procedures (if issues detected)
-
 **Outputs:**
 - Migration task list with dependencies
 - Phase summary reports
 - Environment-specific deployment checklists
 - Final migration report (metrics, timeline, lessons learned)
 
-**Use when**: Executing complete end-to-end migration, coordinating multi-team migration, tracking migration progress
+**Use standalone?**: NO - this is the full orchestration (use other skills for a la carte)
+
+**Time**: 6-12 weeks (depends on approach and scope)
+
+---
+
+## Progressive Enhancement Levels
+
+You can stop at any level - each adds value:
+
+### Level 0: Analysis Only (10 minutes)
+- Run `analyze` skill
+- Review findings with team
+- Use insights to improve logging (no migration commitment)
+- **Value**: Understand technical debt, cost savings opportunities
+
+### Level 1: Structured JSON to Splunk (1-2 weeks)
+- Run `setup-logback` (Phase 1)
+- Deploy structured JSON to existing Splunk
+- **Value**: Better queries, lower volume, same infrastructure
+
+### Level 2: Log Quality Improvements (2-4 weeks)
+- Run `convert-logs` on high-value targets (DELETE candidates, metrics)
+- Test & deploy incrementally
+- **Value**: Compound benefits - structured + clean + efficient
+
+### Level 3: Dashboard Validation (1 week)
+- Run `validate-dashboards`
+- Update critical dashboards proactively
+- **Value**: Ready for Dynatrace when team decides to migrate
+
+### Level 4: Dynatrace Migration (4-8 weeks)
+- Run `setup-logback` (Phase 2 & 3)
+- Dual ingestion → validation → cutover
+- **Value**: Modern observability platform, decommission Splunk
+
+### Level 5: Full Compliance (ongoing)
+- Continue `convert-logs` for remaining issues
+- Optimize queries and dashboards
+- **Value**: Maintain observability standards, continuous improvement
+
+---
+
+## Claude Code Best Practices for Multi-Phase Work
+
+This plugin teaches and reinforces best practices for managing complex, multi-phase work with Claude Code:
+
+### 1. Session Naming for Clarity
+
+**Name your Claude Code sessions descriptively** to distinguish orchestration from execution work.
+
+**Orchestration Session** (keep for entire migration):
+- Name: `"Migration Orchestrator - GOFR Splunk→Dynatrace"`
+- Purpose: High-level coordination, decision-making, phase transitions
+- Lifespan: Entire migration (weeks/months)
+- Keep context lean (don't load large files)
+
+**Execution Sessions** (spawn as needed, close when done):
+- Name examples:
+  - `"Phase 1: Analyze GOFR Logs"`
+  - `"Phase 2A: Convert DELETE Logs - gofr-service"`
+  - `"Phase 2B: Metrics Conversion - CounterMetricsListeners"`
+  - `"Phase 3: Validate Splunk Dashboards"`
+  - `"Phase 4: Deploy Structured JSON to Integration"`
+- Purpose: Detailed execution work for specific phase
+- Lifespan: Duration of phase (hours/days)
+- Close after phase complete
+
+**Why This Matters**:
+- Multiple browser tabs with "Claude Code" aren't helpful
+- Descriptive names help you quickly identify which session to use
+- Prevents accidentally mixing orchestration and execution work
+- Makes it obvious which session to resume after a break
+
+**How to Name Sessions**:
+- In browser: Use the page/tab title (browser extensions or manual bookmark naming)
+- In conversation: Refer to session by name ("In the Orchestrator session, let's review...")
+- In handoff docs: Document which session should be used next
+
+### 2. Meta-Planning with Task Tracking
+
+**Create high-level plan BEFORE detailed work** using the choose-approach skill.
+
+After plan generated, create tracking tasks:
+```bash
+/task create "Splunk-to-Dynatrace Migration (GOFR)" --status in_progress
+/task create "Phase 1: Analyze" --status pending
+/task create "Phase 2: Convert Critical Logs" --status pending
+# ... etc
+```
+
+Update as you progress:
+```bash
+/task update "Phase 1: Analyze" --status completed
+/task update "Phase 2: Convert Critical Logs" --status in_progress
+```
+
+### 3. Handoff Documents Between Sessions
+
+When spawning execution session, create `.claude/handoff-phase-{N}.md`:
+
+**Template**:
+```markdown
+# Handoff: Phase {N} - {Phase Name}
+
+## Context from Previous Phases
+[Key decisions, constraints, artifacts]
+
+## Your Mission
+[What this phase should accomplish]
+
+## Files to Review First
+- .claude/migration-plan.md (overall plan)
+- .claude/decisions.md (why decisions)
+[phase-specific files]
+
+## Success Criteria
+[How to know phase is complete]
+
+## Return to Orchestration Session
+When complete:
+1. Create phase summary
+2. Commit changes
+3. Update tasks
+4. Return to "Migration Orchestrator - GOFR" session
+```
+
+### 4. Workspace Organization
+
+Use `.claude/workspace/{phase}/` for phase outputs:
+
+```
+.claude/
+├── migration-plan.md (choose-approach output)
+├── decisions.md (trade-off rationale)
+├── session-state.md (current phase, blockers)
+├── handoff-phase-1.md
+├── handoff-phase-2.md
+└── workspace/
+    ├── analysis/
+    ├── conversion-phase-2/
+    ├── dashboard-validation/
+    └── iteration-summaries/
+```
+
+### 5. Git Hygiene and Checkpoints
+
+Commit after each phase completion:
+
+```bash
+git add .claude/workspace/analysis/
+git commit -m "docs: Phase 1 analysis - 33 logs, 60% compliant
+
+[Phase summary here]
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+```
+
+### 6. Phase Summaries
+
+After each phase, create `.claude/workspace/iteration-summaries/phase-{N}-summary.md`:
+
+**Template**:
+```markdown
+# Phase {N} Summary: {Phase Name}
+
+## Completed
+[Deliverables]
+
+## Metrics
+Files modified: X, Logs converted: Y, Duration: N days
+
+## Learnings
+[What went well, challenges, solutions]
+
+## Decisions Made
+[Key decisions with rationale]
+
+## Next Phase Prep
+[Prerequisites, recommended reading]
+```
+
+**The choose-approach skill teaches all these practices in detail.**
+
+---
 
 ## Key Features
 
@@ -198,7 +449,7 @@ Orchestrates the full migration process from analysis through deployment.
 - **Business event separation** for future S3/Databricks routing
 - **Log level recommendations** per decision tree (ERROR, WARN, INFO, DEBUG, TRACE)
 - **Deletion recommendations** for logs Dynatrace auto-captures
-- **Metric conversion** for counters and timing logs
+- **Metric conversion** with cardinality validation (prevents explosion)
 - **Field naming flexibility** (three strategies: standardize, defer, hybrid)
 - **Performance optimizations** (lambda wrapping, guard clauses)
 - **Incremental conversion** (full, module-by-module, task-by-task)
@@ -206,23 +457,34 @@ Orchestrates the full migration process from analysis through deployment.
 - **Phased rollout** (Splunk → Dual → Dynatrace with approval gates)
 - **Task management** (progress tracking, dependencies, approval gates)
 - **Deployment checklists** (per phase, per environment)
+- **Multi-phase work best practices** (session management, handoffs, git hygiene)
+
+---
 
 ## Benefits
 
-1. **Validate structured format with Splunk first** (known quantity, lower risk)
-2. **Update dashboards incrementally** (Splunk first, then Dynatrace)
-3. **Single code conversion** (not dual-format maintenance)
-4. **Clear migration path** (Splunk JSON → Both → Dynatrace only)
-5. **Automated compliance** (objective criteria from standards)
-6. **Reusable across teams** (standardized approach)
+1. **Flexible approaches** - Choose comprehensive, quick, or progressive enhancement
+2. **Standalone value** - Each skill adds value independently (not all-or-nothing)
+3. **Validate with Splunk first** - Test structured format with known quantity (lower risk)
+4. **Update dashboards incrementally** - Splunk first, then Dynatrace
+5. **Single code conversion** - Not dual-format maintenance
+6. **Clear migration path** - Splunk JSON → Both → Dynatrace only
+7. **Automated compliance** - Objective criteria from standards
+8. **Reusable across teams** - Standardized approach
+9. **Progressive enhancement** - Stop when "good enough", resume later
+10. **Best practices built-in** - Teaches effective Claude Code usage
+
+---
 
 ## File Structure
 
 ```
-/var/log/fs/app.json              → Splunk forwarder (Phase 1-5)
-/var/log/fs-log/app.json          → Dynatrace OneAgent (Phase 5+)
+/var/log/fs/app.json              → Splunk forwarder (Phase 1-4)
+/var/log/fs-log/app.json          → Dynatrace OneAgent (Phase 4+)
 /var/log/fs/business-events.json  → Business events (eventual S3/Databricks)
 ```
+
+---
 
 ## Requirements
 
@@ -233,101 +495,74 @@ Orchestrates the full migration process from analysis through deployment.
 - `net.logstash.logback:logstash-logback-encoder` dependency (v8.0+)
 - Micrometer (for metric conversions, usually included with Spring Boot Actuator)
 
-## Usage Examples
+---
 
-### Example 1: Full Migration (Small Codebase)
+## Quick Start
+
+### If You're Unsure Where to Start
 
 ```bash
-# Invoke migrate skill with full automated mode
-/splunk-to-dynatrace:migrate
-
-# Skill will:
-# 1. Run analyze skill → generate reports
-# 2. Ask for field naming strategy (Option 1, 2, or 3)
-# 3. Convert all logs to structured format
-# 4. Setup logback configuration (Phase 1)
-# 5. Validate dashboards
-# 6. Generate deployment checklists
-# 7. Wait for user approval between phases
+# Get personalized recommendation
+/splunk-to-dynatrace:choose-approach
 ```
 
-### Example 2: Analyze Only (Audit Current State)
+Answer 7 questions → receive customized migration plan with effort estimates.
+
+### If You Just Want to Understand Current State
 
 ```bash
-# Just run analysis to understand current logging
+# Analyze only (10-15 minutes)
 /splunk-to-dynatrace:analyze
-
-# Generates reports in workspace:
-# - 00-executive-summary.md
-# - 01-quick-wins.md (top deletion candidates)
-# - 02-metrics-conversion.md
-# - 03-level-corrections-summary.md
-# - 04-business-events.md
-# - 05-field-naming-analysis.md
-# - modules/{module-name}/ (detailed per-module)
 ```
 
-### Example 3: Incremental Conversion (Module-by-Module)
+Generates reports, estimates savings, identifies quick wins. No commitment to migrate.
+
+### If You Want Full Orchestrated Migration
 
 ```bash
-# Run migrate skill with module-by-module approach
+# End-to-end migration with approval gates
 /splunk-to-dynatrace:migrate
-
-# Choose: Module-by-Module mode
-# Skill creates tasks:
-# - Task: Convert logs in gofr-service module
-# - Task: Test gofr-service module
-# - Task: Convert logs in gofr-ws module
-# - Task: Test gofr-ws module
-# - Task: Setup logback configuration
-# - ... (continues through all phases)
 ```
 
-### Example 4: Convert Specific Task (Large Codebase)
+Choose approach, follow phased workflow, deploy with validation.
+
+### If You Want to Pick and Choose
 
 ```bash
-# Run convert-logs skill directly with specific scope
-/splunk-to-dynatrace:convert-logs
-
-# Specify task: "Convert all ERROR-level logs in gofr-service module"
-# Skill will:
-# 1. Load analyze report for gofr-service
-# 2. Filter for ERROR-level logs
-# 3. Convert only those logs
-# 4. Generate conversion summary
+# Use skills independently:
+/splunk-to-dynatrace:analyze           # Understand current state
+/splunk-to-dynatrace:convert-logs      # Fix high-value logs
+/splunk-to-dynatrace:validate-dashboards  # Check dashboard health
+/splunk-to-dynatrace:setup-logback     # Generate config
 ```
 
-### Example 5: Dashboard Validation Only
+Stop when you've achieved "good enough" value.
 
-```bash
-# Just validate dashboards (assumes structured logging already deployed)
-/splunk-to-dynatrace:validate-dashboards
+---
 
-# Provide: Splunk dashboard export files (JSON/XML)
-# Skill generates:
-# - Dashboard validation report
-# - Required updates (find/replace)
-# - Dynatrace DQL equivalents
-```
+## What's Next?
 
-### Example 6: Setup Logback Only
+This plugin will grow based on user needs. See [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) for planned features:
 
-```bash
-# Generate logback configuration independently
-/splunk-to-dynatrace:setup-logback
+- **Dashboard creation assistance** (HIGH priority) - Help teams create Dynatrace dashboards
+- **Alert migration tools** (HIGH priority) - Migrate Splunk alerts to Dynatrace
+- **Query translation** (MEDIUM priority) - Standalone SPL → DQL converter
+- **Dashboard optimization** (MEDIUM priority) - Performance and usability improvements
+- **ROI calculator** (under consideration) - Estimate cost savings and observability gains
+- **Drift detection** (under consideration) - Monitor for log quality regressions post-migration
 
-# Choose: Phase 1 (Splunk only)
-# Skill generates:
-# - src/main/resources/logback-spring.xml
-# - Updates pom.xml with dependency
-# - setup-logback-summary.md
-```
+Have an idea? See [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) for how to suggest features.
+
+---
 
 ## References
 
 - **FamilySearch Observability Standards**: [Confluence Page](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards)
 - **Logstash Logback Encoder**: [GitHub](https://github.com/logfellow/logstash-logback-encoder)
 - **SLF4J Fluent API**: [SLF4J Manual](https://www.slf4j.org/manual.html)
+- **Dynatrace DQL Documentation**: [Dynatrace Docs](https://docs.dynatrace.com/docs/observe-and-explore/query-data/dynatrace-query-language)
+
+---
 
 ## Version
 

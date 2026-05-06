@@ -1,0 +1,46 @@
+# Package Ignore File for splunk-to-dynatrace plugin
+# Files and directories to exclude when packaging/distributing
+
+# Workspace directories (development/testing artifacts)
+skills/validate-dashboards-workspace/
+**/workspace/
+**/*-workspace/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Development notes
+NOTES.md
+TODO.md
+SCRATCH.md
