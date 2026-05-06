@@ -68,30 +68,151 @@ Converts SPL queries to Dynatrace Query Language (DQL):
 | `\| where duration > 5000` | `filter duration > 5000` |
 | `\| top 10 personId` | `summarize count(), by:{person.id} \| sort count desc \| limit 10` |
 
+## Splunk Object Backup Repository
+
+**FamilySearch Convention**: Splunk objects are backed up in the [paas-splunk-object-backup](https://github.com/fs-eng/paas-splunk-object-backup) repository.
+
+**Repository Structure**:
+```
+paas-splunk-object-backup/
+└── nobody/                    # Shared Splunk objects by application
+    └── {app-name}/            # e.g., fs-turbo, fs-prod, etc.
+        ├── data/
+        │   └── ui/
+        │       └── views/     # Dashboard XML files
+        │           └── *.xml
+        ├── savedsearches.conf # Alerts and scheduled searches
+        ├── macros.conf        # Splunk macros
+        ├── props.conf         # Field extractions
+        └── transforms.conf    # Data transforms
+```
+
+**Scope**: This skill validates **only shared objects in the 'nobody' directory**. Individual developer queries, private dashboards, and ad-hoc searches are NOT evaluated.
+
 ## Skill Workflow
 
-### Step 1: Locate Dashboard Definitions
+### Step 1: Identify Splunk Application and Validate Repository
 
-Identify Splunk dashboards to validate:
+**Critical: Always start by identifying the Splunk application.**
 
-1. **Ask user for dashboard locations**:
-   - Splunk export files (JSON/XML)
-   - Confluence documentation with embedded queries
-   - Git repository with dashboard definitions
-   - Direct SPL query strings
+1. **Ask user for Splunk application name**:
+   ```
+   "Which Splunk application contains the dashboards to validate?
+   (e.g., fs-turbo, fs-prod, lynx-prod, etc.)"
+   ```
 
-2. **Scan for dashboard files**:
-   - `.json` (JSON dashboard exports)
-   - `.xml` (Simple XML dashboards)
-   - `.conf` (savedsearches.conf for alerts)
+2. **Validate repository path exists**:
+   ```bash
+   ls ~/github/paas-splunk-object-backup/nobody/{app-name}/
+   ```
+   
+   **If repository not cloned**:
+   ```bash
+   cd ~/github
+   git clone git@github.com:fs-eng/paas-splunk-object-backup.git
+   ```
 
-3. **Read dashboard content**:
-   - Parse structure (panels, queries, visualizations)
-   - Extract all SPL queries
+3. **Count dashboards and alerts**:
+   ```bash
+   # Count dashboards
+   find ~/github/paas-splunk-object-backup/nobody/{app-name}/data/ui/views/ -name "*.xml" | wc -l
+   
+   # Count saved searches/alerts
+   grep -c "^\[" ~/github/paas-splunk-object-backup/nobody/{app-name}/savedsearches.conf
+   ```
 
-### Step 2: Parse SPL Queries
+4. **Inform user of scope**:
+   ```
+   "Found {N} dashboards and {M} saved searches in {app-name} application.
+   
+   Note: This validation covers ONLY shared objects in the 'nobody' directory.
+   Individual developer queries and private dashboards are not evaluated.
+   
+   Would you like to:
+   A. Validate all dashboards for a specific service (e.g., 'gofr')
+   B. Validate all dashboards in the application (may take longer)
+   C. Validate specific dashboards (you provide names)"
+   ```
 
-For each dashboard query:
+### Step 2: Filter to Service-Specific Dashboards
+
+**For large Splunk applications (>20 dashboards), filter to service-specific dashboards first.**
+
+1. **Ask user for service name pattern**:
+   ```
+   "What service are you migrating? (e.g., 'gofr', 'suggest', 'watch', etc.)
+   I'll filter dashboards matching this pattern."
+   ```
+
+2. **List matching dashboards**:
+   ```bash
+   ls ~/github/paas-splunk-object-backup/nobody/{app-name}/data/ui/views/ | grep -i {service-name}
+   ```
+
+3. **List matching saved searches**:
+   ```bash
+   grep "^\[.*{service-name}" ~/github/paas-splunk-object-backup/nobody/{app-name}/savedsearches.conf
+   ```
+
+4. **Confirm scope with user**:
+   ```
+   "Found {N} dashboards and {M} saved searches for '{service-name}'.
+   
+   Dashboards:
+   - {dashboard1}.xml ({size})
+   - {dashboard2}.xml ({size})
+   
+   Saved Searches:
+   - {alert1}
+   - {alert2}
+   
+   Validate all of these? (y/n)"
+   ```
+
+### Step 3: Parse Dashboards and Identify Query Types
+
+**Important: Distinguish between metrics queries and application log queries.**
+
+For each dashboard:
+
+1. **Check file size**:
+   - If >50KB: Use targeted reading (grep for `<query>` tags)
+   - If <50KB: Read full file
+
+2. **Identify query types**:
+   - **Metrics queries**: `| mstats`, `| mcatalog`, `metric_name=*`
+     - ✅ **NOT affected by structured logging changes** - skip validation
+   - **Application log queries**: `index=`, `source=`, `sourcetype=`, SPL commands
+     - ⚠️ **MUST validate** - field names may change
+
+3. **Extract application log queries only**:
+   ```bash
+   # For large dashboards, extract query tags only
+   grep -A 20 "<query>" dashboard.xml | grep -v "mstats"
+   ```
+
+4. **Expand Splunk macros**:
+   - Read `macros.conf` to get macro definitions
+   - Replace macro calls like `` `app_index` `` with actual SPL
+   - Example:
+     ```
+     Macro: `gofr-metric-report`
+     Definition: index=main sourcetype=json source="/var/log/fs/business-events.json"
+     ```
+
+5. **Report query distribution**:
+   ```
+   "Dashboard: {name}
+   - Total panels: {total}
+   - Metrics queries: {N} (not affected by log format changes)
+   - Application log queries: {M} (will validate these)
+   
+   Proceeding to validate {M} application log queries..."
+   ```
+
+### Step 4: Parse SPL Queries and Extract Field References
+
+For each **application log query** (skip metrics queries):
 
 1. **Identify query type**:
    - Search: `index=... | search ...`
@@ -112,7 +233,12 @@ For each dashboard query:
    - Handle aliased fields: `rename personId as person_id`
    - Handle nested fields: `json.field.nested`
 
-### Step 3: Load Field Mapping Context
+4. **Check for business event routing**:
+   - If query references business event macro or source (e.g., `gofr-metric-report`, `/var/log/fs/business-events.json`)
+   - Verify logback configuration routes business events to separate file
+   - Note: Business events may have different field sets than application logs
+
+### Step 5: Load Field Mapping Context
 
 Read field naming analysis from analyze skill output:
 
@@ -131,7 +257,7 @@ Read field naming analysis from analyze skill output:
 
 **Field mapping strategy** chosen during conversion (Option 1, 2, or 3).
 
-### Step 4: Validate Each Dashboard
+### Step 6: Validate Each Dashboard Query
 
 For each dashboard and query:
 
@@ -140,26 +266,62 @@ For each dashboard and query:
    - If renamed, is mapping documented?
 
 2. **Assess breakage risk**:
-   - ✅ **No Risk**: Field preserved with same name
-   - ⚠️ **Low Risk**: Field renamed, dashboard needs simple find/replace
-   - ❌ **High Risk**: Field removed, query logic needs rework
+   - ✅ **GREEN (No Risk)**: Field preserved with same name or value
+   - ⚠️ **YELLOW (Low Risk)**: Field renamed, dashboard needs simple find/replace
+   - ❌ **RED (High Risk)**: Field removed, query logic needs rework or redesign
 
 3. **Generate required updates**:
    - Find/replace operations for renamed fields
    - Query rewrite suggestions for removed fields
    - Equivalent Dynatrace DQL query
 
-### Step 5: Generate Validation Report
+### Step 7: Parse Saved Searches and Alerts
+
+**Don't forget alerts** - they're in `savedsearches.conf` and also need validation.
+
+1. **Read savedsearches.conf**:
+   ```bash
+   # Count alert definitions
+   grep -c "^\[" savedsearches.conf
+   
+   # Filter to service-specific alerts
+   grep "^\[.*{service-name}" savedsearches.conf
+   ```
+
+2. **Extract alert queries**:
+   - Look for `search = ` field in each stanza
+   - Parse SPL query same as dashboard queries
+   - Extract field references
+
+3. **Validate alert fields** using same process as dashboards
+
+4. **Note alert-specific fields**:
+   - `alert.severity`
+   - `alert.suppress.fields`
+   - `action.email.to`
+   - These may also reference log fields
+
+### Step 8: Generate Validation Report
 
 Create comprehensive report with:
 
-- Dashboard inventory (name, owner, panels)
-- Field reference analysis per dashboard
-- Breakage risk assessment (green/yellow/red)
-- Required updates for each dashboard
+- **Scope statement**: "Validated shared objects in 'nobody' directory only"
+- **Application context**: Splunk app name, total dashboards/alerts
+- **Service filter**: Which service was validated (if filtered)
+- **Query type breakdown**: Metrics vs application logs
+- Dashboard inventory (name, panels, metrics vs log queries)
+- Alert inventory (alert names, triggers, fields referenced)
+- Field reference analysis per query
+- Breakage risk assessment (GREEN/YELLOW/RED with clear definitions)
+- Required updates for each dashboard/alert
 - Dynatrace DQL equivalents
 
-### Step 6: Generate Dynatrace Migration Guide
+**Risk Definitions** (include in report):
+- ✅ **GREEN (No Risk)**: Field preserved with same name/value - no changes needed
+- ⚠️ **YELLOW (Low Risk)**: Field renamed - simple find/replace in dashboard XML
+- ❌ **RED (High Risk)**: Field removed or semantic change - requires manual query rewrite
+
+### Step 9: Generate Dynatrace Migration Guide
 
 For each dashboard, provide:
 
@@ -514,36 +676,157 @@ Generate Dynatrace dashboard JSON for import:
 }
 ```
 
+## Handling Large Splunk Applications
+
+**For applications with >20 dashboards or >50 alerts:**
+
+### Strategy 1: Service-Specific Validation (Recommended)
+
+Validate only dashboards/alerts for the service being migrated:
+
+1. Ask user for service name pattern (e.g., "gofr", "suggest")
+2. Filter dashboards: `grep -i {service}` in views directory
+3. Filter alerts: `grep "^\[.*{service}" savedsearches.conf`
+4. Validate filtered subset only
+
+**Rationale**: Reduces scope, focuses on immediate need, faster validation.
+
+### Strategy 2: Batch Validation
+
+If validating entire application is required:
+
+1. **Phase 1**: Validate all dashboards (may take 30-60 minutes)
+2. **Phase 2**: Validate all alerts (may take longer - 32K lines in savedsearches.conf)
+3. Generate comprehensive report covering full application
+4. Prioritize fixing RED (high risk) items first
+
+**Rationale**: Complete validation for full migration planning.
+
+### Strategy 3: Priority Validation
+
+Focus on critical operational dashboards first:
+
+1. Ask user: "Which dashboards are business-critical?"
+2. Validate those first
+3. Generate partial report with note: "Remaining dashboards pending validation"
+4. Iterate on additional dashboards as needed
+
+**Rationale**: Ensures critical monitoring is preserved, deferring nice-to-have dashboards.
+
+## File Size Handling
+
+**For large dashboard files (>50KB):**
+
+1. **Don't read entire file** - expensive in tokens
+2. **Use targeted grep**:
+   ```bash
+   # Extract query blocks only
+   grep -A 20 "<query>" large_dashboard.xml > queries.txt
+   
+   # Filter out metrics queries
+   grep -v "mstats" queries.txt > app_log_queries.txt
+   ```
+3. **Process extracted queries** instead of full dashboard
+4. **Report file size** to user: "Dashboard is 68KB, extracted 5 application log queries for validation"
+
+**Rationale**: Saves tokens, faster processing, focuses on relevant sections.
+
 ## Best Practices
 
-### 1. Validate Before Deploying
+### 1. Always Start with Scope Questions
+
+**Critical: Don't assume scope** - ask these questions first:
+
+1. "Which Splunk application?" → Validates repository path
+2. "Which service?" → Filters to relevant dashboards/alerts
+3. "Validate all or critical-only?" → Determines validation strategy
+4. "Include alerts?" → Confirms whether to parse savedsearches.conf
+
+### 2. Distinguish Metrics from Logs
+
+**Before validating queries, identify type:**
+
+- Metrics queries (`| mstats`): Skip - not affected
+- Application log queries: Validate all fields
+
+**Report distribution**:
+```
+"Dashboard has 35 panels:
+- 30 metrics queries (not affected by logging changes)
+- 5 application log queries (validating these)"
+```
+
+### 3. Validate Before Deploying
 
 Don't deploy structured logging without validating dashboards first:
 
 1. Run validation skill
 2. Review report with dashboard owners
-3. Update dashboards preemptively
+3. Update dashboards preemptively (if YELLOW/RED risks found)
 4. Test with sample JSON data if possible
 
-### 2. Communicate Breaking Changes
+### 4. Communicate Breaking Changes
 
-If field removed (high risk), communicate clearly:
+If field removed (RED risk), communicate clearly:
 
 - **What changed**: Field X removed per observability standards
 - **Why changed**: Reason (PII, auto-captured, etc.)
 - **Alternative**: Use field Y instead
 - **Impact**: Dashboard shows different data or breaks
 
-### 3. Maintain Dashboard Inventory
+### 5. Understand Shared vs Private Objects
+
+**Only shared objects in 'nobody' directory are validated.**
+
+**Include this note in every report:**
+```markdown
+## Validation Scope
+
+This validation covers **only shared Splunk objects in the 'nobody' directory** from the paas-splunk-object-backup repository.
+
+**NOT evaluated:**
+- Individual developer queries (private searches)
+- Personal dashboards (not in 'nobody' directory)
+- Ad-hoc SPL queries run in Splunk search bar
+- Dashboards owned by specific users (not shared)
+
+**Recommendation**: Communicate to team that private/personal dashboards may break after structured logging deployment. Users should validate their own queries separately.
+```
+
+### 6. Maintain Dashboard Inventory
 
 Keep dashboard inventory up to date:
 
-- Dashboard name and owner
-- Last updated date
+- Dashboard name and Splunk app
+- Number of panels (metrics vs log queries)
 - Dependencies on specific fields
-- Migration status (updated, validated, migrated to Dynatrace)
+- Migration status (validated, updated, Dynatrace equivalent created)
 
-### 4. Use Hybrid Naming During Migration
+### 7. Handle Splunk Macros Properly
+
+**Macros obscure actual queries** - always expand them.
+
+1. **Read macros.conf** in Splunk app directory
+2. **Find macro definition**:
+   ```
+   [gofr-metric-report]
+   definition = index=main sourcetype=json source="/var/log/fs/business-events.json"
+   ```
+3. **Replace macro in query**:
+   ```spl
+   # Before expansion
+   `gofr-metric-report` | stats count by state
+   
+   # After expansion
+   index=main sourcetype=json source="/var/log/fs/business-events.json" | stats count by state
+   ```
+4. **Validate expanded query** for field references
+
+**Common macros to expand:**
+- `` `app_index` `` → `index=main sourcetype=json`
+- `` `{service}-metric-report` `` → business event source filter
+
+### 8. Use Hybrid Naming During Migration
 
 If field naming creates dashboard pain, consider hybrid approach (Option 3):
 
@@ -557,7 +840,7 @@ logger.atInfo()
 
 **Remove old names after dashboards updated.**
 
-### 5. Create Dynatrace Dashboards Early
+### 9. Create Dynatrace Dashboards Early
 
 Don't wait until Phase 3 to create Dynatrace dashboards:
 
@@ -662,8 +945,36 @@ Before marking dashboard validation complete:
 - [ ] High-risk dashboards flagged for manual review
 - [ ] Migration checklist provided per dashboard
 
+## Validation Workflow Summary
+
+**Full workflow for validating Splunk dashboards:**
+
+```
+1. Identify Splunk application → Validate repository exists
+2. Count dashboards/alerts → Assess scope (46 dashboards, 145 alerts)
+3. Filter to service (if large app) → Focus validation on relevant objects
+4. Parse dashboards → Distinguish metrics (skip) from logs (validate)
+5. Expand macros → Get actual SPL queries
+6. Extract field references → List all fields used
+7. Load field mappings → Get rename/remove decisions from analyze report
+8. Validate each query → GREEN/YELLOW/RED risk assessment
+9. Parse alerts (savedsearches.conf) → Validate same as dashboards
+10. Generate report → Comprehensive with DQL equivalents
+11. Communicate scope → "Only 'nobody' shared objects validated"
+```
+
+**Time Estimates:**
+- Small app (<10 dashboards): 15-30 minutes
+- Medium app (10-30 dashboards): 30-60 minutes
+- Large app (>30 dashboards): 1-2 hours (recommend service-specific filtering)
+
 ## References
 
+- **Splunk Object Backup Repository**: https://github.com/fs-eng/paas-splunk-object-backup
+  - Shared objects in `nobody/{app-name}/` directory
+  - Dashboards in `data/ui/views/*.xml`
+  - Alerts in `savedsearches.conf`
+  - Macros in `macros.conf`
 - **FamilySearch Observability Standards**: `/home/fransonsr/github/satoris-claude-config/skills/splunk-to-dynatrace/references/familysearch-observability-standards.md`
 - **Dynatrace DQL Documentation**: https://docs.dynatrace.com/docs/observe-and-explore/query-data/dynatrace-query-language
 - **Splunk SPL Reference**: https://docs.splunk.com/Documentation/Splunk/latest/SearchReference
@@ -671,4 +982,10 @@ Before marking dashboard validation complete:
 
 ---
 
-**Remember**: Dashboard validation is critical for preventing operational blind spots during migration. Validate early, communicate clearly, and migrate dashboards incrementally.
+**Remember**: 
+- Dashboard validation prevents operational blind spots during migration
+- Always validate **before** deploying structured logging
+- Only shared objects in 'nobody' directory are evaluated
+- Distinguish metrics (not affected) from application logs (must validate)
+- Expand macros before validating queries
+- Communicate RED risks clearly to dashboard owners
