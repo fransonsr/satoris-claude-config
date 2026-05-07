@@ -5,6 +5,59 @@ All notable changes to the Splunk-to-Dynatrace migration plugin will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-05-07
+
+### Added
+
+#### Library Repository Support
+- **Repository type detection**: Skills now detect library vs application repositories
+  - User prompt: "Is this a library or an application repository?"
+  - Stored in `.claude/workspace/repository-type.txt` for cross-skill reference
+  - Workflows branch based on repository type
+
+#### analyze skill
+- **SLF4J facade validation** (libraries only)
+  - Validates no logging backend dependencies in compile/runtime scope (only slf4j-api allowed)
+  - Checks for backend-specific imports in production code (ch.qos.logback, org.apache.logging.log4j)
+  - Generates `08-slf4j-facade-validation.md` with pass/fail status and remediation steps
+  - **Critical for libraries**: Ensures consumer applications control logging backend
+- **Library-specific reports**:
+  - `06-downstream-impact.md`: Consumer coordination requirements, deployment sequence, rollback planning
+  - `07-consumer-readiness-checklist.md`: Per-consumer validation checklist
+  - Library README variant: Emphasizes consumer coordination, includes SLF4J validation status
+- **Consumer application tracking**: Prompts user to list consuming applications
+
+#### convert-logs skill
+- **SLF4J facade enforcement** (libraries only)
+  - Pre-conversion validation of SLF4J-only usage
+  - Detects and converts backend-specific Logger declarations to SLF4J
+  - Example: `ch.qos.logback.classic.Logger` → `org.slf4j.Logger`
+- **Post-conversion consumer reminder**: Reminds user about downstream coordination after conversion
+
+#### setup-logback skill
+- **Library guidance workflow** (alternative to logback generation)
+  - Generates `.claude/workspace/consumer-logback-guidance.md` instead of logback-spring.xml
+  - Consumer guidance includes: required actions, validation steps, deployment sequence, rollback plan
+  - Library summary variant: Documents guidance generation (not logback config)
+- **Repository type detection**: Branches to library workflow automatically
+
+#### Best Practices Emphasis
+- **Task tracking strongly recommended**: For library migrations with multiple consumers
+- **Generic email template generation** (optional): Template for notifying consumer teams
+- **SLF4J facade principle**: Consistently emphasizes separation of logging API (SLF4J) from implementation (logback, log4j2)
+
+### Changed
+
+- **plugin.json**: Version bumped to 1.1.0, description updated to include library support
+
+### Migration Notes
+
+- **No breaking changes**: Application repositories continue working exactly as before (v1.0.2 behavior)
+- **New workflows**: Library repositories get specialized workflow with consumer coordination
+- **Backward compatible**: Existing analyze reports and workflows unaffected
+
+---
+
 ## [1.0.0] - 2026-05-06
 
 ### Added

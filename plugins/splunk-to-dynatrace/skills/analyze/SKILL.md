@@ -141,7 +141,53 @@ Scans the codebase and produces hierarchical reports with:
 
 **Ask the user these questions before starting analysis:**
 
-1. **"Should I analyze test files too? (y/n, default: n)"**
+1. **Repository Type Detection (NEW in v1.1.0)**
+
+**Ask FIRST** (before other questions):
+
+```
+"Is this a library or an application repository?
+
+A. Application
+   - Spring Boot application with main() method
+   - Owns logback-spring.xml configuration
+   - Deployed independently (has Dockerfile, deployment manifests)
+   - Example: gofr-service, temple-rest
+
+B. Library
+   - Maven/Gradle dependency consumed by applications
+   - No @SpringBootApplication annotation
+   - Doesn't control log encoding (consumers do)
+   - Example: gofr-client, sls-bi-client, temple-common
+
+Your answer (A/B):"
+```
+
+**Capture answer**:
+```bash
+mkdir -p .claude/workspace
+echo "library" > .claude/workspace/repository-type.txt
+# OR
+echo "application" > .claude/workspace/repository-type.txt
+```
+
+**Detection heuristics** (if user unsure):
+```bash
+# Application indicators
+find . -type f -name "*.java" -exec grep -l "@SpringBootApplication" {} \; | head -1
+find . -name "Dockerfile" -o -name "deployment.yaml" | head -1
+
+# Library indicators
+grep "<packaging>jar</packaging>" pom.xml
+! find . -type f -name "*.java" -exec grep -l "@SpringBootApplication" {} \; | head -1
+```
+
+If both indicators present: "Looks like an application (found @SpringBootApplication). Correct? (y/n)"
+If neither: "Looks like a library (no @SpringBootApplication, no Dockerfile). Correct? (y/n)"
+
+**Store result** for other skills to reference (convert-logs, setup-logback, migrate).
+
+2. **"Should I analyze test files too? (y/n, default: n)"**
    - **If yes**: Analyze `src/main/java/**/*.java` AND `src/test/java/**/*.java`
    - **If no**: Analyze only `src/main/java/**/*.java` (production code)
    - **Note**: Test logs are marked LOW priority (typically don't go to observability platforms)
@@ -651,6 +697,298 @@ Group recommendations by priority:
 - Field naming conventions (snake_case, dot.notation)
 - Only if user opts in during convert-logs phase
 
+### Step 5a: Library-Specific Sections (NEW in v1.1.0)
+
+**For library repositories** (when repository-type.txt contains "library"), add these additional sections and reports:
+
+#### SLF4J Facade Validation (CRITICAL for Libraries)
+
+**Libraries MUST use SLF4J facade only** - no backend dependencies in compile/runtime scope.
+
+**Why**: Applications control logging backend (logback, log4j2, etc.). Libraries depending on specific backends create conflicts.
+
+**Validation Steps**:
+
+1. **Check pom.xml dependencies**:
+
+```bash
+# Look for logging backend dependencies in compile/runtime scope
+grep -A 10 "<dependency>" pom.xml | grep -E "(logback-classic|log4j-core|reload4j)" | grep -v "test"
+```
+
+2. **Allowed dependencies** (compile/runtime scope):
+   - `org.slf4j:slf4j-api` (REQUIRED - the facade)
+   - No backend implementations
+
+3. **Allowed test dependencies** (test scope only):
+   - `ch.qos.logback:logback-classic` (for testing)
+   - `org.apache.logging.log4j:log4j-core` (for testing)
+   - `org.slf4j:slf4j-simple` (for testing)
+
+4. **Check for backend-specific imports in production code**:
+
+```bash
+# Check for logback imports in src/main/java (should be NONE)
+grep -r "import ch.qos.logback" src/main/java/
+
+# Check for log4j imports in src/main/java (should be NONE)
+grep -r "import org.apache.log4j" src/main/java/
+grep -r "import org.apache.logging.log4j" src/main/java/
+
+# Expected: (empty - should only use org.slf4j imports)
+```
+
+**Generate validation report** `.claude/analyze-reports/08-slf4j-facade-validation.md`:
+
+If validation passes:
+
+```markdown
+# SLF4J Facade Validation Report
+
+**Library**: {LIBRARY_NAME}
+**Date**: {DATE}
+
+---
+
+## ✅ PASSED: SLF4J Facade Only
+
+**Compile/Runtime Dependencies**:
+- `org.slf4j:slf4j-api` (version X.X.X) ✅ CORRECT
+
+**Test Dependencies**:
+- `ch.qos.logback:logback-classic` (version X.X.X, scope: test) ✅ CORRECT
+
+**No backend dependencies in compile/runtime scope** ✅
+
+**No backend-specific imports in production code** ✅
+
+---
+
+## Why This Matters
+
+Libraries MUST use SLF4J facade (slf4j-api) and NEVER depend on logging backends (logback, log4j2) in compile/runtime scope.
+
+**Reason**: Consumer applications control the logging backend. If this library depends on logback-classic, but a consumer uses log4j2, conflicts arise.
+
+**Best Practice**: 
+- Use `org.slf4j.Logger` and `org.slf4j.LoggerFactory` in code
+- Add slf4j-api as compile dependency (facade only)
+- Add logback-classic as TEST dependency (for running tests)
+- Let consumers provide the backend at runtime
+
+---
+
+## Validation Commands
+
+```bash
+# Check for backend dependencies in wrong scope
+mvn dependency:tree | grep -E "(logback-classic|log4j-core)" | grep -v "test"
+
+# Expected output: (empty - no matches)
+```
+
+---
+
+## Next Steps
+
+✅ SLF4J facade validation passed. Proceed with migration.
+```
+
+If validation fails:
+
+```markdown
+# SLF4J Facade Validation Report
+
+**Library**: {LIBRARY_NAME}
+**Date**: {DATE}
+
+---
+
+## ❌ FAILED: Backend Dependency in Wrong Scope
+
+**Problem Found**:
+{LIST_ISSUES_FOUND}
+
+**Impact**: 
+- Consumer applications may have conflicts if they use different backend (log4j2)
+- This library forces logback on all consumers
+- Violates library best practices
+
+---
+
+## Required Fix (BEFORE migration)
+
+**Step 1**: Move logback-classic to test scope
+
+```xml
+<dependency>
+  <groupId>ch.qos.logback</groupId>
+  <artifactId>logback-classic</artifactId>
+  <version>1.4.14</version>
+  <scope>test</scope> <!-- ADD THIS -->
+</dependency>
+```
+
+**Step 2**: Verify no backend imports in production code
+
+```bash
+# Check for logback imports in src/main/java
+grep -r "import ch.qos.logback" src/main/java/
+
+# Expected: (empty - should only use org.slf4j imports)
+```
+
+**Step 3**: Update code if needed
+
+```java
+// ❌ WRONG: Direct logback usage
+import ch.qos.logback.classic.Logger;
+
+// ✅ CORRECT: SLF4J facade
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+```
+
+**Step 4**: Rebuild and test
+
+```bash
+mvn clean compile test
+```
+
+**Step 5**: Re-run validation
+
+```bash
+mvn dependency:tree | grep -E "(logback-classic|log4j-core)" | grep -v "test"
+# Should be empty
+```
+
+---
+
+## Why This Matters
+
+Libraries control the API (what methods are called), but applications control the implementation (how logging is configured and where it goes).
+
+Using SLF4J facade allows:
+- Consumer applications choose backend (logback, log4j2, jul, etc.)
+- Consumer applications configure logging (format, destination, levels)
+- No version conflicts between library and consumers
+
+---
+
+**Action Required**: Fix pom.xml BEFORE proceeding with migration.
+```
+
+#### Downstream Impact Assessment
+
+**Generate** `.claude/analyze-reports/06-downstream-impact.md`:
+
+```markdown
+# Downstream Impact Assessment: Library Consumers
+
+## Consumer Applications
+
+**Identified consumer applications**:
+
+{ASK_USER_TO_LIST_CONSUMERS}
+
+Example format:
+- gofr-service (depends on {LIBRARY_NAME}:X.Y.Z)
+- temple-rest (depends on {LIBRARY_NAME}:X.Y.Z)
+
+---
+
+## Required Consumer Actions
+
+### Action 1: Update logback-spring.xml (All Consumers)
+
+**When**: Before deploying library version {NEW_VERSION} to production
+
+**What**: Consumers MUST have JSON encoder configured to capture structured fields
+
+**Why**: This library now uses SLF4J fluent API with `addKeyValue()`. Without JSON encoder, structured fields will be lost.
+
+**How**: Run `/splunk-to-dynatrace:setup-logback` in each consumer application.
+
+**Validation**: Deploy library to integration, verify structured fields appear in logs.
+
+---
+
+### Action 2: Dashboard Updates (If Consumers Have Dashboards)
+
+**Field naming changes** (if Option 1: Standardize was chosen):
+{LIST_FIELD_RENAMES_IF_APPLICABLE}
+
+**Impact**: Dashboards querying these fields will break unless updated.
+
+**Mitigation**: 
+- Option A: Update dashboards before deploying new library version
+- Option B: Use Hybrid field naming (library includes both old and new names temporarily)
+
+---
+
+### Action 3: Coordinated Rollout
+
+**Recommended deployment sequence**:
+
+1. **Week 1**: Deploy library v{NEW_VERSION} to integration
+   - Validate structured logging works in integration
+   - Check consumer application logs have structured fields
+   
+2. **Week 2**: Consumer applications update logback configs (if needed)
+   - Deploy updated logback-spring.xml to staging
+   - Validate dashboards (if any)
+   
+3. **Week 3**: Deploy library to staging
+   - Parallel validation with Splunk dashboards
+   
+4. **Week 4**: Production rollout
+   - Deploy library to production (consumers already have updated logback)
+
+**Rollback plan**: 
+- Keep library v{OLD_VERSION} available
+- Consumer applications can pin to old version if issues arise
+```
+
+#### Consumer Readiness Checklist
+
+**Generate** `.claude/analyze-reports/07-consumer-readiness-checklist.md`:
+
+```markdown
+# Consumer Application Readiness Checklist
+
+Before deploying {LIBRARY_NAME} v{NEW_VERSION} to production, verify each consumer:
+
+## For Each Consumer Application
+
+### Application: _____________
+
+**Logback Configuration**:
+- [ ] Has `logback-spring.xml` with JSON encoder
+- [ ] Encoder includes `<mdc />` provider (for MDC fields)
+- [ ] Encoder includes `<keyValuePairs />` provider (for structured arguments)
+- [ ] Deployed to integration environment
+- [ ] Logs from {LIBRARY_NAME} show structured fields in Splunk/Dynatrace
+
+**Dashboards** (if applicable):
+- [ ] Identified dashboards querying {LIBRARY_NAME} logs
+- [ ] Dashboard field references validated against new field names
+- [ ] Dashboard updates applied (if field names changed)
+- [ ] Dashboards tested in non-prod with updated library
+
+**Deployment Readiness**:
+- [ ] Stakeholder approval (dashboard owners, ops team)
+- [ ] Rollback plan documented
+- [ ] Monitoring/alerting updated (if needed)
+
+**Validation Complete**: [DATE] by [NAME]
+
+---
+
+## Copy Checklist for Each Consumer
+
+Copy the above section for each consumer application identified in 06-downstream-impact.md.
+```
+
 ## README Generation
 
 **ALWAYS generate README.md as the entry point** to help users navigate analysis results.
@@ -699,7 +1037,171 @@ Create structured directory:
 
 ### README Format (`README.md`) - ALWAYS GENERATE FIRST
 
-The README is the navigation entry point. Generate it with actual data from the analysis:
+The README is the navigation entry point. Generate it with actual data from the analysis.
+
+**Branch on repository type**: Use library variant if repository-type.txt contains "library", otherwise use application variant.
+
+---
+
+#### Library README Variant (NEW in v1.1.0)
+
+For library repositories, generate README with consumer coordination emphasis:
+
+```markdown
+# [Library Name] Structured Logging Migration - Analysis Results
+
+**Analysis Date**: [YYYY-MM-DD]  
+**Repository Type**: **LIBRARY**
+**Codebase**: [absolute path]  
+**Modules Analyzed**: [list modules]  
+[**Test Files Included**: Yes/No - if user opted in]
+
+---
+
+## ⚠️ Important: This is a Library Repository
+
+This repository is a **library consumed by applications**. The logging code changes proposed here require **coordinated deployment** with consuming applications.
+
+**Consumer applications must**:
+1. Have JSON encoder configured (logback-spring.xml)
+2. Deploy updated logback config BEFORE using new library version
+3. Update dashboards if field names changed
+
+See **[06-downstream-impact.md](06-downstream-impact.md)** for detailed consumer requirements.
+
+---
+
+## Quick Start
+
+**Top 3 Actions** (for library maintainers):
+
+1. [Action with highest impact - could be DELETE, METRIC, or LEVEL_CHANGE]
+2. **Review downstream impact**: [06-downstream-impact.md](06-downstream-impact.md)
+3. **Coordinate with consumer teams**: See consumer readiness checklist
+
+---
+
+## Navigation Guide
+
+### Start Here
+
+- **[00-executive-summary.md](00-executive-summary.md)** - High-level findings, statistics, priorities
+  - Read this first for overall picture
+  - 5-10 minute read
+
+### Priority Actions
+
+- **[01-quick-wins.md](01-quick-wins.md)** - Deletion candidates [or "None found" if 0]
+  - [Description of what's in this report]
+  
+- **[02-metrics-conversion.md](02-metrics-conversion.md)** - Logs that should be metrics
+  - [Number of candidates] metric conversions recommended
+  
+- **[03-level-corrections-summary.md](03-level-corrections-summary.md)** - Incorrect log levels
+  - [Number of logs] need level changes
+
+### Context & Planning
+
+- **[04-business-events.md](04-business-events.md)** - Business event identification
+  - Separates operational reporting from troubleshooting
+  
+- **[05-field-naming-analysis.md](05-field-naming-analysis.md)** - Field standardization plan
+  - **Decision required before conversion**
+  - Three strategies: standardize now, defer, or hybrid
+
+### Library-Specific (IMPORTANT)
+
+- **[06-downstream-impact.md](06-downstream-impact.md)** - Consumer coordination requirements ⚠️
+  - What consumer applications must do
+  - Deployment sequence recommendations
+  - Rollback planning
+  
+- **[07-consumer-readiness-checklist.md](07-consumer-readiness-checklist.md)** - Per-consumer validation
+  - Track each consumer's readiness
+  - Validation checkpoints
+  
+- **[08-slf4j-facade-validation.md](08-slf4j-facade-validation.md)** - SLF4J facade compliance ⚠️
+  - [✅ PASSED or ❌ FAILED - critical for libraries]
+  - No backend dependencies in wrong scope
+
+### Detailed Analysis
+
+[List module reports with brief descriptions]
+
+---
+
+## Summary Statistics
+
+- **Total Log Statements**: [N] (production code [+ test if included])
+- **Modules**: [N] ([breakdown])
+- **Overall Compliance**: [X]% adherence to FamilySearch Observability Standards
+
+### Action Summary
+
+| Action Type | Count | Priority | Complexity |
+|-------------|-------|----------|-----------|
+| DELETE (Dynatrace auto-captures) | [N] | [priority] | Low |
+| METRIC (convert to Micrometer) | [N] | [priority] | Medium |
+| LEVEL_CHANGE (fix incorrect levels) | [N] | [priority] | Low |
+| STRUCTURED_FIELDS (convert to fluent API) | [N] | [priority] | Medium |
+
+---
+
+## Consumer Coordination
+
+### Identified Consumer Applications
+
+[List from user input in Step 0]
+
+Example:
+- gofr-service
+- gofr-ws
+- temple-rest
+
+### Consumer Readiness
+
+See **[07-consumer-readiness-checklist.md](07-consumer-readiness-checklist.md)** for per-application validation checklist.
+
+---
+
+## Migration Path
+
+**Recommended approach for [Library Name]** ([small/medium/large] library):
+
+[Specific recommendation based on codebase size and findings]
+
+**IMPORTANT**: Library migrations require consumer coordination. Use the `migrate` skill with library workflow (8 phases including consumer coordination).
+
+**Note**: Effort estimation should occur during your team's planning phase. These reports provide objective data (file counts, log counts, complexity) to inform your estimates.
+
+---
+
+## Next Steps
+
+1. **Fix SLF4J facade issues** (if any): [08-slf4j-facade-validation.md](08-slf4j-facade-validation.md)
+2. Read executive summary: [00-executive-summary.md](00-executive-summary.md)
+3. Review priority actions: [Links to top priority reports]
+4. Review downstream impact: [06-downstream-impact.md](06-downstream-impact.md)
+5. Choose field naming strategy: [05-field-naming-analysis.md](05-field-naming-analysis.md)
+6. Coordinate with consumer teams
+7. Start conversion: Use `/splunk-to-dynatrace:convert-logs` skill
+
+---
+
+## Standards Reference
+
+All analysis based on: [FamilySearch Observability Standards v1.3](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards)
+
+---
+
+**Questions?** Review the detailed module reports or consult the FamilySearch Observability Standards documentation.
+```
+
+---
+
+#### Application README Variant (Existing)
+
+For application repositories, use the standard format:
 
 ```markdown
 # [Project Name] Structured Logging Migration - Analysis Results

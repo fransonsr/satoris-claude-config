@@ -1,7 +1,7 @@
 {
   "name": "splunk-to-dynatrace",
-  "version": "1.0.2",
-  "description": "Migrate Spring Boot applications from Splunk to Dynatrace structured logging with FamilySearch Observability Standards",
+  "version": "1.1.0",
+  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. Supports library repositories with consumer coordination workflow and SLF4J facade validation.",
   "author": {
     "name": "FamilySearch Engineering - SATORIS Team",
     "email": "fransonsr@familysearch.org"

@@ -75,7 +75,31 @@ Use named logger routing to separate business events:
 
 ## Skill Workflow
 
-### Step 1: Detect Current Configuration
+### Step 0: Detect Repository Type (NEW in v1.1.0)
+
+**CRITICAL FIRST STEP**: Check repository type before proceeding.
+
+```bash
+# Read repository type from analyze workspace
+if [ -f .claude/workspace/repository-type.txt ]; then
+    REPO_TYPE=$(cat .claude/workspace/repository-type.txt)
+else
+    # Ask user if not already detected
+    echo "Is this a library or application repository? (library/application)"
+    read REPO_TYPE
+    mkdir -p .claude/workspace
+    echo "$REPO_TYPE" > .claude/workspace/repository-type.txt
+fi
+```
+
+**Branch workflow**:
+
+- **If `REPO_TYPE == "application"`**: Continue with existing workflow (Steps 1-5 below)
+- **If `REPO_TYPE == "library"`**: Execute **Library Guidance Workflow** (see "Library Guidance Workflow" section below, skip Steps 1-5)
+
+---
+
+### Step 1: Detect Current Configuration (Application Repositories Only)
 
 **CRITICAL**: Always check for existing configuration before generating. Real-world projects often have logging already configured.
 
@@ -321,6 +345,266 @@ Create summary document with:
 - Stack trace exclusion patterns
 - Business event logger names
 - Next steps (testing, deployment)
+
+---
+
+## Library Guidance Workflow (NEW in v1.1.0)
+
+**Alternative workflow for library repositories** - generates consumer guidance instead of logback configuration.
+
+### Step L1: Inform User
+
+```
+"⚠️ LIBRARY REPOSITORY DETECTED
+
+This repository is a library consumed by other applications. Libraries don't own logback configuration - consumer applications do.
+
+Instead of generating logback-spring.xml HERE, I'll create guidance for consumer applications about what THEY need to configure.
+
+Consumer applications must:
+1. Run `/splunk-to-dynatrace:setup-logback` in THEIR repositories
+2. Deploy updated logback config BEFORE using new library version
+3. Ensure JSON encoder captures structured fields from this library
+
+Proceed with generating consumer guidance? (y/n)"
+```
+
+**If no**: Exit skill.
+**If yes**: Continue to Step L2.
+
+---
+
+### Step L2: Generate Consumer Guidance Document
+
+Create `.claude/workspace/consumer-logback-guidance.md`:
+
+```markdown
+# Consumer Application Logback Configuration Guidance
+
+**Library**: {LIBRARY_NAME}
+**Version**: {NEW_VERSION}
+**Date**: {DATE}
+
+---
+
+## Overview
+
+{LIBRARY_NAME} v{NEW_VERSION} uses SLF4J fluent API with structured arguments (`addKeyValue()`). 
+
+**Consumer applications MUST have JSON encoder configured** to capture these structured fields. Without it, fields will be lost and logs will have reduced observability.
+
+---
+
+## Required Consumer Actions
+
+### Action 1: Update logback-spring.xml (REQUIRED)
+
+**Who**: Every application that depends on {LIBRARY_NAME}
+
+**When**: BEFORE deploying {LIBRARY_NAME} v{NEW_VERSION} to production
+
+**How**: Run this command in EACH consumer application repository:
+
+\`\`\`bash
+/splunk-to-dynatrace:setup-logback --phase 1
+\`\`\`
+
+This generates `logback-spring.xml` with:
+- JSON encoder (`LoggingEventCompositeJsonEncoder`)
+- MDC provider (for trace IDs)
+- **keyValuePairs provider** (captures structured fields from this library)
+- Stack trace filtering
+
+---
+
+### Action 2: Validate in Integration (REQUIRED)
+
+**After deploying {LIBRARY_NAME} v{NEW_VERSION} to integration**:
+
+1. **Check logs contain structured fields**:
+   \`\`\`bash
+   # View logs in Splunk/Dynatrace
+   # Look for fields like: person.id, ordinance.type, event.name
+   \`\`\`
+
+2. **Verify JSON structure**:
+   \`\`\`bash
+   # If using file appender, inspect JSON
+   cat /var/log/fs/app.json | jq . | head -20
+   \`\`\`
+
+3. **Expected output**:
+   \`\`\`json
+   {
+     "timestamp": "2026-05-07T14:32:10.123Z",
+     "level": "INFO",
+     "logger": "org.familysearch.{LIBRARY_PACKAGE}.SomeClass",
+     "message": "Some message from library",
+     "person.id": "KWZX-ABC",
+     "ordinance.type": "BAPTISM_CONFIRMATION",
+     "dt.trace_id": "1234567890abcdef",
+     "dt.span_id": "abcdef1234567890"
+   }
+   \`\`\`
+
+**If structured fields missing**: Consumer application logback-spring.xml is incorrect or missing.
+
+---
+
+### Action 3: Dashboard Updates (IF APPLICABLE)
+
+**If your application has Splunk dashboards querying logs from {LIBRARY_NAME}**:
+
+**Field naming changes** (if applicable):
+{LIST_FIELD_RENAMES_IF_OPTION_1_USED}
+
+**What to do**:
+1. Run `/splunk-to-dynatrace:validate-dashboards` in consumer application
+2. Update dashboard queries per validation report
+3. Test dashboards in non-prod with updated library
+
+---
+
+## Deployment Sequence (Recommended)
+
+### Week 1: Consumer Applications Update Logback
+- Deploy updated `logback-spring.xml` to integration (all consumers)
+- Validate JSON encoding works
+
+### Week 2: Deploy Library to Integration
+- Deploy {LIBRARY_NAME} v{NEW_VERSION} to integration
+- Validate structured fields appear in consumer logs
+- Check dashboards (if any)
+
+### Week 3: Staging Validation
+- Deploy library + consumer logback to staging
+- Run parallel validation (Splunk dashboards working)
+
+### Week 4: Production Rollout
+- Deploy to production (consumers already have updated logback)
+
+---
+
+## Rollback Plan
+
+**If issues arise in production**:
+
+1. **Consumer applications** can pin to old library version in `pom.xml`:
+   \`\`\`xml
+   <dependency>
+     <groupId>{LIBRARY_GROUP_ID}</groupId>
+     <artifactId>{LIBRARY_ARTIFACT_ID}</artifactId>
+     <version>{OLD_VERSION}</version>
+   </dependency>
+   \`\`\`
+
+2. **Redeploy consumers** with pinned version
+3. **Investigate issue** in lower environment
+4. **Fix and re-test** before re-attempting production
+
+---
+
+## Consumer Readiness Checklist
+
+Use this checklist for each consumer application:
+
+**Application Name**: _____________
+
+- [ ] Updated `logback-spring.xml` generated (has keyValuePairs provider)
+- [ ] Deployed logback config to integration
+- [ ] Deployed {LIBRARY_NAME} v{NEW_VERSION} to integration
+- [ ] Validated structured fields in logs (person.id, ordinance.type, etc.)
+- [ ] Dashboards identified (if any)
+- [ ] Dashboard queries validated/updated (if needed)
+- [ ] Stakeholder approval (dashboard owners, ops)
+- [ ] Deployed to staging
+- [ ] Validated in staging (1 week)
+- [ ] Approved for production
+
+---
+
+## Questions?
+
+Contact {LIBRARY_MAINTAINER_CONTACT} or consult:
+- FamilySearch Observability Standards: https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295
+- Library analysis reports: `.claude/workspace/analysis/06-downstream-impact.md`
+```
+
+**Placeholders to fill**:
+- `{LIBRARY_NAME}`: From pom.xml or user input
+- `{NEW_VERSION}`: Current library version + increment
+- `{LIBRARY_PACKAGE}`: Base Java package
+- `{LIBRARY_GROUP_ID}`: Maven group ID
+- `{LIBRARY_ARTIFACT_ID}`: Maven artifact ID
+- `{OLD_VERSION}`: Current version before changes
+- `{LIBRARY_MAINTAINER_CONTACT}`: Team email/Slack
+- `{LIST_FIELD_RENAMES_IF_OPTION_1_USED}`: From analyze report
+
+---
+
+### Step L3: Generate Summary
+
+Create `setup-logback-summary.md` (library variant):
+
+```markdown
+# Logback Configuration Guidance Summary (Library Repository)
+
+**Library**: {LIBRARY_NAME}
+**Repository Type**: LIBRARY
+**Date**: {DATE}
+
+---
+
+## What Was Generated
+
+Since this is a **library repository** (not an application), no `logback-spring.xml` was created here. Libraries don't control log encoding - consumer applications do.
+
+**Instead, generated**:
+- `.claude/workspace/consumer-logback-guidance.md` (guidance for consumer applications)
+- This summary document
+
+---
+
+## Consumer Applications Must Act
+
+Every application that depends on {LIBRARY_NAME} v{NEW_VERSION} MUST:
+
+1. **Update logback-spring.xml** (run `/splunk-to-dynatrace:setup-logback` in consumer repos)
+2. **Deploy updated logback** BEFORE deploying new library version
+3. **Validate structured fields** appear in logs (integration testing)
+4. **Update dashboards** (if field names changed)
+
+---
+
+## Next Steps
+
+### For Library Maintainers (You)
+
+1. **Review consumer guidance**: `.claude/workspace/consumer-logback-guidance.md`
+2. **Identify consumer applications**: List apps that depend on this library
+3. **Coordinate with consumer teams**: Share guidance document
+4. **Validate in integration**: Deploy library, check consumer logs
+
+### For Consumer Application Teams
+
+1. **Read guidance document**: `.claude/workspace/consumer-logback-guidance.md`
+2. **Run setup-logback**: In YOUR application repository
+3. **Deploy to integration**: Test with new library version
+4. **Validate structured logging**: Check fields appear in logs
+5. **Update dashboards**: If needed
+6. **Approve production rollout**: After successful staging validation
+
+---
+
+## References
+
+- Consumer guidance: `.claude/workspace/consumer-logback-guidance.md`
+- Downstream impact: `.claude/workspace/analysis/06-downstream-impact.md`
+- Consumer readiness: `.claude/workspace/analysis/07-consumer-readiness-checklist.md`
+- SLF4J facade validation: `.claude/workspace/analysis/08-slf4j-facade-validation.md`
+```
+
+---
 
 ## logback-spring.xml Template (Phase 1)
 

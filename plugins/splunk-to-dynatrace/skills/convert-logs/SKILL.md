@@ -723,6 +723,21 @@ Preserve work, fix incrementally.
 
 ## Conversion Process
 
+### Step 0: Repository Type Check (NEW in v1.1.0)
+
+**For library repositories**, perform additional SLF4J facade validation before conversion.
+
+Check repository type:
+```bash
+if [ -f .claude/workspace/repository-type.txt ]; then
+    REPO_TYPE=$(cat .claude/workspace/repository-type.txt)
+fi
+```
+
+**If `REPO_TYPE == "library"`**, execute library-specific validations (see "Library Repository Considerations" below).
+
+---
+
 ### Step 1: Load Context
 
 Read necessary context for conversion:
@@ -791,6 +806,97 @@ Create summary document with:
 - Breakdown by module
 - List of files modified with line numbers
 - Next steps (testing, review, commit)
+
+---
+
+## Library Repository Considerations (NEW in v1.1.0)
+
+**If repository type is "library"** (detected from `.claude/workspace/repository-type.txt`):
+
+### SLF4J Facade Enforcement
+
+**Before conversion**, validate all logging uses SLF4J facade (no backend-specific APIs):
+
+```bash
+# Check for backend-specific imports (should be NONE in src/main/java)
+find src/main/java -name "*.java" -exec grep -l "import ch.qos.logback" {} \;
+find src/main/java -name "*.java" -exec grep -l "import org.apache.log4j" {} \;
+find src/main/java -name "*.java" -exec grep -l "import org.apache.logging.log4j" {} \;
+
+# Expected: (empty - no matches)
+```
+
+**If backend imports found**, prompt user:
+
+```
+"⚠️ BACKEND-SPECIFIC IMPORTS DETECTED
+
+Found logback/log4j imports in production code:
+{LIST_FILES_WITH_BACKEND_IMPORTS}
+
+Libraries MUST use SLF4J facade only:
+- Use: import org.slf4j.Logger;
+- Use: import org.slf4j.LoggerFactory;
+
+**Why**: Consumer applications control the logging backend. Libraries depending on specific backends create version conflicts.
+
+Convert backend-specific code to SLF4J? (y/n)"
+```
+
+**If yes**, convert backend-specific Logger declarations to SLF4J:
+
+```java
+// ❌ BEFORE: Backend-specific
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+
+private static final Logger LOGGER = 
+    (Logger) LoggerFactory.getLogger(MyClass.class);
+
+// ✅ AFTER: SLF4J facade
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+private static final Logger LOGGER = 
+    LoggerFactory.getLogger(MyClass.class);
+```
+
+**Track backend conversions** in conversion summary.
+
+---
+
+### Conversion Process (Same as Applications)
+
+- **Code conversion**: IDENTICAL to applications (fluent API, structured fields)
+- **Testing**: Run library tests as normal
+- **No logback generation**: Libraries don't own encoder configuration
+
+---
+
+### Post-Conversion Consumer Reminder
+
+**After conversion completion**, remind user about downstream coordination:
+
+```
+"✅ Conversion complete! 
+
+✅ SLF4J facade validation: PASSED (no backend-specific imports)
+
+⚠️ REMINDER: This is a library repository. Consumer applications must:
+1. Have JSON encoder configured (run setup-logback in consumers)
+2. Deploy updated logback BEFORE using this library version
+3. Update dashboards if field names changed
+
+See .claude/workspace/analysis/06-downstream-impact.md for detailed guidance.
+
+**Next steps**:
+1. Run tests: mvn clean test
+2. Review changes: git diff
+3. Read consumer guidance: .claude/workspace/analysis/06-downstream-impact.md
+4. Coordinate with consumer teams before releasing new version"
+```
+
+---
 
 ## Output Format
 
