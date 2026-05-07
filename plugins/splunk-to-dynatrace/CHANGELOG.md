@@ -111,6 +111,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test assertions must match structured log format
 - Logger API standardization (SLF4J vs Log4j2) should be detected early
 
+## [1.0.2] - 2026-05-07
+
+### Fixed
+- **Skill naming**: choose-approach skill now has correct `splunk-to-dynatrace:` prefix in name field
+  - Was: `name: choose-approach`
+  - Now: `name: splunk-to-dynatrace:choose-approach`
+  - Matches naming convention of all other skills in the plugin
+
 ## [1.0.1] - 2026-05-07
 
 ### Fixed
@@ -134,8 +142,10 @@ See [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) for complete roadmap.
 
 ## Version History
 
+- **1.0.2** (2026-05-07): Naming fix - correct skill name prefix
 - **1.0.1** (2026-05-07): Packaging fix - include choose-approach skill
 - **1.0.0** (2026-05-06): Initial release with 6 skills, comprehensive documentation, end-to-end testing
 
+[1.0.2]: https://github.com/familysearch/satoris-claude-config/releases/tag/v1.0.2
 [1.0.1]: https://github.com/familysearch/satoris-claude-config/releases/tag/v1.0.1
 [1.0.0]: https://github.com/familysearch/satoris-claude-config/releases/tag/v1.0.0

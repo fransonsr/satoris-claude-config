@@ -1,5 +1,5 @@
 ---
-name: choose-approach
+name: splunk-to-dynatrace:choose-approach
 description: Interactive questionnaire that helps teams choose the right Splunk-to-Dynatrace migration approach (Comprehensive, Quick, or Progressive Enhancement) based on their context. Recommends specific workflow, estimates effort, and generates personalized migration plan. Use this skill when teams are unsure which migration strategy fits their needs, want effort estimates before committing, or need to build consensus on approach.
 ---
 
