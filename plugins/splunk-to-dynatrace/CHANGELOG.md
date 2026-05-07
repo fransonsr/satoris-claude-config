@@ -111,6 +111,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test assertions must match structured log format
 - Logger API standardization (SLF4J vs Log4j2) should be detected early
 
+## [1.0.1] - 2026-05-07
+
+### Fixed
+- **Packaging**: choose-approach skill now properly included in distribution archives
+  - Previous v1.0.0 package was missing the choose-approach skill directory
+  - All 6 skills now verified present in package
+
+### Changed
+- Package size increased slightly (101 KB tar.gz, 117 KB zip) due to choose-approach inclusion
+
 ## [Unreleased]
 
 ### Planned for v1.1.0
@@ -124,6 +134,8 @@ See [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) for complete roadmap.
 
 ## Version History
 
+- **1.0.1** (2026-05-07): Packaging fix - include choose-approach skill
 - **1.0.0** (2026-05-06): Initial release with 6 skills, comprehensive documentation, end-to-end testing
 
+[1.0.1]: https://github.com/familysearch/satoris-claude-config/releases/tag/v1.0.1
 [1.0.0]: https://github.com/familysearch/satoris-claude-config/releases/tag/v1.0.0
