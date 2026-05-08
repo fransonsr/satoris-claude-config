@@ -762,67 +762,171 @@ fi
 
 ---
 
-### Step 1: Load Context
+### Step 1: Generate Logger Inventory (REQUIRED - Run BEFORE Conversion)
+
+**CRITICAL: Run discovery script FIRST to get complete visibility.**
+
+Execute the logger discovery script to create a comprehensive inventory:
+
+```bash
+# Navigate to skill scripts directory
+SKILL_DIR="$HOME/.claude/plugins/splunk-to-dynatrace/skills/convert-logs"
+cd "$SKILL_DIR/scripts"
+
+# Run discovery on target directory
+./discover-loggers-v2.sh /path/to/src/main/java logger-inventory.json
+
+# Example: Discover in specific module
+./discover-loggers-v2.sh cds-core/src/main/java/org/familysearch/cds/core/async async-loggers.json
+```
+
+**Script Output** (JSON):
+```json
+{
+  "generated": "2026-05-08T20:35:42Z",
+  "searchDirectory": "...",
+  "totalFiles": 250,
+  "filesWithLoggers": 38,
+  "totalLoggers": 35,
+  "totalReferences": 133,
+  "files": [
+    {
+      "file": "/absolute/path/File.java",
+      "relativePath": "src/.../File.java",
+      "loggers": [{
+        "name": "LOGGER",
+        "declarationLine": 51,
+        "references": [143, 200, 216, ...],
+        "referenceCount": 27
+      }]
+    }
+  ]
+}
+```
+
+**Analyze Inventory**:
+```bash
+# Review summary
+jq '{filesWithLoggers, totalLoggers, totalReferences}' logger-inventory.json
+
+# Find files with most work (prioritize high-impact)
+jq -r '.files[] | select(.loggers[].referenceCount > 0) | "\(.loggers[].referenceCount)\t\(.relativePath)"' \
+  logger-inventory.json | sort -rn | head -20
+
+# Export to CSV for tracking
+jq -r '.files[] | .relativePath as $f | .loggers[] | "\($f),\(.name),\(.referenceCount)"' \
+  logger-inventory.json > tracking.csv
+
+# Get exact line numbers for targeted conversion
+jq '.files[] | select(.relativePath | contains("ServiceJob")) | .loggers[].references[]' \
+  logger-inventory.json
+```
+
+**Why This Matters**:
+- **Complete visibility**: Know exactly how many logger calls exist before starting
+- **Prioritization**: Tackle high-impact files first (sort by reference count)
+- **Token efficiency**: Targeted LSP queries only at known locations (70-90% reduction)
+- **Progress tracking**: Re-run after conversions to verify completion
+- **Deterministic**: Same scan = same results every time
+
+**Token Efficiency Comparison**:
+
+| Approach | Tokens per File | Coverage |
+|----------|----------------|----------|
+| Manual LSP exploration | 3,000-8,000 | Unknown until complete |
+| Discovery script + targeted conversion | 500-800 | 100% known upfront |
+
+**Savings: 70-90% token reduction**
+
+---
+
+### Step 2: Load Context
 
 Read necessary context for conversion:
 
-1. **Analyze Report**: Load `00-executive-summary.md` and relevant module reports
+1. **Logger Inventory** (from Step 1): Reference the generated JSON for:
+   - File paths and logger names
+   - Exact line numbers for targeted LSP queries
+   - Reference counts for batching decisions
+
+2. **Analyze Report** (if available): Load `00-executive-summary.md` and relevant module reports
    - Identify log locations, current format, recommended actions
    - Understand field naming from `05-field-naming-analysis.md`
 
-2. **FamilySearch Observability Standards**: Load decision trees and field requirements
+3. **FamilySearch Observability Standards**: Load decision trees and field requirements
    - Log level decision tree
    - Required fields by level (ERROR, WARN, INFO)
    - Standard field names (person.id, ordinance.type, etc.)
 
-3. **User Preferences**: Confirm conversion scope and options
+4. **User Preferences**: Confirm conversion scope and options
    - Field naming strategy (Option 1, 2, or 3)
    - Field enrichment level (minimal or full)
    - Performance optimization needs (lambda wrapping, guard clauses)
    - Conversion scope (full codebase, module, specific task)
 
-### Step 2: Discover Logger Usage with LSP (REQUIRED)
+### Step 3: Targeted LSP Queries (Using Inventory from Step 1)
 
-**CRITICAL: Use LSP semantic analysis, NOT text-based search (grep/awk).**
+**Use logger inventory to optimize LSP queries.**
 
-Text-based search misses:
-- Logger fields with different variable names (LOGGER, logger, RFIJ_LOGGER, TASK_LOGGER, etc.)
-- Multi-line log statements
-- Inherited logger fields from parent classes
-- Complex expressions and method references
+With the inventory from Step 1, you already know:
+- Which files have loggers
+- Logger field names (LOGGER, RFIJ_LOGGER, etc.)
+- Declaration line numbers
+- Reference line numbers
 
-**LSP Workflow (Type-Based Discovery):**
+**Optimized Workflow:**
 
-1. **Find Logger Fields by Type**
+1. **Query only files in inventory** (skip files without loggers)
+2. **Use known logger names** (no need to discover field names)
+3. **Target known line numbers** (read only ±10 lines around references)
+
+**LSP Workflow (Type-Based Verification):**
+
+For files with complex inheritance or if inventory line numbers seem incorrect:
+
+1. **Verify Logger Fields by Type**
    ```
    LSP documentSymbol(<file-path>)
    → Returns all symbols with types
    → Filter for type: org.slf4j.Logger
-   → Result: Field name + line number + character position
+   → Verify matches inventory
    ```
    
-   Example output:
+   Example:
    ```
-   Line 39, char 32: "RFIJ_LOGGER" (type: org.slf4j.Logger)
-   Line 59, char 45: "LOGGER" (type: org.slf4j.Logger)
+   Inventory says: RFIJ_LOGGER at line 39
+   LSP confirms: Line 39, char 32: "RFIJ_LOGGER" (type: org.slf4j.Logger)
    ```
 
-2. **Find All Logger Usage**
+2. **Validate References (Optional)**
    ```
    LSP findReferences(<file-path>, <line>, <char>)
    → Returns exact line numbers of ALL usages
-   → Includes: field declaration, method calls, inherited usages
-   → Result: List of exact line numbers
+   → Compare with inventory references
+   → Useful for inherited logger fields
    ```
-   
-   Example output:
-   ```
-   References to RFIJ_LOGGER:
-   - Line 39 (field declaration)
-   - Line 98 (method call)
-   - Line 133 (method call)
-   - Line 140 (method call)
-   ```
+
+**Primary Approach** (Most Efficient):
+
+```
+1. Load inventory JSON
+2. For each file in inventory.files:
+   - For each logger.references line number:
+     - Read(file, offset=line-10, limit=20)  # Targeted read
+     - Convert logger call
+     - Edit file
+3. Build & validate
+```
+
+**Token Comparison**:
+
+| Approach | Discovery | Per File | Total |
+|----------|-----------|----------|-------|
+| No inventory (manual) | Unknown | 3-8K tokens | Very high |
+| With inventory + LSP verify | Free (script) | 1-2K tokens | Medium |
+| With inventory + targeted reads | Free (script) | 500-800 tokens | Low ✓ |
+
+**Use inventory-first approach for maximum efficiency.**
 
 3. **Group References by File for Targeted Conversion**
    - For each file with Logger references
@@ -912,15 +1016,41 @@ Even then, use comprehensive patterns:
 grep -E "(LOGGER|logger|.*_LOGGER)\.(trace|debug|info|warn|error)" file.java
 ```
 
-### Step 3: Identify Logs to Convert
+### Step 4: Identify Conversion Scope
 
-Based on user-specified scope:
+Based on user-specified scope and inventory from Step 1:
 
-- **Full conversion**: All logs from analyze report + LSP discovery
-- **Module conversion**: Logs in specified module(s) via LSP
-- **Task conversion**: Logs matching task criteria (level, action type, class) via LSP
+- **Full conversion**: All files in inventory JSON
+- **Module conversion**: Filter inventory by path (e.g., `contains("/async/")`)
+- **Prioritized conversion**: Sort by referenceCount, start with highest impact
+- **Batch conversion**: Group files by ~10-15 for efficient commits
 
-### Step 4: Perform Conversions
+**Query inventory for scope**:
+```bash
+# High-priority files (>10 references)
+jq '.files[] | select(.loggers[].referenceCount > 10) | .relativePath' inventory.json
+
+# Specific module
+jq '.files[] | select(.relativePath | contains("/async/")) | .relativePath' inventory.json
+
+# Export batch for tracking
+jq -r '.files[0:15] | .[] | .relativePath' inventory.json > batch-1-files.txt
+```
+
+### Step 5: Perform Conversions
+
+For each file in scope (from Step 4):
+
+**Efficient Workflow** (Using Inventory):
+```
+1. Load file entry from inventory
+2. For each logger.references[]:
+   - Read(file, offset=line-10, limit=20)  # Targeted read
+   - Parse and convert logger call
+   - Apply Edit
+3. Build & validate
+4. Commit batch
+```
 
 For each log statement:
 
