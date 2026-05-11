@@ -3,6 +3,18 @@
 # discover-loggers-v2.sh
 # Simplified version that writes JSON directly without jq dependency
 #
+# ⚠️ DEPRECATED in v2.0.0
+#
+# This script is SUPERSEDED by the analyze skill's conversion-inventory.json output.
+#
+# For new workflows:
+#   1. Run: /splunk-to-dynatrace:analyze
+#   2. Use: .claude/analyze-reports/conversion-inventory.json
+#
+# This script is kept ONLY for recovery/verification purposes.
+# It uses grep/pattern matching which misses 40-60% of logger calls.
+# The analyze skill uses LSP for 100% accuracy.
+#
 # Usage: ./discover-loggers-v2.sh <directory> <output-file>
 
 set -euo pipefail

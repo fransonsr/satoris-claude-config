@@ -265,6 +265,143 @@ class LSPInventoryGenerator:
         print(f"  - {inventory['metadata']['total_files_scanned']} files")
 
 
+def generate_conversion_inventory(lsp_inventory: Dict[str, Any], output_path: Path, project_root: Path):
+    """
+    Generate conversion-inventory.json from lsp-inventory.json.
+
+    Filters to traditional calls only, sorts bottom-to-top within files,
+    partitions by module → package → file hierarchy.
+
+    Args:
+        lsp_inventory: The full LSP inventory dict
+        output_path: Where to write conversion-inventory.json
+        project_root: Project root for path calculations
+    """
+    # Filter to traditional pattern only
+    traditional_calls = [
+        call for call in lsp_inventory['log_calls']
+        if call.get('pattern') == 'traditional'
+    ]
+
+    if not traditional_calls:
+        print("✓ No traditional log calls found - all logs already converted!")
+        return
+
+    # Group by module → package → file
+    hierarchy = {}
+    for call in traditional_calls:
+        file_path = call['file']
+
+        # Extract module from file path (e.g., "cds-core/src/main/java/..." → "cds-core")
+        parts = Path(file_path).parts
+        module = parts[0] if len(parts) > 0 else 'unknown'
+
+        # Extract package from file path (e.g., "org/familysearch/cds/core/...")
+        # Look for pattern: src/main/java/<package-path>/File.java
+        try:
+            src_idx = parts.index('java') if 'java' in parts else -1
+            if src_idx >= 0 and src_idx < len(parts) - 1:
+                package_parts = parts[src_idx + 1:-1]  # Exclude filename
+                package = '.'.join(package_parts) if package_parts else 'default'
+            else:
+                package = 'default'
+        except (ValueError, IndexError):
+            package = 'default'
+
+        # Initialize hierarchy
+        if module not in hierarchy:
+            hierarchy[module] = {}
+        if package not in hierarchy[module]:
+            hierarchy[module][package] = {}
+        if file_path not in hierarchy[module][package]:
+            hierarchy[module][package][file_path] = []
+
+        hierarchy[module][package][file_path].append(call)
+
+    # Sort calls within each file by line number (descending = bottom-to-top)
+    for module in hierarchy.values():
+        for package in module.values():
+            for file_calls in package.values():
+                file_calls.sort(key=lambda c: c['line'], reverse=True)
+
+    # Build output structure
+    def extract_logger_name(call):
+        """Extract logger name from call"""
+        return call.get('logger_name', 'LOGGER')
+
+    def count_files(h):
+        """Count total files in hierarchy"""
+        count = 0
+        for module in h.values():
+            for package in module.values():
+                count += len(package)
+        return count
+
+    output = {
+        "metadata": {
+            "analysis_date": datetime.now().isoformat(),
+            "project_root": str(project_root),
+            "total_files": count_files(hierarchy),
+            "total_unconverted_calls": len(traditional_calls),
+            "partitioning": "module"
+        },
+        "modules": []
+    }
+
+    # Convert hierarchy to output format
+    for module_name, packages in hierarchy.items():
+        module_entry = {
+            "name": module_name,
+            "packages": []
+        }
+
+        for package_name, files in packages.items():
+            package_entry = {
+                "name": package_name,
+                "files": []
+            }
+
+            for file_path, calls in files.items():
+                file_entry = {
+                    "file": str(project_root / file_path),
+                    "relativePath": file_path,
+                    "callCount": len(calls),
+                    "calls": [
+                        {
+                            "line": call['line'],
+                            "column": 0,
+                            "method": call.get('level', 'info').lower() if call.get('level') else 'info',
+                            "logger": extract_logger_name(call),
+                            "snippet": call.get('message_snippet', ''),
+                            "context": {
+                                "level": call.get('level', 'INFO'),
+                                "pattern": call.get('pattern', 'traditional'),
+                                "parameter_count": call.get('parameter_count', 0)
+                            },
+                            "status": "pending",
+                            "converted_at": None,
+                            "commit": None
+                        }
+                        for call in calls
+                    ]
+                }
+                package_entry["files"].append(file_entry)
+
+            module_entry["packages"].append(package_entry)
+
+        output["modules"].append(module_entry)
+
+    # Write output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2)
+
+    print(f"✓ Conversion inventory saved to: {output_path}")
+    print(f"  - {output['metadata']['total_unconverted_calls']} unconverted calls")
+    print(f"  - {output['metadata']['total_files']} files")
+    print(f"  - {len(output['modules'])} modules")
+
+
 def main():
     """
     Main entry point.
@@ -326,6 +463,11 @@ def main():
 
     # Save inventory
     generator.save_inventory(args.output)
+
+    # Generate conversion-specific inventory (v1.4.0 feature)
+    conversion_output = args.output.parent / 'conversion-inventory.json'
+    lsp_inventory = generator.generate_inventory()
+    generate_conversion_inventory(lsp_inventory, conversion_output, generator.project_root)
 
 
 if __name__ == '__main__':

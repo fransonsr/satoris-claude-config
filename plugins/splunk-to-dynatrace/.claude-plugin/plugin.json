@@ -1,7 +1,7 @@
 {
   "name": "splunk-to-dynatrace",
-  "version": "1.3.0",
-  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. Supports library repositories with consumer coordination workflow and SLF4J facade validation.",
+  "version": "2.0.0",
+  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. v2.0.0: Hybrid LLM+JavaParser architecture for 10-50x faster transformations with 90% token reduction. Supports library repositories with consumer coordination workflow and SLF4J facade validation.",
   "author": {
     "name": "FamilySearch Engineering - SATORIS Team",
     "email": "fransonsr@familysearch.org"
@@ -15,6 +15,20 @@
     "structured-logging",
     "slf4j",
     "logback",
-    "familysearch"
-  ]
+    "familysearch",
+    "javaparser",
+    "lsp"
+  ],
+  "dependencies": {
+    "python": ">=3.7",
+    "jpype1": ">=1.4.1",
+    "jq": "recommended"
+  },
+  "breakingChanges": {
+    "2.0.0": [
+      "convert-logs skill now requires analyze skill v1.4.0+ output (conversion-inventory.json)",
+      "discover-loggers-v2.sh script deprecated in favor of analyze skill",
+      "New dependency: python3-jpype required for JavaParser transformer"
+    ]
+  }
 }

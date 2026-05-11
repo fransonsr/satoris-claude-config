@@ -57,6 +57,10 @@
    ```bash
    # Python dependencies for bundled scripts
    pip3 install --user jedi-language-server
+   
+   # NEW v2.0.0: JPype for JavaParser transformer (convert-logs skill)
+   sudo apt-get install python3-jpype  # Ubuntu/Debian (recommended)
+   # Or: pip3 install --user jpype1  # User install (alternative)
    ```
 
 3. **Symlink to plugins directory**:
@@ -153,6 +157,47 @@ Expected: Interactive questionnaire starts asking about dashboards, urgency, etc
    ```bash
    chmod +x ~/.claude/plugins/splunk-to-dynatrace/skills/analyze/scripts/lsp_inventory.py
    ```
+
+---
+
+### JavaParser Transformer Errors (v2.0.0+)
+
+**Problem**: `transform_jpype.py` fails with JPype errors (convert-logs skill)
+
+**Solutions**:
+
+1. **Install JPype** (Ubuntu/Debian):
+   ```bash
+   sudo apt-get install python3-jpype
+   ```
+
+2. **Alternative: Install via pip** (if system package not available):
+   ```bash
+   # User install
+   pip3 install --user jpype1
+   
+   # Or virtual environment (recommended for development)
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install jpype1
+   ```
+
+3. **Verify JPype installation**:
+   ```bash
+   python3 -c "import jpype; print(jpype.__version__)"
+   # Should print version >= 1.4.1
+   ```
+
+4. **Check Java installation** (required for JVM):
+   ```bash
+   java -version
+   # Should be Java 11+
+   ```
+
+5. **JavaParser JAR auto-download**:
+   - First run of `transform_jpype.py` will auto-download JavaParser JAR to `~/.cache/javaparser/`
+   - If download fails, manually download from: https://repo1.maven.org/maven2/com/github/javaparser/javaparser-core/3.25.8/javaparser-core-3.25.8.jar
+   - Place in: `~/.cache/javaparser/javaparser-core-3.25.8.jar`
 
 ---
 

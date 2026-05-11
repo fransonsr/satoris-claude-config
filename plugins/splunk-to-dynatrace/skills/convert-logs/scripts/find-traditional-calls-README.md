@@ -1,6 +1,21 @@
 # Find Traditional Logger Calls Script
 
-## Purpose
+> ⚠️ **DEPRECATED in v2.0.0**
+> 
+> This script is superseded by the analyze skill's `conversion-inventory.json` output.
+> 
+> **New workflow**: 
+> 1. Run `/splunk-to-dynatrace:analyze`
+> 2. Use `.claude/analyze-reports/conversion-inventory.json`
+>    - Already filtered to traditional calls only
+>    - Sorted bottom-to-top for optimal conversion
+>    - Includes progress tracking
+> 
+> This script is kept ONLY for recovery/verification when inventory line numbers drift.
+
+---
+
+## Purpose (Legacy)
 
 Finds all **unconverted traditional SLF4J logger calls** in Java files using regex-based pattern matching. This script accurately distinguishes traditional calls from fluent API calls that are already converted.
 

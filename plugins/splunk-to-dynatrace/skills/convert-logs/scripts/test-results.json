@@ -1,0 +1,10 @@
+[
+  {
+    "file": "test-fixtures/TestService.java",
+    "status": "success",
+    "successCount": 2,
+    "failureCount": 0,
+    "errors": [],
+    "transformedCode": "package org.familysearch.test;\n\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\n\npublic class TestService {\n\n    private static final Logger LOGGER = LoggerFactory.getLogger(TestService.class);\n\n    public void processRecord(String personId, String ordinanceType) {\n        LOGGER.atInfo().addKeyValue(\"person.id\", personId).addKeyValue(\"ordinance.type\", ordinanceType).addKeyValue(\"event.name\", \"person.ordinance.processing\").log(\"Processing person ordinance\");\n    }\n\n    public void handleError(String recordId, Exception error) {\n        LOGGER.atError().addKeyValue(\"record.id\", recordId).setCause(error).log(\"Failed to process record\");\n    }\n}\n"
+  }
+]

@@ -2,6 +2,20 @@
 """
 Find Traditional Logger Calls - LSP-based
 
+⚠️ DEPRECATED in v2.0.0
+
+This script is SUPERSEDED by the analyze skill's conversion-inventory.json output.
+
+For new workflows:
+  1. Run: /splunk-to-dynatrace:analyze
+  2. Use: .claude/analyze-reports/conversion-inventory.json
+     (Already filtered to traditional calls only, sorted bottom-to-top)
+
+This script is kept ONLY for recovery/verification purposes when
+conversion-inventory.json line numbers drift due to external edits.
+
+---
+
 Finds all traditional (non-fluent) SLF4J logger calls in Java files that need conversion.
 Uses LSP semantic analysis to distinguish traditional from fluent API calls.
 

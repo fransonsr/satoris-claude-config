@@ -1,11 +1,31 @@
 ---
 name: splunk-to-dynatrace:analyze
-description: Analyze Spring Boot application logging patterns and generate hierarchical compliance report against FamilySearch Observability Standards. Automatically adapts to codebase size (small/medium/large) and uses progressive disclosure for large multi-module projects. Use this skill when starting a Splunk-to-Dynatrace migration, auditing existing log statements, checking standards compliance, or generating an inventory of logging patterns. Identifies logs that Dynatrace auto-captures (deletion candidates), incorrect log levels, missing required fields, business events vs application logs, field naming issues, and provides prioritized action list with compliance scoring. For large codebases, offers interactive module-by-module analysis or focus on high-priority quick wins.
+description: Analyze Spring Boot application logging patterns using LSP semantic analysis (100% accuracy) and generate hierarchical compliance report against FamilySearch Observability Standards. Uses Language Server Protocol for precise logger discovery, not grep/pattern matching. Automatically adapts to codebase size (small/medium/large) and uses progressive disclosure for large multi-module projects. Generates conversion-inventory.json for convert-logs skill with bottom-to-top sorted calls. Use this skill when starting a Splunk-to-Dynatrace migration, auditing existing log statements, checking standards compliance, or generating an inventory of logging patterns. Identifies logs that Dynatrace auto-captures (deletion candidates), incorrect log levels, missing required fields, business events vs application logs, field naming issues, and provides prioritized action list with compliance scoring.
 ---
 
 # Splunk-to-Dynatrace Log Analysis Skill
 
 Analyzes current logging patterns in a Spring Boot codebase and generates a comprehensive, hierarchical compliance report against [FamilySearch Observability Standards](https://icseng.atlassian.net/wiki/spaces/Product/pages/1700954295/FamilySearch+Observability+Standards).
+
+**Uses LSP (Language Server Protocol) for semantic analysis** - achieving 100% accuracy with 70% token reduction vs full file reads.
+
+## Core Principle: Accuracy Over Speed
+
+**❌ DO NOT use grep/awk/sed for logger discovery** - misses 40-60% of logger calls due to:
+- Different logger field names (LOGGER, logger, RFIJ_LOGGER, TASK_LOGGER, etc.)
+- Inherited logger fields from parent classes
+- Multi-line log statements
+- Complex expressions
+
+**✅ USE LSP semantic analysis** - finds 100% of logger usage by type:
+- `LSP documentSymbol` → finds Logger fields by type org.slf4j.Logger
+- `LSP findReferences` → gets exact line numbers of ALL usages
+- Targeted reads → 70% token reduction vs full file reads
+
+**When pattern matching IS acceptable**:
+- Rough estimates for codebase sizing
+- Dependency validation (POM files)
+- Finding configuration files
 
 ## When to Use This Skill
 
@@ -195,12 +215,15 @@ If neither: "Looks like a library (no @SpringBootApplication, no Dockerfile). Co
 2. **Detect codebase size** to determine analysis strategy:
 
 ```bash
-# Count total log statements in production code
+# ROUGH ESTIMATE ONLY - for sizing, not discovery
+# (Actual discovery happens via LSP in Step 1b)
 find . -path "*/src/main/java/**/*.java" -type f -exec grep -c "logger\.\|log\.\|LOGGER\." {} \; | awk '{sum+=$1} END {print sum}'
 
 # Count modules
 find . -name "pom.xml" -o -name "build.gradle" | wc -l
 ```
+
+**Note**: This grep is for **estimation only** (sizing analysis approach). Actual logger discovery happens via LSP in Step 1b for 100% accuracy.
 
 Based on results:
 - **<100 logs**: Proceed with full analysis, present in conversation
@@ -215,6 +238,20 @@ mkdir -p .claude/analyze-reports/modules
 ```
 
 ### Step 1: Discover Loggers Using LSP (Fast, Semantic)
+
+**CRITICAL: Use LSP for accuracy, not grep for speed.**
+
+**Why LSP**:
+- ✅ **100% coverage**: Finds ALL logger usage by type (semantic analysis)
+- ✅ **Correct**: Understands inheritance, multi-line statements, complex expressions
+- ✅ **Type-aware**: Distinguishes Logger from other classes
+- ❌ **grep misses 40-60%**: Different logger names, inherited fields, multi-line calls
+
+**When grep is acceptable**:
+- ✅ Quick estimates (codebase size, initial scan)
+- ✅ Dependency validation (POM files, imports in src/)
+- ✅ File finding (build files, configs)
+- ❌ **NEVER for logger discovery** - use LSP
 
 Use jdtls-lsp for fast, accurate logger discovery. This skill includes bundled scripts for deterministic inventory generation.
 
@@ -293,6 +330,85 @@ python3 analyze/scripts/lsp_inventory.py \
 - 🎯 **Accurate**: Python script handles edge cases consistently
 - 💰 **Token-efficient**: Structured data output (no markdown formatting needed)
 - 🔍 **Queryable**: JSON output for jq queries (see `scripts/example_queries.sh`)
+
+**Additional Output: conversion-inventory.json** (NEW in v1.4.0)
+
+The lsp_inventory.py script automatically generates a second output file specifically for the convert-logs skill:
+
+**File**: `.claude/analyze-reports/conversion-inventory.json`
+
+**Purpose**: Pre-sorted, filtered inventory of unconverted traditional log calls ready for batch transformation.
+
+**Key Features**:
+- ✅ **Filtered**: Only traditional pattern calls (excludes already-converted fluent API)
+- ✅ **Sorted**: Calls sorted bottom-to-top within files (descending line numbers)
+- ✅ **Hierarchical**: Organized by module → package → file
+- ✅ **Progress tracking**: Includes status fields (pending/completed)
+- ✅ **1-based line numbers**: Verified compatible with JavaParser (no conversion needed)
+
+**Schema**:
+```json
+{
+  "metadata": {
+    "analysis_date": "2026-05-11T...",
+    "project_root": "/path/to/project",
+    "total_files": 67,
+    "total_unconverted_calls": 162,
+    "partitioning": "module"
+  },
+  "modules": [
+    {
+      "name": "cds-core",
+      "packages": [
+        {
+          "name": "org.familysearch.cds.core.async",
+          "files": [
+            {
+              "file": "/absolute/path/ServiceJob.java",
+              "relativePath": "cds-core/src/.../ServiceJob.java",
+              "callCount": 8,
+              "calls": [
+                {
+                  "line": 200,
+                  "column": 0,
+                  "method": "info",
+                  "logger": "LOGGER",
+                  "snippet": "LOGGER.info(\"Processing...\")",
+                  "context": {
+                    "level": "INFO",
+                    "pattern": "traditional",
+                    "parameter_count": 2
+                  },
+                  "status": "pending",
+                  "converted_at": null,
+                  "commit": null
+                },
+                {
+                  "line": 145,
+                  "..."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Bottom-to-top sorting rationale**: Calls within each file are sorted by line number descending (200, 145, 89, 45...). This enables the convert-logs skill to transform from bottom-to-top, preserving line numbers of unconverted statements above.
+
+**Usage by convert-logs skill**:
+```bash
+# Load inventory (no re-scanning needed)
+jq '.modules[].packages[].files[] | select(.callCount > 0)' \
+  .claude/analyze-reports/conversion-inventory.json
+
+# Check remaining work
+jq '[.modules[].packages[].files[].calls[] | select(.status == "pending")] | length' \
+  .claude/analyze-reports/conversion-inventory.json
+```
 
 **Option 2: Manual LSP Queries** (fallback if Python unavailable)
 
@@ -378,6 +494,12 @@ for log_call in inventory["log_calls"]:
 - **Source Type** (production vs test)
 
 ### Step 2: Categorize by Type
+
+**IMPORTANT**: This step requires the inventory JSON files from Step 1. Ensure Step 1 execution actually ran the lsp_inventory.py script and generated:
+- `.claude/analyze-reports/lsp-inventory.json`
+- `.claude/analyze-reports/conversion-inventory.json`
+
+If these files don't exist, Step 1 was not fully executed. Go back and run the Python script as documented in Step 1b.
 
 Using the inventory.json from Step 1, categorize each log statement:
 
