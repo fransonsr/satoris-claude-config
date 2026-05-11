@@ -840,6 +840,88 @@ jq '.files[] | select(.relativePath | contains("ServiceJob")) | .loggers[].refer
 
 ---
 
+### Step 1b: Find Unconverted Traditional Calls (NEW in v1.3.0)
+
+**CRITICAL: Use this script to identify what actually needs conversion.**
+
+The `discover-loggers-v2.sh` script counts ALL method calls (traditional + fluent API), making it impossible to track conversion progress. Use `find-traditional-calls.py` to find only unconverted calls:
+
+```bash
+# Navigate to skill scripts directory
+SKILL_DIR="$HOME/.claude/plugins/splunk-to-dynatrace/skills/convert-logs"
+cd "$SKILL_DIR/scripts"
+
+# Find unconverted calls
+python3 find-traditional-calls.py /path/to/src/main/java unconverted-calls.json
+
+# Example: Find in specific module
+python3 find-traditional-calls.py cds-core/src/main/java/org/familysearch/cds/core/async async-unconverted.json
+```
+
+**Script Output** (JSON):
+```json
+{
+  "generated": "2026-05-11T16:30:00Z",
+  "searchDirectory": "cds-core/src/main/java/org/familysearch/cds/core/async",
+  "totalFiles": 250,
+  "filesAnalyzed": 63,
+  "unconvertedCalls": 162,
+  "files": [
+    {
+      "file": "/absolute/path/MultilineStitchPhase.java",
+      "relativePath": "async/MultilineStitchPhase.java",
+      "callCount": 15,
+      "calls": [
+        {
+          "line": 124,
+          "column": 7,
+          "method": "info",
+          "logger": "LOGGER",
+          "snippet": "LOGGER.info(\"Stitching complete\");"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Query Examples**:
+```bash
+# Find high-priority files (most unconverted calls)
+jq '.files | sort_by(-.callCount) | .[0:15]' unconverted-calls.json
+
+# Get line numbers for specific file
+jq '.files[] | select(.relativePath | contains("ServiceJob")) | .calls[].line' unconverted-calls.json
+
+# Export to CSV for tracking
+jq -r '.files[] | .relativePath as $f | .calls[] | "\($f),\(.line),\(.method)"' unconverted-calls.json > tracking.csv
+
+# Count by log level
+jq '[.files[].calls[].method] | group_by(.) | map({level: .[0], count: length})' unconverted-calls.json
+```
+
+**Key Differences from discover-loggers-v2.sh**:
+
+| Feature | discover-loggers-v2.sh | find-traditional-calls.py |
+|---------|------------------------|---------------------------|
+| **Finds** | All logger method calls | Only unconverted traditional calls |
+| **Includes fluent API?** | Yes (counts increase after conversion) | No (excludes .at* methods) |
+| **Accuracy for tracking** | 50% (confusing) | 100% (precise) |
+| **Use case** | Initial discovery | Conversion progress tracking |
+| **Output** | Logger declarations + reference counts | Call locations + snippets |
+
+**Workflow**:
+1. **Initial discovery**: Use `discover-loggers-v2.sh` to find all loggers
+2. **Conversion tracking**: Use `find-traditional-calls.py` to find what needs work
+3. **Convert batch**: Use line numbers for targeted conversion
+4. **Verify progress**: Re-run `find-traditional-calls.py` to confirm completion
+
+**Why Both Scripts?**
+- `discover-loggers-v2.sh`: Shows where loggers are declared (useful for understanding logger field names)
+- `find-traditional-calls.py`: Shows what needs conversion (essential for actual work)
+
+---
+
 ### Step 2: Load Context
 
 Read necessary context for conversion:
