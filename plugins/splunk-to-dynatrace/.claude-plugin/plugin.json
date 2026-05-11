@@ -18,17 +18,5 @@
     "familysearch",
     "javaparser",
     "lsp"
-  ],
-  "dependencies": {
-    "python": ">=3.7",
-    "jpype1": ">=1.4.1",
-    "jq": "recommended"
-  },
-  "breakingChanges": {
-    "2.0.0": [
-      "convert-logs skill now requires analyze skill v1.4.0+ output (conversion-inventory.json)",
-      "discover-loggers-v2.sh script deprecated in favor of analyze skill",
-      "New dependency: python3-jpype required for JavaParser transformer"
-    ]
-  }
+  ]
 }
