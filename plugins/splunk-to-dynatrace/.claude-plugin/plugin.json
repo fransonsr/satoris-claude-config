@@ -1,7 +1,7 @@
 {
   "name": "splunk-to-dynatrace",
-  "version": "2.1.0",
-  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. v2.1.0: LSP JSON-RPC client enables standalone analyze skill with 100% accuracy (finds by TYPE, not name patterns). v2.0.0: Hybrid LLM+JavaParser architecture for 10-50x faster transformations with 90% token reduction.",
+  "version": "2.1.1",
+  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. v2.1.1: Fix LSP workspace initialization - adds proper readiness polling, error detection, and debug mode. v2.1.0: LSP JSON-RPC client enables standalone analyze skill with 100% accuracy. v2.0.0: Hybrid LLM+JavaParser architecture for 10-50x faster transformations.",
   "author": {
     "name": "FamilySearch Engineering - SATORIS Team",
     "email": "fransonsr@familysearch.org"

@@ -52,15 +52,23 @@ from dataclasses import dataclass, asdict
 # JSON-RPC Communication Layer for LSP
 # ============================================================================
 
-def send_lsp_message(process: subprocess.Popen, message: dict) -> None:
+def send_lsp_message(process: subprocess.Popen, message: dict, debug: bool = False) -> None:
     """Send JSON-RPC message with Content-Length header."""
     payload = json.dumps(message)
     content = f"Content-Length: {len(payload)}\r\n\r\n{payload}"
+
+    if debug:
+        # Show abbreviated message for readability
+        method = message.get('method', message.get('id', 'notification'))
+        print(f"→ LSP: {method}", file=sys.stderr)
+        if len(payload) < 500:
+            print(f"  {payload}", file=sys.stderr)
+
     process.stdin.write(content.encode('utf-8'))
     process.stdin.flush()
 
 
-def read_lsp_message(process: subprocess.Popen) -> dict:
+def read_lsp_message(process: subprocess.Popen, debug: bool = False) -> dict:
     """Read JSON-RPC response (parse headers, then JSON body)."""
     # Read headers until blank line
     headers = {}
@@ -76,12 +84,22 @@ def read_lsp_message(process: subprocess.Popen) -> dict:
     content_length = int(headers.get('Content-Length', 0))
     if content_length > 0:
         content = process.stdout.read(content_length).decode('utf-8')
-        return json.loads(content)
+        response = json.loads(content)
+
+        if debug:
+            # Show abbreviated response
+            msg_type = 'response' if 'id' in response else 'notification'
+            method = response.get('method', response.get('id', '?'))
+            print(f"← LSP {msg_type}: {method}", file=sys.stderr)
+            if 'error' in response:
+                print(f"  ERROR: {response['error']}", file=sys.stderr)
+
+        return response
 
     return {}
 
 
-def send_lsp_request(process: subprocess.Popen, method: str, params: dict, request_id: int) -> dict:
+def send_lsp_request(process: subprocess.Popen, method: str, params: dict, request_id: int, debug: bool = False) -> dict:
     """Send LSP request and wait for response."""
     request = {
         "jsonrpc": "2.0",
@@ -89,11 +107,11 @@ def send_lsp_request(process: subprocess.Popen, method: str, params: dict, reque
         "method": method,
         "params": params
     }
-    send_lsp_message(process, request)
+    send_lsp_message(process, request, debug)
 
     # Read responses until we get the matching ID
     while True:
-        response = read_lsp_message(process)
+        response = read_lsp_message(process, debug)
         if response.get('id') == request_id:
             return response
         # Ignore notifications (no 'id' field)
@@ -136,7 +154,7 @@ def find_equinox_launcher(jdtls_home: Path) -> Optional[Path]:
     return None
 
 
-def spawn_jdtls_server(project_root: Path) -> subprocess.Popen:
+def spawn_jdtls_server(project_root: Path, debug: bool = False) -> subprocess.Popen:
     """
     Spawn jdtls-lsp server for LSP queries.
 
@@ -198,6 +216,7 @@ def spawn_jdtls_server(project_root: Path) -> subprocess.Popen:
         '-Dosgi.sharedConfiguration.area.readOnly=true',
         '-Dosgi.configuration.cascaded=true',
         '-Xms1G',
+        '-Xmx2G',  # Increase heap for large projects
         '--add-modules=ALL-SYSTEM',
         '--add-opens', 'java.base/java.util=ALL-UNNAMED',
         '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
@@ -206,12 +225,15 @@ def spawn_jdtls_server(project_root: Path) -> subprocess.Popen:
     ]
 
     # Start subprocess with stdio pipes
-    print(f"Starting jdtls-lsp server with workspace: {workspace_dir}", file=sys.stderr)
+    if debug:
+        print(f"Starting jdtls-lsp server with workspace: {workspace_dir}", file=sys.stderr)
+        print(f"Command: {' '.join(cmd[:10])}...", file=sys.stderr)
+
     process = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,  # Suppress jdtls logs
+        stderr=subprocess.PIPE if debug else subprocess.DEVNULL,  # Show errors in debug mode
         cwd=str(project_root)
     )
 
@@ -222,30 +244,156 @@ def spawn_jdtls_server(project_root: Path) -> subprocess.Popen:
 # LSP Session Management
 # ============================================================================
 
-def initialize_lsp_session(process: subprocess.Popen, project_root: Path, request_id: int) -> dict:
-    """Send LSP initialize request."""
+def initialize_lsp_session(process: subprocess.Popen, project_root: Path, request_id: int, debug: bool = False) -> dict:
+    """Send LSP initialize request with enhanced capabilities."""
     params = {
         "processId": os.getpid(),
         "rootUri": f"file://{project_root.absolute()}",
         "capabilities": {
+            "workspace": {
+                "workspaceFolders": True,
+                "symbol": {
+                    "symbolKind": {
+                        "valueSet": list(range(1, 27))  # All symbol kinds
+                    }
+                }
+            },
             "textDocument": {
-                "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
-                "hover": {"contentFormat": ["plaintext", "markdown"]},
-                "references": {}
+                "documentSymbol": {
+                    "hierarchicalDocumentSymbolSupport": True,
+                    "symbolKind": {
+                        "valueSet": list(range(1, 27))
+                    }
+                },
+                "hover": {
+                    "contentFormat": ["markdown", "plaintext"]
+                },
+                "references": {
+                    "dynamicRegistration": False
+                }
+            }
+        },
+        "initializationOptions": {
+            "settings": {
+                "java": {
+                    "autobuild": {"enabled": True},
+                    "maven": {"downloadSources": False},
+                    "referencesCodeLens": {"enabled": False},
+                    "implementationsCodeLens": {"enabled": False}
+                }
             }
         }
     }
 
-    response = send_lsp_request(process, "initialize", params, request_id)
+    response = send_lsp_request(process, "initialize", params, request_id, debug)
+
+    # Check for errors
+    if "error" in response:
+        raise RuntimeError(f"LSP initialization failed: {response['error']}")
+
+    if debug:
+        print("✓ LSP initialized successfully", file=sys.stderr)
 
     # Send initialized notification
     send_lsp_message(process, {
         "jsonrpc": "2.0",
         "method": "initialized",
         "params": {}
-    })
+    }, debug)
 
     return response
+
+
+def wait_for_workspace_ready(process: subprocess.Popen, request_id: int, timeout: int = 120, debug: bool = False) -> int:
+    """
+    Wait for jdtls workspace to finish indexing.
+
+    Polls workspace/symbol query until it returns non-empty results or timeout.
+
+    Returns: Updated request_id after polling
+    """
+    start_time = time.time()
+    if debug:
+        print("Waiting for jdtls workspace indexing...", file=sys.stderr)
+
+    while time.time() - start_time < timeout:
+        # Poll with workspace/symbol query
+        response = send_lsp_request(process, "workspace/symbol", {"query": ""}, request_id, debug=False)  # Don't spam debug logs
+        request_id += 1
+
+        if debug:
+            elapsed = int(time.time() - start_time)
+            if elapsed % 5 == 0:  # Report every 5 seconds
+                print(f"[{elapsed}s] Polling workspace readiness...", file=sys.stderr)
+
+        # Check for error
+        if "error" in response:
+            if debug:
+                print(f"  Error: {response['error'].get('message')}", file=sys.stderr)
+            time.sleep(2)
+            continue
+
+        # Check for valid result
+        result = response.get("result")
+        if result is not None and len(result) > 0:
+            if debug:
+                print(f"✓ Workspace ready after {int(time.time() - start_time)}s ({len(result)} symbols indexed)", file=sys.stderr)
+            return request_id
+
+        time.sleep(2)
+
+    raise TimeoutError(f"jdtls workspace not ready after {timeout}s")
+
+
+def validate_lsp_communication(process: subprocess.Popen, project_root: Path, request_id: int, debug: bool = False) -> int:
+    """
+    Validate LSP communication with a known test file.
+
+    For cds2-root, tests ServiceJob.java which should have LOGGER at line 51.
+
+    Returns: Updated request_id
+    """
+    # Find a known test file
+    test_candidates = [
+        project_root / "cds-core/src/main/java/org/familysearch/cds/core/async/ServiceJob.java",
+        # Add more common paths as fallback
+    ]
+
+    test_file = None
+    for candidate in test_candidates:
+        if candidate.exists():
+            test_file = candidate
+            break
+
+    if not test_file:
+        if debug:
+            print("⚠ No test file found for LSP validation, proceeding anyway...", file=sys.stderr)
+        return request_id
+
+    # Query symbols (we'll define the enhanced query_document_symbol below)
+    file_uri = f"file://{test_file.absolute()}"
+    symbols = query_document_symbol(process, file_uri, request_id, debug)
+    request_id += 1
+
+    # Check for expected logger
+    logger_found = any(
+        s.get("name") == "LOGGER" and s.get("kind") in [8, 14, "Field", "Constant"]
+        for s in symbols
+    )
+
+    if logger_found:
+        if debug:
+            print(f"✓ LSP validation successful (found known logger in {test_file.name})", file=sys.stderr)
+    else:
+        print(f"ERROR: LSP validation failed - known logger not found in {test_file}", file=sys.stderr)
+        print(f"Found {len(symbols)} symbols, but no LOGGER field", file=sys.stderr)
+        if debug and len(symbols) > 0:
+            print("Sample symbols:", file=sys.stderr)
+            for sym in symbols[:5]:
+                print(f"  - {sym.get('name')} ({sym.get('kind')})", file=sys.stderr)
+        raise RuntimeError("LSP communication broken - cannot proceed")
+
+    return request_id
 
 
 def shutdown_lsp_session(process: subprocess.Popen, request_id: int):
@@ -276,7 +424,7 @@ def flatten_symbols(symbols: List[dict]) -> List[dict]:
     return flat
 
 
-def query_document_symbol(process: subprocess.Popen, file_uri: str, request_id: int) -> List[dict]:
+def query_document_symbol(process: subprocess.Popen, file_uri: str, request_id: int, debug: bool = False) -> List[dict]:
     """Query textDocument/documentSymbol for all symbols in file."""
     params = {
         "textDocument": {
@@ -284,24 +432,45 @@ def query_document_symbol(process: subprocess.Popen, file_uri: str, request_id: 
         }
     }
 
-    response = send_lsp_request(process, "textDocument/documentSymbol", params, request_id)
+    response = send_lsp_request(process, "textDocument/documentSymbol", params, request_id, debug)
+
+    # Check for error
+    if "error" in response:
+        error_msg = response["error"].get("message", "Unknown error")
+        if debug:
+            print(f"  ✗ documentSymbol error: {error_msg}", file=sys.stderr)
+        return []
+
+    # Check for valid result
+    result = response.get("result")
+    if result is None:
+        return []
 
     # Handle hierarchical symbols (flatten if needed)
-    result = response.get("result", [])
-    return flatten_symbols(result)
+    symbols = flatten_symbols(result)
+    return symbols
 
 
-def query_hover(process: subprocess.Popen, file_uri: str, line: int, character: int, request_id: int) -> str:
+def query_hover(process: subprocess.Popen, file_uri: str, line: int, character: int, request_id: int, debug: bool = False) -> str:
     """Query textDocument/hover for type info at position."""
     params = {
         "textDocument": {"uri": file_uri},
         "position": {"line": line, "character": character}
     }
 
-    response = send_lsp_request(process, "textDocument/hover", params, request_id)
+    response = send_lsp_request(process, "textDocument/hover", params, request_id, debug)
+
+    # Check for error
+    if "error" in response:
+        if debug:
+            print(f"  ✗ hover error: {response['error'].get('message')}", file=sys.stderr)
+        return ""
 
     # Extract hover text from response
-    result = response.get("result", {})
+    result = response.get("result")
+    if result is None:
+        return ""
+
     contents = result.get("contents", {})
 
     # Handle different content formats
@@ -315,7 +484,7 @@ def query_hover(process: subprocess.Popen, file_uri: str, line: int, character: 
     return ""
 
 
-def query_references(process: subprocess.Popen, file_uri: str, line: int, character: int, request_id: int) -> List[dict]:
+def query_references(process: subprocess.Popen, file_uri: str, line: int, character: int, request_id: int, debug: bool = False) -> List[dict]:
     """Query textDocument/references for all usages of symbol."""
     params = {
         "textDocument": {"uri": file_uri},
@@ -323,8 +492,20 @@ def query_references(process: subprocess.Popen, file_uri: str, line: int, charac
         "context": {"includeDeclaration": True}
     }
 
-    response = send_lsp_request(process, "textDocument/references", params, request_id)
-    return response.get("result", [])
+    response = send_lsp_request(process, "textDocument/references", params, request_id, debug)
+
+    # Check for error
+    if "error" in response:
+        if debug:
+            print(f"  ✗ references error: {response['error'].get('message')}", file=sys.stderr)
+        return []
+
+    # Check for valid result
+    result = response.get("result")
+    if result is None:
+        return []
+
+    return result
 
 
 # ============================================================================
@@ -423,7 +604,7 @@ def get_symbol_kind_name(kind: int) -> str:
 # Main Logger Discovery Orchestration
 # ============================================================================
 
-def discover_loggers_via_lsp(source_dirs: List[Path], project_root: Path, auto_discover: bool = False) -> dict:
+def discover_loggers_via_lsp(source_dirs: List[Path], project_root: Path, auto_discover: bool = False, debug: bool = False) -> dict:
     """
     Discover all loggers using LSP semantic analysis.
 
@@ -447,33 +628,44 @@ def discover_loggers_via_lsp(source_dirs: List[Path], project_root: Path, auto_d
     java_files = discover_java_files(source_dirs)
 
     # 3. Spawn jdtls server
-    jdtls_process = spawn_jdtls_server(project_root)
+    jdtls_process = spawn_jdtls_server(project_root, debug)
 
     # 4. Initialize LSP session
     request_id = 1
-    print("Initializing LSP session...", file=sys.stderr)
-    initialize_lsp_session(jdtls_process, project_root, request_id)
+    if debug:
+        print("Initializing LSP session...", file=sys.stderr)
+    init_response = initialize_lsp_session(jdtls_process, project_root, request_id, debug)
     request_id += 1
 
-    # Wait for initialization (jdtls needs time to index)
-    print("Waiting for jdtls to index project (this may take 30-60 seconds)...", file=sys.stderr)
-    time.sleep(5)  # Give jdtls time to start indexing
+    # Validate initialization
+    if "error" in init_response:
+        raise RuntimeError(f"LSP initialization failed: {init_response['error']}")
 
-    # 5. For each Java file, discover loggers
+    # 5. Wait for workspace readiness (REPLACES time.sleep(5))
+    request_id = wait_for_workspace_ready(jdtls_process, request_id, timeout=120, debug=debug)
+
+    # 6. Validate LSP communication with test file
+    request_id = validate_lsp_communication(jdtls_process, project_root, request_id, debug)
+
+    # 7. For each Java file, discover loggers
     loggers = []
     log_calls = []
 
     logger_pattern = re.compile(r'(LOGGER|logger|LOG|log|.*_LOGGER|.*_LOG|.*Logger|.*Log)$')
 
-    print("Discovering loggers...", file=sys.stderr)
+    if debug:
+        print(f"Discovering loggers in {len(java_files)} files...", file=sys.stderr)
+    else:
+        print("Discovering loggers...", file=sys.stderr)
+
     for i, java_file in enumerate(java_files):
         if (i + 1) % 100 == 0:
             print(f"Processed {i+1}/{len(java_files)} files: {len(loggers)} loggers, {len(log_calls)} calls", file=sys.stderr)
 
         file_uri = f"file://{java_file.absolute()}"
 
-        # Query all symbols
-        symbols = query_document_symbol(jdtls_process, file_uri, request_id)
+        # Query all symbols (pass debug=False to avoid spamming logs)
+        symbols = query_document_symbol(jdtls_process, file_uri, request_id, debug=False)
         request_id += 1
 
         # Filter to Field/Constant symbols with logger-like names
@@ -491,8 +683,8 @@ def discover_loggers_via_lsp(source_dirs: List[Path], project_root: Path, auto_d
                     line = location.get('line', 0)
                     character = location.get('character', 0)
 
-                    # Get type info
-                    hover_text = query_hover(jdtls_process, file_uri, line, character, request_id)
+                    # Get type info (pass debug=False to avoid spamming)
+                    hover_text = query_hover(jdtls_process, file_uri, line, character, request_id, debug=False)
                     request_id += 1
 
                     # Check if it's a Logger type
@@ -507,8 +699,11 @@ def discover_loggers_via_lsp(source_dirs: List[Path], project_root: Path, auto_d
                         }
                         loggers.append(logger_info)
 
-                        # Find all references
-                        references = query_references(jdtls_process, file_uri, line, character, request_id)
+                        if debug and len(loggers) <= 5:  # Show first few discoveries
+                            print(f"  Found logger: {symbol_name} in {java_file.name}", file=sys.stderr)
+
+                        # Find all references (pass debug=False to avoid spamming)
+                        references = query_references(jdtls_process, file_uri, line, character, request_id, debug=False)
                         request_id += 1
 
                         # Add each reference as a log call
@@ -924,6 +1119,10 @@ def main():
     parser.add_argument('--auto-discover', action='store_true',
                         help='Auto-discover all modules in multi-module project')
 
+    # Debug mode
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug logging (shows LSP communication)')
+
     # EXISTING: Pre-generated results
     parser.add_argument('--input-lsp-results', type=Path,
                         help='JSON file with LSP query results')
@@ -936,8 +1135,9 @@ def main():
         source_dirs = []
 
         if args.auto_discover:
-            print(f"Auto-discovering modules in: {args.project_root}")
-            lsp_results = discover_loggers_via_lsp([], args.project_root, auto_discover=True)
+            if not args.debug:
+                print(f"Auto-discovering modules in: {args.project_root}")
+            lsp_results = discover_loggers_via_lsp([], args.project_root, auto_discover=True, debug=args.debug)
         else:
             # Collect source directories
             if args.source:
@@ -945,8 +1145,9 @@ def main():
             if args.test:
                 source_dirs.extend([args.project_root / t for t in args.test])
 
-            print(f"Discovering loggers via LSP in: {[str(d) for d in source_dirs]}")
-            lsp_results = discover_loggers_via_lsp(source_dirs, args.project_root, auto_discover=False)
+            if not args.debug:
+                print(f"Discovering loggers via LSP in: {[str(d) for d in source_dirs]}")
+            lsp_results = discover_loggers_via_lsp(source_dirs, args.project_root, auto_discover=False, debug=args.debug)
 
         # Process results (existing code)
         for logger_data in lsp_results.get('loggers', []):
