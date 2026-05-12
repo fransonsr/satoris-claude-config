@@ -28,24 +28,521 @@ import json
 import sys
 import os
 import re
+import subprocess
+import platform
+import hashlib
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 
 #
-# NOTE: This script is designed to be invoked by Claude Code's analyze skill.
-# The skill will provide LSP query results via the LSP tool.
-# This script processes those results and generates structured inventory.
+# NOTE: This script now supports both Claude Code integration and standalone usage.
+# - In Claude Code: The skill provides LSP query results via the LSP tool
+# - Standalone: The script spawns jdtls-lsp server and queries it directly
 #
-# For standalone usage, you would need to:
-# 1. Connect to jdtls-lsp server directly
-# 2. Send LSP requests (textDocument/documentSymbol, textDocument/references, etc.)
-# 3. Process responses
+# Standalone usage requires jdtls-lsp installed at:
+# - $JDTLS_HOME/bin/jdtls.py
+# - ~/.local/share/jdtls/bin/jdtls.py
+# - /usr/share/jdtls/bin/jdtls.py
 #
-# In Claude Code context, the skill handles LSP queries and this script handles
-# data structuring and file I/O.
-#
+
+# ============================================================================
+# JSON-RPC Communication Layer for LSP
+# ============================================================================
+
+def send_lsp_message(process: subprocess.Popen, message: dict) -> None:
+    """Send JSON-RPC message with Content-Length header."""
+    payload = json.dumps(message)
+    content = f"Content-Length: {len(payload)}\r\n\r\n{payload}"
+    process.stdin.write(content.encode('utf-8'))
+    process.stdin.flush()
+
+
+def read_lsp_message(process: subprocess.Popen) -> dict:
+    """Read JSON-RPC response (parse headers, then JSON body)."""
+    # Read headers until blank line
+    headers = {}
+    while True:
+        line = process.stdout.readline().decode('utf-8').strip()
+        if not line:
+            break
+        if ':' in line:
+            key, value = line.split(':', 1)
+            headers[key.strip()] = value.strip()
+
+    # Read content based on Content-Length
+    content_length = int(headers.get('Content-Length', 0))
+    if content_length > 0:
+        content = process.stdout.read(content_length).decode('utf-8')
+        return json.loads(content)
+
+    return {}
+
+
+def send_lsp_request(process: subprocess.Popen, method: str, params: dict, request_id: int) -> dict:
+    """Send LSP request and wait for response."""
+    request = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params
+    }
+    send_lsp_message(process, request)
+
+    # Read responses until we get the matching ID
+    while True:
+        response = read_lsp_message(process)
+        if response.get('id') == request_id:
+            return response
+        # Ignore notifications (no 'id' field)
+
+
+# ============================================================================
+# jdtls Server Management
+# ============================================================================
+
+def find_jdtls_installation() -> Optional[Path]:
+    """Find jdtls installation directory."""
+    # Check environment variable
+    if 'JDTLS_HOME' in os.environ:
+        path = Path(os.environ['JDTLS_HOME'])
+        if path.exists():
+            return path
+
+    # Check standard locations
+    standard_locations = [
+        Path.home() / '.local' / 'share' / 'jdtls',
+        Path('/usr/share/jdtls'),
+    ]
+
+    for location in standard_locations:
+        if location.exists() and (location / 'bin' / 'jdtls.py').exists():
+            return location
+
+    return None
+
+
+def find_equinox_launcher(jdtls_home: Path) -> Optional[Path]:
+    """Find equinox launcher JAR."""
+    plugins_dir = jdtls_home / 'plugins'
+    launcher_pattern = 'org.eclipse.equinox.launcher_*.jar'
+
+    launchers = list(plugins_dir.glob(launcher_pattern))
+    if launchers:
+        return launchers[0]
+
+    return None
+
+
+def spawn_jdtls_server(project_root: Path) -> subprocess.Popen:
+    """
+    Spawn jdtls-lsp server for LSP queries.
+
+    Returns subprocess with stdin/stdout for JSON-RPC communication.
+    """
+    # Find jdtls installation
+    jdtls_home = find_jdtls_installation()
+    if not jdtls_home:
+        print("ERROR: jdtls-lsp server not found.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Searched locations:", file=sys.stderr)
+        print("  - $JDTLS_HOME", file=sys.stderr)
+        print("  - ~/.local/share/jdtls/", file=sys.stderr)
+        print("  - /usr/share/jdtls/", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Pattern-based matching is NOT used because it misses 40-60% of log statements.", file=sys.stderr)
+        print("Install jdtls-lsp or use Claude Code which includes it.", file=sys.stderr)
+        sys.exit(1)
+
+    # Find launcher JAR
+    launcher_jar = find_equinox_launcher(jdtls_home)
+    if not launcher_jar:
+        print(f"ERROR: Cannot find equinox launcher in {jdtls_home}/plugins/", file=sys.stderr)
+        sys.exit(1)
+
+    # Determine config directory (Linux/Mac/Windows)
+    system = platform.system()
+    if system == 'Linux':
+        config_dir = jdtls_home / 'config_linux'
+    elif system == 'Darwin':
+        config_dir = jdtls_home / 'config_mac'
+    elif system == 'Windows':
+        config_dir = jdtls_home / 'config_win'
+    else:
+        config_dir = jdtls_home / 'config_linux'  # Default fallback
+
+    # Create workspace directory
+    cache_dir = Path.home() / '.cache' / 'jdtls'
+    workspace_hash = hashlib.sha1(str(project_root).encode()).hexdigest()[:8]
+    workspace_dir = cache_dir / f'lsp-inventory-{workspace_hash}'
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find Java executable
+    java_exec = 'java'
+    if 'JAVA_HOME' in os.environ:
+        java_home = Path(os.environ['JAVA_HOME'])
+        java_candidate = java_home / 'bin' / 'java'
+        if java_candidate.exists():
+            java_exec = str(java_candidate)
+
+    # Build command (based on jdtls.py logic)
+    cmd = [
+        java_exec,
+        '-Declipse.application=org.eclipse.jdt.ls.core.id1',
+        '-Dosgi.bundles.defaultStartLevel=4',
+        '-Declipse.product=org.eclipse.jdt.ls.core.product',
+        '-Dosgi.checkConfiguration=true',
+        f'-Dosgi.sharedConfiguration.area={config_dir}',
+        '-Dosgi.sharedConfiguration.area.readOnly=true',
+        '-Dosgi.configuration.cascaded=true',
+        '-Xms1G',
+        '--add-modules=ALL-SYSTEM',
+        '--add-opens', 'java.base/java.util=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+        '-jar', str(launcher_jar),
+        '-data', str(workspace_dir)
+    ]
+
+    # Start subprocess with stdio pipes
+    print(f"Starting jdtls-lsp server with workspace: {workspace_dir}", file=sys.stderr)
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,  # Suppress jdtls logs
+        cwd=str(project_root)
+    )
+
+    return process
+
+
+# ============================================================================
+# LSP Session Management
+# ============================================================================
+
+def initialize_lsp_session(process: subprocess.Popen, project_root: Path, request_id: int) -> dict:
+    """Send LSP initialize request."""
+    params = {
+        "processId": os.getpid(),
+        "rootUri": f"file://{project_root.absolute()}",
+        "capabilities": {
+            "textDocument": {
+                "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
+                "hover": {"contentFormat": ["plaintext", "markdown"]},
+                "references": {}
+            }
+        }
+    }
+
+    response = send_lsp_request(process, "initialize", params, request_id)
+
+    # Send initialized notification
+    send_lsp_message(process, {
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    })
+
+    return response
+
+
+def shutdown_lsp_session(process: subprocess.Popen, request_id: int):
+    """Send LSP shutdown and exit."""
+    send_lsp_request(process, "shutdown", {}, request_id)
+
+    send_lsp_message(process, {
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": {}
+    })
+
+    process.wait(timeout=5)
+
+
+# ============================================================================
+# LSP Query Functions
+# ============================================================================
+
+def flatten_symbols(symbols: List[dict]) -> List[dict]:
+    """Flatten hierarchical symbol structure."""
+    flat = []
+    for symbol in symbols:
+        flat.append(symbol)
+        # Recursively flatten children
+        if 'children' in symbol:
+            flat.extend(flatten_symbols(symbol['children']))
+    return flat
+
+
+def query_document_symbol(process: subprocess.Popen, file_uri: str, request_id: int) -> List[dict]:
+    """Query textDocument/documentSymbol for all symbols in file."""
+    params = {
+        "textDocument": {
+            "uri": file_uri
+        }
+    }
+
+    response = send_lsp_request(process, "textDocument/documentSymbol", params, request_id)
+
+    # Handle hierarchical symbols (flatten if needed)
+    result = response.get("result", [])
+    return flatten_symbols(result)
+
+
+def query_hover(process: subprocess.Popen, file_uri: str, line: int, character: int, request_id: int) -> str:
+    """Query textDocument/hover for type info at position."""
+    params = {
+        "textDocument": {"uri": file_uri},
+        "position": {"line": line, "character": character}
+    }
+
+    response = send_lsp_request(process, "textDocument/hover", params, request_id)
+
+    # Extract hover text from response
+    result = response.get("result", {})
+    contents = result.get("contents", {})
+
+    # Handle different content formats
+    if isinstance(contents, str):
+        return contents
+    elif isinstance(contents, dict):
+        return contents.get("value", "")
+    elif isinstance(contents, list):
+        return " ".join(str(c) for c in contents)
+
+    return ""
+
+
+def query_references(process: subprocess.Popen, file_uri: str, line: int, character: int, request_id: int) -> List[dict]:
+    """Query textDocument/references for all usages of symbol."""
+    params = {
+        "textDocument": {"uri": file_uri},
+        "position": {"line": line, "character": character},
+        "context": {"includeDeclaration": True}
+    }
+
+    response = send_lsp_request(process, "textDocument/references", params, request_id)
+    return response.get("result", [])
+
+
+# ============================================================================
+# Multi-Module Discovery
+# ============================================================================
+
+def discover_modules(project_root: Path) -> List[Path]:
+    """
+    Find all Maven/Gradle modules in project.
+
+    Returns list of module root directories.
+    """
+    modules = []
+
+    # Find all pom.xml and build.gradle files
+    pom_files = list(project_root.rglob("pom.xml"))
+    gradle_files = list(project_root.rglob("build.gradle"))
+
+    for build_file in pom_files + gradle_files:
+        module_root = build_file.parent
+
+        # Check for source directories
+        main_java = module_root / "src" / "main" / "java"
+        test_java = module_root / "src" / "test" / "java"
+
+        if main_java.exists() or test_java.exists():
+            modules.append(module_root)
+
+    # If no modules found, treat project root as single module
+    if not modules:
+        modules.append(project_root)
+
+    print(f"Discovered {len(modules)} modules:", file=sys.stderr)
+    for mod in sorted(modules):
+        rel_path = mod.relative_to(project_root) if mod != project_root else Path('.')
+        print(f"  - {rel_path}", file=sys.stderr)
+
+    return modules
+
+
+def get_module_name(file_path: Path, project_root: Path) -> str:
+    """Extract module name from file path."""
+    try:
+        rel_path = file_path.relative_to(project_root)
+        parts = rel_path.parts
+
+        # First directory component is module name
+        if len(parts) > 0 and parts[0] != 'src':
+            return parts[0]
+
+        return "root"
+    except ValueError:
+        return "unknown"
+
+
+def discover_java_files(source_dirs: List[Path]) -> List[Path]:
+    """Find all .java files in source directories."""
+    java_files = []
+
+    for source_dir in source_dirs:
+        if source_dir.exists():
+            files = list(source_dir.rglob("*.java"))
+            java_files.extend(files)
+
+    print(f"Found {len(java_files)} Java files", file=sys.stderr)
+    return java_files
+
+
+# ============================================================================
+# Helper Functions for Logger Discovery
+# ============================================================================
+
+def extract_type_from_hover(hover_text: str) -> str:
+    """Extract clean type name from hover text."""
+    lines = hover_text.split('\n')
+    if lines:
+        first_line = lines[0].strip()
+        # Remove markdown formatting
+        first_line = first_line.replace('`', '').replace('java', '').strip()
+        return first_line
+    return "Unknown"
+
+
+def get_symbol_kind_name(kind: int) -> str:
+    """Convert symbol kind number to name."""
+    kinds = {
+        1: "File", 2: "Module", 3: "Namespace", 4: "Package",
+        5: "Class", 6: "Method", 7: "Property", 8: "Field",
+        9: "Constructor", 10: "Enum", 11: "Interface", 12: "Function",
+        13: "Variable", 14: "Constant", 15: "String", 16: "Number"
+    }
+    return kinds.get(kind, str(kind))
+
+
+# ============================================================================
+# Main Logger Discovery Orchestration
+# ============================================================================
+
+def discover_loggers_via_lsp(source_dirs: List[Path], project_root: Path, auto_discover: bool = False) -> dict:
+    """
+    Discover all loggers using LSP semantic analysis.
+
+    Returns dict with loggers and log_calls (with module attribution).
+    """
+    # 1. Discover modules if auto-discover enabled
+    if auto_discover:
+        modules = discover_modules(project_root)
+        source_dirs = []
+        for module in modules:
+            main_java = module / "src" / "main" / "java"
+            test_java = module / "src" / "test" / "java"
+            if main_java.exists():
+                source_dirs.append(main_java)
+            if test_java.exists():
+                source_dirs.append(test_java)
+
+        print(f"Auto-discovered {len(source_dirs)} source directories", file=sys.stderr)
+
+    # 2. Find all Java files
+    java_files = discover_java_files(source_dirs)
+
+    # 3. Spawn jdtls server
+    jdtls_process = spawn_jdtls_server(project_root)
+
+    # 4. Initialize LSP session
+    request_id = 1
+    print("Initializing LSP session...", file=sys.stderr)
+    initialize_lsp_session(jdtls_process, project_root, request_id)
+    request_id += 1
+
+    # Wait for initialization (jdtls needs time to index)
+    print("Waiting for jdtls to index project (this may take 30-60 seconds)...", file=sys.stderr)
+    time.sleep(5)  # Give jdtls time to start indexing
+
+    # 5. For each Java file, discover loggers
+    loggers = []
+    log_calls = []
+
+    logger_pattern = re.compile(r'(LOGGER|logger|LOG|log|.*_LOGGER|.*_LOG|.*Logger|.*Log)$')
+
+    print("Discovering loggers...", file=sys.stderr)
+    for i, java_file in enumerate(java_files):
+        if (i + 1) % 100 == 0:
+            print(f"Processed {i+1}/{len(java_files)} files: {len(loggers)} loggers, {len(log_calls)} calls", file=sys.stderr)
+
+        file_uri = f"file://{java_file.absolute()}"
+
+        # Query all symbols
+        symbols = query_document_symbol(jdtls_process, file_uri, request_id)
+        request_id += 1
+
+        # Filter to Field/Constant symbols with logger-like names
+        for symbol in symbols:
+            symbol_kind = symbol.get('kind')
+            symbol_name = symbol.get('name', '')
+
+            # SymbolKind: Field=8, Constant=14 (but use names for compatibility)
+            kind_name = symbol.get('kind') if isinstance(symbol.get('kind'), str) else get_symbol_kind_name(symbol.get('kind'))
+
+            if kind_name in ['Field', 'Constant', '8', '14']:
+                if logger_pattern.match(symbol_name):
+                    # Get position
+                    location = symbol.get('location', {}).get('range', {}).get('start', {})
+                    line = location.get('line', 0)
+                    character = location.get('character', 0)
+
+                    # Get type info
+                    hover_text = query_hover(jdtls_process, file_uri, line, character, request_id)
+                    request_id += 1
+
+                    # Check if it's a Logger type
+                    if 'Logger' in hover_text or 'Log' in hover_text or 'slf4j' in hover_text:
+                        # Found a logger!
+                        logger_info = {
+                            "name": symbol_name,
+                            "type": extract_type_from_hover(hover_text),
+                            "file": str(java_file.absolute()),
+                            "line": line + 1,  # LSP uses 0-based, we use 1-based
+                            "module": get_module_name(java_file, project_root)
+                        }
+                        loggers.append(logger_info)
+
+                        # Find all references
+                        references = query_references(jdtls_process, file_uri, line, character, request_id)
+                        request_id += 1
+
+                        # Add each reference as a log call
+                        for ref in references:
+                            ref_range = ref.get('range', {}).get('start', {})
+                            ref_line = ref_range.get('line', 0) + 1  # Convert to 1-based
+                            ref_uri = ref.get('uri', '')
+                            ref_file = ref_uri.replace('file://', '')
+                            ref_path = Path(ref_file)
+
+                            # Skip the declaration line itself
+                            if ref_line != logger_info["line"] or ref_file != logger_info["file"]:
+                                log_calls.append({
+                                    "logger_name": symbol_name,
+                                    "file": ref_file,
+                                    "line": ref_line,
+                                    "module": get_module_name(ref_path, project_root)
+                                })
+
+    print(f"Processed {len(java_files)}/{len(java_files)} files: {len(loggers)} loggers, {len(log_calls)} calls", file=sys.stderr)
+
+    # 6. Shutdown jdtls server
+    print("Shutting down LSP session...", file=sys.stderr)
+    shutdown_lsp_session(jdtls_process, request_id)
+
+    return {
+        "loggers": loggers,
+        "log_calls": log_calls
+    }
+
+
+# ============================================================================
+# Existing Data Classes and Processing
+# ============================================================================
 
 @dataclass
 class LoggerInfo:
@@ -404,33 +901,54 @@ def generate_conversion_inventory(lsp_inventory: Dict[str, Any], output_path: Pa
 
 def main():
     """
-    Main entry point.
+    Main entry point with enhanced LSP discovery.
 
-    Note: This script is typically invoked by Claude Code's analyze skill,
-    which provides LSP query results. For standalone use, you would need
-    to connect to jdtls-lsp server directly.
+    Supports three modes:
+    1. --source/--test: Specify source directories for single-module projects
+    2. --auto-discover: Auto-detect all modules in multi-module projects
+    3. --input-lsp-results: Process pre-generated LSP results (backward compatible)
     """
     import argparse
 
     parser = argparse.ArgumentParser(description='Generate LSP-based logger inventory')
     parser.add_argument('--project-root', type=Path, default=Path.cwd(),
-                        help='Project root directory (default: current directory)')
+                        help='Project root directory')
     parser.add_argument('--output', type=Path, required=True,
                         help='Output JSON file path')
+
+    # NEW: Source-based discovery
+    parser.add_argument('--source', type=Path, action='append',
+                        help='Source directory to scan (e.g., src/main/java)')
+    parser.add_argument('--test', type=Path, action='append',
+                        help='Test directory to scan (e.g., src/test/java)')
+    parser.add_argument('--auto-discover', action='store_true',
+                        help='Auto-discover all modules in multi-module project')
+
+    # EXISTING: Pre-generated results
     parser.add_argument('--input-lsp-results', type=Path,
-                        help='JSON file with LSP query results (if running standalone)')
+                        help='JSON file with LSP query results')
 
     args = parser.parse_args()
-
-    # Initialize generator
     generator = LSPInventoryGenerator(args.project_root)
 
-    # If LSP results provided, process them
-    if args.input_lsp_results and args.input_lsp_results.exists():
-        with open(args.input_lsp_results, 'r') as f:
-            lsp_results = json.load(f)
+    # NEW CODE PATH: Generate LSP results internally
+    if args.source or args.auto_discover:
+        source_dirs = []
 
-        # Process logger declarations
+        if args.auto_discover:
+            print(f"Auto-discovering modules in: {args.project_root}")
+            lsp_results = discover_loggers_via_lsp([], args.project_root, auto_discover=True)
+        else:
+            # Collect source directories
+            if args.source:
+                source_dirs.extend([args.project_root / s for s in args.source])
+            if args.test:
+                source_dirs.extend([args.project_root / t for t in args.test])
+
+            print(f"Discovering loggers via LSP in: {[str(d) for d in source_dirs]}")
+            lsp_results = discover_loggers_via_lsp(source_dirs, args.project_root, auto_discover=False)
+
+        # Process results (existing code)
         for logger_data in lsp_results.get('loggers', []):
             generator.add_logger_from_lsp(
                 name=logger_data['name'],
@@ -439,7 +957,6 @@ def main():
                 line=logger_data['line']
             )
 
-        # Process log call sites
         for call_data in lsp_results.get('log_calls', []):
             generator.add_log_call_from_lsp(
                 logger_name=call_data['logger_name'],
@@ -447,7 +964,8 @@ def main():
                 line=call_data['line']
             )
 
-        # Enhance with code context
+        # Enhance with code context (existing)
+        print("Enhancing with code context...", file=sys.stderr)
         for log_call in generator.log_calls:
             context = generator.enhance_with_code_context(log_call.file, log_call.line)
             log_call.level = context.get('level')
@@ -455,16 +973,50 @@ def main():
             log_call.message_snippet = context.get('message_snippet')
             log_call.parameter_count = context.get('parameter_count', 0)
 
+    # EXISTING CODE PATH: Use pre-generated results
+    elif args.input_lsp_results and args.input_lsp_results.exists():
+        with open(args.input_lsp_results, 'r') as f:
+            lsp_results = json.load(f)
+
+        for logger_data in lsp_results.get('loggers', []):
+            generator.add_logger_from_lsp(
+                name=logger_data['name'],
+                type_info=logger_data['type'],
+                file_path=logger_data['file'],
+                line=logger_data['line']
+            )
+
+        for call_data in lsp_results.get('log_calls', []):
+            generator.add_log_call_from_lsp(
+                logger_name=call_data['logger_name'],
+                file_path=call_data['file'],
+                line=call_data['line']
+            )
+
+        for log_call in generator.log_calls:
+            context = generator.enhance_with_code_context(log_call.file, log_call.line)
+            log_call.level = context.get('level')
+            log_call.pattern = context.get('pattern')
+            log_call.message_snippet = context.get('message_snippet')
+            log_call.parameter_count = context.get('parameter_count', 0)
+
+    # FAIL if neither mode provided
     else:
-        print("Error: This script requires LSP query results.", file=sys.stderr)
-        print("In Claude Code context, the analyze skill provides these results.", file=sys.stderr)
-        print("For standalone use, provide --input-lsp-results with LSP query output.", file=sys.stderr)
+        print("Error: Must provide --source, --auto-discover, or --input-lsp-results", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("For single-module project:", file=sys.stderr)
+        print("  python3 lsp_inventory.py --source src/main/java --output inventory.json", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("For multi-module project (auto-detect):", file=sys.stderr)
+        print("  python3 lsp_inventory.py --auto-discover --output inventory.json", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("For processing pre-generated LSP results:", file=sys.stderr)
+        print("  python3 lsp_inventory.py --input-lsp-results results.json --output inventory.json", file=sys.stderr)
         sys.exit(1)
 
-    # Save inventory
+    # Save outputs (existing code)
     generator.save_inventory(args.output)
 
-    # Generate conversion-specific inventory (v1.4.0 feature)
     conversion_output = args.output.parent / 'conversion-inventory.json'
     lsp_inventory = generator.generate_inventory()
     generate_conversion_inventory(lsp_inventory, conversion_output, generator.project_root)

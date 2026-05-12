@@ -271,19 +271,34 @@ find . -path "*/src/test/java/**/*.java" -type f >> java_files.txt
 
 **Option 1: Use Bundled Python Script** (if Python 3.7+ available)
 
-This skill includes `scripts/lsp_inventory.py` for deterministic inventory generation:
+This skill includes `scripts/lsp_inventory.py` for deterministic inventory generation with **built-in LSP discovery**:
 
 ```bash
-# Invoke LSP queries for each Java file
-# For each file:
-#   1. LSP.documentSymbol(file) → Find logger declarations
-#   2. LSP.hover(file, line, char) → Get type info
-#   3. LSP.findReferences(file, line, char) → Get call sites
-#   4. Read specific lines for context (level, message, pattern)
-# Save results to intermediate JSON
+# For single-module projects:
+python3 analyze/scripts/lsp_inventory.py \
+  --project-root . \
+  --source src/main/java \
+  --test src/test/java \
+  --output .claude/analyze-reports/lsp-inventory.json
+
+# For multi-module projects (auto-discover all modules):
+python3 analyze/scripts/lsp_inventory.py \
+  --project-root . \
+  --auto-discover \
+  --output .claude/analyze-reports/lsp-inventory.json
 ```
 
-**Then execute the bundled script**:
+**What the script does:**
+1. Spawns jdtls-lsp server subprocess for JSON-RPC communication
+2. Sends LSP queries for each Java file:
+   - `textDocument/documentSymbol` → Find logger field declarations
+   - `textDocument/hover` → Verify type is Logger (semantic analysis)
+   - `textDocument/references` → Find all usages (including inherited loggers)
+3. Reads specific code lines for context (level, message, pattern)
+4. Generates structured inventory with module attribution
+5. Shuts down jdtls server
+
+**Backward Compatible Mode** (for pre-generated LSP results):
 ```bash
 python3 analyze/scripts/lsp_inventory.py \
   --project-root . \
