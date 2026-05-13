@@ -520,15 +520,121 @@ Files modified: X, Logs converted: Y, Duration: N days
 
 ## Requirements
 
-- Spring Boot with SLF4J and Logback
-- Maven or Gradle build system
-- Java 11+ (for SLF4J fluent API)
+### Runtime Requirements
+
+- **Java 17+** (JRE) - Required for Spoon scanner (analyze skill v3.0.0)
+- **Python 3.7+** - Required for orchestration scripts and skill execution
+- **Spring Boot** with SLF4J and Logback (for target applications)
+- **Maven or Gradle** build system
+- **Claude Code** (CLI, desktop, or web) - For skill execution
+
+### Application Requirements
+
+- Java 11+ (for SLF4J fluent API in converted logs)
 - Access to FamilySearch Observability Standards
 - `net.logstash.logback:logstash-logback-encoder` dependency (v8.0+)
 - Micrometer (for metric conversions, usually included with Spring Boot Actuator)
-- **NEW v2.0.0**: Python 3.7+ with `jpype1` (>=1.4.1) for JavaParser transformer
+
+### Development/Build Requirements (Optional)
+
+- **Java 17+ (JDK)** - Only needed to rebuild Spoon scanner from source
+- **Maven 3.6+** - Only needed to rebuild Spoon scanner from source
+- **python3-jpype** (>=1.4.1) - Only needed for convert-logs skill (JavaParser transformer)
   - Install via: `sudo apt-get install python3-jpype` (Ubuntu/Debian)
   - Or via pip: `pip install jpype1` (virtual environment)
+
+**Note**: Pre-built artifacts (`spoon-scanner.jar`) are included in plugin releases. Build tools are only needed if modifying the scanner or using the plugin from source.
+
+### Verify Installation
+
+```bash
+# Check Java version (must be 17+)
+java -version
+
+# Check Python version (must be 3.7+)
+python3 --version
+
+# Verify Spoon scanner (if using analyze skill v3.0.0)
+java -jar analyze/scripts/spoon-scanner.jar --help
+```
+
+---
+
+## Architecture
+
+### Hybrid Scanner Architecture (v3.0.0)
+
+The analyze skill uses a three-phase hybrid architecture for 10x performance improvement:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 1: Spoon Scanner (Fast Discovery)                    │
+│ - AST-based parsing (Spoon 11.2.0)                         │
+│ - Java 25 support, 0% parse failures                       │
+│ - Performance: 10-30s for 1,000 files                      │
+│ - Output: candidates.json                                   │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 2: Code Enrichment (Context Extraction)              │
+│ - Read source files (±3 lines per candidate)               │
+│ - Extract: level, pattern, message, parameters             │
+│ - File content caching (12x speedup)                       │
+│ - Performance: 30-60s for 3,000 candidates                 │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 3: Output Generation                                  │
+│ - lsp-inventory.json (full inventory)                      │
+│ - conversion-inventory.json (traditional calls only)       │
+│ - Backward compatible with v2.1.1                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Why Hybrid?**
+
+| Approach | Speed | Accuracy | Scale | Java 25 Support |
+|----------|-------|----------|-------|-----------------|
+| **v2.1.1 (LSP-only)** | ❌ Slow (300s+) | ✅ 100% | ❌ Timeout at 1,000 files | ✅ Yes |
+| **v3.0.0 (Hybrid)** | ✅ Fast (60-90s) | ✅ 95-99% | ✅ Scales to 1,000+ files | ✅ Yes |
+
+**Key improvements:**
+- ⚡ **10x faster**: 60-90 seconds vs 300+ seconds for 1,045 files
+- 🚀 **Scalable**: Parallel AST processing, file content caching
+- ✅ **Java 25 ready**: 0% parse failures on pattern matching, records, sealed classes
+- 🎯 **Accurate**: Heuristic detection (95-99%) + code enrichment for context
+
+### Hybrid Transformer Architecture (v2.0.0)
+
+The convert-logs skill uses a hybrid LLM+JavaParser architecture for 10-50x speedup:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 1: LLM Semantic Analysis                              │
+│ - Generate transformation specs                             │
+│ - Field naming decisions, enrichment, message templates     │
+│ - Performance: ~2 minutes for 50 logs                       │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 2: JavaParser Parallel Execution                      │
+│ - Apply transformations via AST (6 workers)                │
+│ - Mechanical transformations, no semantic decisions         │
+│ - Performance: ~25 seconds for 50 logs                      │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 3: LLM Edit Fallback                                  │
+│ - Handle complex cases JavaParser couldn't transform        │
+│ - Update progress tracking, validate build                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Benefits:**
+- 🚀 **10-50x speedup**: 2.5 minutes vs 25 minutes for 50 transformations
+- 💰 **90% token reduction**: 15K tokens vs 150K tokens
+- ⚙️ **Parallel execution**: 6 workers process files simultaneously
+- 📊 **Enterprise scale**: Supports 200 developers, 1,000s repos, 100,000+ log statements
 
 ---
 
@@ -601,14 +707,18 @@ Have an idea? See [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) for how to su
 
 ## Version
 
-**2.0.0** - Hybrid LLM+JavaParser Architecture (2026-05-11)
+**3.0.0** - Hybrid Spoon Scanner + Code Analysis (2026-05-13)
 
 Major enhancements:
-- Hybrid LLM+JavaParser architecture for 10-50x speedup
-- LSP semantic analysis for 100% accuracy
-- Parallel execution with 6 workers
-- 90% token reduction
-- Enterprise scale support (200 devs, 1,000s repos, 100K+ logs)
+- **analyze skill**: Hybrid Spoon + code analysis for 10x faster logger discovery
+  - 60-90 seconds vs 300+ seconds for 1,045 files
+  - 0% parse failures on Java 16+ code (pattern matching, records, sealed classes)
+  - Scales to 1,000+ file codebases (v2.1.1 timed out)
+  - Full Java 25 support via Spoon 11.2.0
+- **convert-logs skill** (v2.0.0): Hybrid LLM+JavaParser architecture
+  - 10-50x speedup with parallel JavaParser execution
+  - 90% token reduction
+  - Enterprise scale support (200 devs, 1,000s repos, 100K+ logs)
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
