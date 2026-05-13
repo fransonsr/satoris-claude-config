@@ -20,6 +20,11 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Maven
+target/
+*.jar
+!spoon-scanner.jar
+
 # Node
 node_modules/
 
