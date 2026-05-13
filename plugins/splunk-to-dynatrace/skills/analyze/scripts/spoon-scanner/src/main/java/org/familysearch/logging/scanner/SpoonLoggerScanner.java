@@ -92,24 +92,60 @@ public class SpoonLoggerScanner {
 
         // Add input resources
         if (config.isAutoDiscover()) {
+            int sourcesAdded = 0;
+
+            // Try single-module project structure first
             Path mainJava = config.getProjectRoot().resolve("src/main/java");
             Path testJava = config.getProjectRoot().resolve("src/test/java");
 
             if (Files.exists(mainJava)) {
                 launcher.addInputResource(mainJava.toString());
+                sourcesAdded++;
                 if (config.isDebug()) {
                     System.out.println("[DEBUG] Added source path: " + mainJava);
                 }
             }
             if (Files.exists(testJava)) {
                 launcher.addInputResource(testJava.toString());
+                sourcesAdded++;
                 if (config.isDebug()) {
                     System.out.println("[DEBUG] Added source path: " + testJava);
                 }
             }
 
-            if (!Files.exists(mainJava) && !Files.exists(testJava)) {
+            // If single-module structure not found, try multi-module Maven structure
+            if (sourcesAdded == 0) {
+                if (config.isDebug()) {
+                    System.out.println("[DEBUG] Single-module structure not found, checking for multi-module Maven project...");
+                }
+
+                try {
+                    // Find all modules with src/main/java or src/test/java
+                    Files.walk(config.getProjectRoot(), 5)
+                        .filter(Files::isDirectory)
+                        .filter(p -> p.endsWith("src/main/java") || p.endsWith("src/test/java"))
+                        .forEach(p -> {
+                            launcher.addInputResource(p.toString());
+                            if (config.isDebug()) {
+                                System.out.println("[DEBUG] Added source path: " + p);
+                            }
+                        });
+
+                    // Count how many we found
+                    sourcesAdded = (int) Files.walk(config.getProjectRoot(), 5)
+                        .filter(Files::isDirectory)
+                        .filter(p -> p.endsWith("src/main/java") || p.endsWith("src/test/java"))
+                        .count();
+
+                } catch (IOException e) {
+                    System.err.println("Warning: Error scanning for multi-module structure: " + e.getMessage());
+                }
+            }
+
+            if (sourcesAdded == 0) {
                 System.err.println("Warning: No source directories found at standard locations");
+            } else if (config.isDebug()) {
+                System.out.println("[DEBUG] Total source directories added: " + sourcesAdded);
             }
         } else {
             for (Path sourcePath : config.getSourcePaths()) {
@@ -158,15 +194,32 @@ public class SpoonLoggerScanner {
         launcher2.getEnvironment().setComplianceLevel(17);
         launcher2.getEnvironment().setLevel(config.isDebug() ? "INFO" : "ERROR");
 
-        // Re-add input resources
+        // Re-add input resources (same discovery logic as Phase 1)
         if (config.isAutoDiscover()) {
+            // Try single-module project structure first
             Path mainJava = config.getProjectRoot().resolve("src/main/java");
             Path testJava = config.getProjectRoot().resolve("src/test/java");
+
+            int sourcesAdded = 0;
             if (Files.exists(mainJava)) {
                 launcher2.addInputResource(mainJava.toString());
+                sourcesAdded++;
             }
             if (Files.exists(testJava)) {
                 launcher2.addInputResource(testJava.toString());
+                sourcesAdded++;
+            }
+
+            // If single-module structure not found, try multi-module Maven structure
+            if (sourcesAdded == 0) {
+                try {
+                    Files.walk(config.getProjectRoot(), 5)
+                        .filter(Files::isDirectory)
+                        .filter(p -> p.endsWith("src/main/java") || p.endsWith("src/test/java"))
+                        .forEach(p -> launcher2.addInputResource(p.toString()));
+                } catch (IOException e) {
+                    // Already reported in Phase 1
+                }
             }
         } else {
             for (Path sourcePath : config.getSourcePaths()) {
