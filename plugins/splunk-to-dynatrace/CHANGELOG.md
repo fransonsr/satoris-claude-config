@@ -15,6 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Filters out helper methods named info/warn/error on non-Logger classes at scan time
   - Enhanced fluent API detection for multi-line chains (±10 lines context in Python enrichment)
   - Tested on cds2-root: reduced false positives from 929 → ~186 calls (80% reduction)
+- Fixed missing --source argument parsing in SpoonLoggerScanner (v3.0.0 produced zero results)
+
+### Added
+
+- **Multi-framework logging support** - Detects and identifies usage across 6 logging frameworks:
+  - SLF4J (`org.slf4j.Logger`) - Standard facade
+  - Log4j 1.x (`org.apache.log4j.Logger`) - Legacy, includes `fatal()` method
+  - Log4j 2.x (`org.apache.logging.log4j.Logger`) - Modern, includes fluent API
+  - Logback (`ch.qos.logback.classic.Logger`) - SLF4J implementation
+  - Apache Commons Logging (`org.apache.commons.logging.Log`) - Facade
+  - Java Util Logging (`java.util.logging.Logger`) - Built-in JDK logging
+- **Framework field in JSON output** - All logger declarations and calls include `"framework"` field
+  - Values: `"slf4j"`, `"log4j"`, `"log4j2"`, `"logback"`, `"commons-logging"`, `"jul"`, `"unknown"`
+  - Enables conversion tool to identify what to convert FROM (Log4j/Logback/JUL) TO (SLF4J)
+- **Enhanced Lombok support** - Detects `@Slf4j`, `@Log4j`, `@Log4j2`, `@CommonsLog`, `@Log` annotations
+- **JUL method support** - Recognizes and maps JUL log levels:
+  - `severe()` → ERROR
+  - `warning()` → WARN
+  - `config()` → INFO
+  - `fine()`/`finer()`/`finest()` → DEBUG/TRACE
 
 ### Changed
 
@@ -23,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed Strategy 3 (heuristic scope pattern) - too broad and unreliable
 - Python enrichment uses receiver type from Spoon instead of text patterns
 - Multi-line fluent API detection reads ±10 lines context instead of ±3
+- Factory method detection expanded: `LoggerFactory`, `Logger.getLogger`, `LogManager.getLogger`, `LogFactory.getLog`
+- Level extraction now handles Log4j `fatal()` and all JUL levels
 
 ### Removed
 

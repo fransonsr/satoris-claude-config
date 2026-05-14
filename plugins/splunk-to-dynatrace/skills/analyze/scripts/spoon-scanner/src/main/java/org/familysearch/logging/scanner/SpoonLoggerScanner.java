@@ -38,6 +38,16 @@ public class SpoonLoggerScanner {
         boolean autoDiscover = contains(args, "--auto-discover");
         boolean debug = contains(args, "--debug");
 
+        // Parse --source arguments
+        List<Path> sourcePaths = new ArrayList<>();
+        for (int i = 2; i < args.length; i++) {
+            if (args[i].equals("--source") && i + 1 < args.length) {
+                Path sourcePath = projectRoot.resolve(args[i + 1]);
+                sourcePaths.add(sourcePath);
+                i++; // Skip the next arg since we consumed it
+            }
+        }
+
         // Validate project root
         if (!Files.exists(projectRoot) || !Files.isDirectory(projectRoot)) {
             System.err.println("Error: Project root does not exist or is not a directory: " + projectRoot);
@@ -48,7 +58,7 @@ public class SpoonLoggerScanner {
             projectRoot,
             outputFile,
             autoDiscover,
-            new ArrayList<>(),
+            sourcePaths,
             debug
         );
 
@@ -256,7 +266,7 @@ public class SpoonLoggerScanner {
     }
 
     private static void printUsage() {
-        System.out.println("Spoon Logger Scanner v1.0.1");
+        System.out.println("Spoon Logger Scanner v1.0.2");
         System.out.println();
         System.out.println("Usage: java -jar spoon-scanner.jar <project-root> <output-file> [options]");
         System.out.println();

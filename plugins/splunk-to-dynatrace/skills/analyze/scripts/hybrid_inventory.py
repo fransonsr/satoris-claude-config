@@ -3,7 +3,7 @@
 Hybrid Logger Inventory Generator
 
 Orchestrates Spoon discovery + code enrichment pipeline.
-Version: 3.0.1 (hybrid architecture + Spoon type validation)
+Version: 3.0.1 (hybrid architecture + Spoon type validation + multi-framework support)
 
 Usage:
     python3 hybrid_inventory.py --project-root . --auto-discover --output inventory.json
@@ -228,20 +228,37 @@ def is_logger_statement(candidate: dict, code_snippet: str) -> bool:
         True if this is a log statement, False otherwise
     """
     # Skip factory calls
-    if 'LoggerFactory.getLogger' in code_snippet or '.getLogger(' in code_snippet:
+    if ('LoggerFactory.getLogger' in code_snippet or
+        'Logger.getLogger' in code_snippet or
+        'LogManager.getLogger' in code_snippet or
+        'LogFactory.getLog' in code_snippet):
         return False
 
-    # Check methodName from Spoon
+    # Check methodName from Spoon (all supported frameworks)
     method = candidate.get('methodName', '')
-    if method not in ['error', 'warn', 'info', 'debug', 'trace',
-                     'atError', 'atWarn', 'atInfo', 'atDebug', 'atTrace']:
+    valid_methods = [
+        # SLF4J, Log4j, Logback
+        'error', 'warn', 'info', 'debug', 'trace', 'fatal',
+        # Log4j 2.x fluent API
+        'atError', 'atWarn', 'atInfo', 'atDebug', 'atTrace', 'atFatal',
+        # Java Util Logging (JUL)
+        'severe', 'warning', 'config', 'fine', 'finer', 'finest'
+    ]
+    if method not in valid_methods:
         return False
 
-    # NEW: Check receiver type from Spoon (v3.0.1)
+    # NEW: Check receiver type from Spoon (v3.0.1) - multi-framework support
     receiver_type = candidate.get('typeName', '')  # Spoon provides this now
     if receiver_type:
-        # If type is known, verify it's a Logger
-        is_logger = 'Logger' in receiver_type or 'slf4j' in receiver_type
+        # If type is known, verify it's a logger from any supported framework
+        is_logger = (
+            'Logger' in receiver_type or       # SLF4J, Log4j, Logback, JUL
+            'slf4j' in receiver_type or        # SLF4J
+            'log4j' in receiver_type or        # Log4j 1.x, 2.x
+            'logback' in receiver_type or      # Logback
+            'commons.logging' in receiver_type or  # Apache Commons Logging
+            'java.util.logging' in receiver_type   # Java Util Logging
+        )
         if not is_logger:
             return False  # Definitely not a logger call (e.g., AbstractTask, ServiceJobPhase)
 
@@ -258,27 +275,55 @@ def extract_level(code_snippet: str, method_name: Optional[str]) -> Optional[str
     1. Use methodName from Spoon if available (info, warn, error, etc.)
     2. Search for level keywords in code snippet
 
+    Supports multiple frameworks:
+    - SLF4J/Log4j/Logback: error, warn, info, debug, trace, fatal
+    - Log4j 2.x fluent: atError, atWarn, atInfo, atDebug, atTrace, atFatal
+    - Java Util Logging: severe, warning, config, fine, finer, finest
+
     Args:
         code_snippet: Code context (±3 lines)
-        method_name: Method name from Spoon (e.g., "info", "atWarn")
+        method_name: Method name from Spoon (e.g., "info", "atWarn", "severe")
 
     Returns:
-        Log level (ERROR, WARN, INFO, DEBUG, TRACE) or None
+        Log level (ERROR, WARN, INFO, DEBUG, TRACE, FATAL) or None
     """
+    # JUL to standard level mapping
+    jul_mapping = {
+        'SEVERE': 'ERROR',
+        'WARNING': 'WARN',
+        'CONFIG': 'INFO',
+        'FINE': 'DEBUG',
+        'FINER': 'DEBUG',
+        'FINEST': 'TRACE'
+    }
+
     # Strategy 1: Use Spoon method name
     if method_name:
         level = method_name.upper().replace('AT', '')
-        if level in ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE']:
+
+        # Check standard levels
+        if level in ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE', 'FATAL']:
             return level
+
+        # Map JUL levels to standard
+        if level in jul_mapping:
+            return jul_mapping[level]
 
     # Strategy 2: Search in code snippet
     level_pattern = re.compile(
-        r'\b(error|warn|info|debug|trace|atError|atWarn|atInfo|atDebug|atTrace)\(',
+        r'\b(error|warn|info|debug|trace|fatal|'
+        r'atError|atWarn|atInfo|atDebug|atTrace|atFatal|'
+        r'severe|warning|config|fine|finer|finest)\(',
         re.IGNORECASE
     )
     match = level_pattern.search(code_snippet)
     if match:
         level = match.group(1).upper().replace('AT', '')
+
+        # Map JUL levels to standard
+        if level in jul_mapping:
+            return jul_mapping[level]
+
         return level
 
     return None
@@ -431,6 +476,7 @@ def enrich_candidates(candidates_data: Dict[str, Any],
         loggers.append({
             'name': decl['name'],
             'type': decl.get('typeName', 'org.slf4j.Logger'),
+            'framework': decl.get('framework', 'unknown'),  # slf4j, log4j, log4j2, logback
             'file': rel_path,
             'line': decl['line'],
             'call_count': 0  # Will be updated when processing calls
@@ -460,7 +506,12 @@ def enrich_candidates(candidates_data: Dict[str, Any],
             'level': extract_level(code_snippet, call.get('methodName')),
             'pattern': classify_pattern(code_snippet, abs_path, call['line'], file_cache),
             'message_snippet': extract_message(code_snippet),
-            'parameter_count': count_parameters(code_snippet)
+            'parameter_count': count_parameters(code_snippet),
+            # Preserve Spoon metadata for validation and conversion
+            'receiver_type': call.get('typeName'),  # org.slf4j.Logger, org.apache.log4j.Logger, etc.
+            'framework': call.get('framework', 'unknown'),  # slf4j, log4j, log4j2, logback
+            'detection_strategy': call.get('detectionStrategy'),  # known_logger_field, method_name_with_type, etc.
+            'needs_validation': call.get('needsValidation', False)
         }
 
         log_calls.append(enriched_call)
@@ -542,6 +593,47 @@ def count_files(hierarchy: Dict) -> int:
         for package in module.values():
             count += len(package)
     return count
+
+
+def print_framework_summary(inventory: Dict[str, Any]):
+    """
+    Print summary of logging framework usage.
+
+    Args:
+        inventory: Enriched inventory with loggers and log_calls
+    """
+    # Count logger declarations by framework
+    logger_frameworks = {}
+    for logger in inventory['loggers']:
+        framework = logger.get('framework', 'unknown')
+        logger_frameworks[framework] = logger_frameworks.get(framework, 0) + 1
+
+    # Count log calls by framework
+    call_frameworks = {}
+    for call in inventory['log_calls']:
+        framework = call.get('framework', 'unknown')
+        call_frameworks[framework] = call_frameworks.get(framework, 0) + 1
+
+    print("\n[Framework Summary]", file=sys.stderr)
+
+    # Sort by count (descending)
+    sorted_calls = sorted(call_frameworks.items(), key=lambda x: x[1], reverse=True)
+
+    if sorted_calls:
+        print("  Logger Calls by Framework:", file=sys.stderr)
+        for framework, count in sorted_calls:
+            percentage = (count / len(inventory['log_calls']) * 100) if inventory['log_calls'] else 0
+            framework_display = framework if framework != 'unknown' else 'unknown (type not resolved)'
+            print(f"    - {framework_display}: {count} calls ({percentage:.1f}%)", file=sys.stderr)
+
+    # Report non-SLF4J frameworks (migration candidates)
+    non_slf4j = {k: v for k, v in call_frameworks.items() if k not in ['slf4j', 'unknown']}
+    if non_slf4j:
+        total_non_slf4j = sum(non_slf4j.values())
+        print(f"\n  ⚠ Found {total_non_slf4j} calls using non-SLF4J frameworks (migration candidates):", file=sys.stderr)
+        for framework, count in sorted(non_slf4j.items(), key=lambda x: x[1], reverse=True):
+            print(f"    - {framework}: {count} calls", file=sys.stderr)
+        print("  💡 Consider migrating these to SLF4J facade for framework independence", file=sys.stderr)
 
 
 def write_conversion_inventory(inventory: Dict[str, Any],
@@ -669,7 +761,12 @@ def write_conversion_inventory(inventory: Dict[str, Any],
                             },
                             "status": "pending",
                             "converted_at": None,
-                            "commit": None
+                            "commit": None,
+                            # Spoon metadata for validation and conversion
+                            "receiver_type": call.get('receiver_type'),
+                            "framework": call.get('framework', 'unknown'),
+                            "detection_strategy": call.get('detection_strategy'),
+                            "needs_validation": call.get('needs_validation', False)
                         }
                         for call in calls
                     ]
@@ -712,6 +809,9 @@ def main():
 
     conversion_output = args.output.parent / "conversion-inventory.json"
     write_conversion_inventory(enriched_inventory, conversion_output, args.project_root)
+
+    # Print framework summary
+    print_framework_summary(enriched_inventory)
 
     print("\n=== Complete ===", file=sys.stderr)
     print(f"✓ LSP inventory: {args.output}", file=sys.stderr)

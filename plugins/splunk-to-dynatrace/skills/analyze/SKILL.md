@@ -144,16 +144,25 @@ This is the project-local `.claude/` directory, which should be added to `.gitig
 Scans the codebase and produces hierarchical reports with:
 
 1. **Log Inventory**: Count and categorization by level (ERROR, WARN, INFO, DEBUG, TRACE)
-2. **Module Breakdown**: Per-module statistics and compliance scores
-3. **Standards Compliance Analysis**: Evaluation against FamilySearch Observability Standards
-4. **Deletion Candidates**: Logs Dynatrace auto-captures (HTTP timing, status codes, DB queries)
-5. **Level Corrections**: Logs using wrong levels per decision tree
-6. **Metric Conversions**: Counters/timers that should use Micrometer
-7. **Missing Fields**: Logs missing required fields (dt.trace_id, event.name, etc.)
-8. **Business Events**: Identification of business/functional logs vs application logs
-9. **Field Naming Analysis**: Recommendations for standardizing field names (with trade-off assessment)
-10. **Prioritized Action List**: DELETE > METRIC > LEVEL_CHANGE > STRUCTURED_FIELDS > RENAME
-11. **Overall Compliance Score**: Percentage adhering to standards
+2. **Multi-Framework Detection (NEW in v3.0.1)**: Identifies logging framework usage across 6 frameworks:
+   - SLF4J (`org.slf4j.Logger`) - Standard facade
+   - Log4j 1.x (`org.apache.log4j.Logger`) - Legacy
+   - Log4j 2.x (`org.apache.logging.log4j.Logger`) - Modern
+   - Logback (`ch.qos.logback.classic.Logger`) - SLF4J implementation
+   - Apache Commons Logging (`org.apache.commons.logging.Log`) - Facade
+   - Java Util Logging (`java.util.logging.Logger`) - Built-in JDK
+   - Reports framework breakdown with percentages
+   - Flags non-SLF4J usage as migration candidates
+3. **Module Breakdown**: Per-module statistics and compliance scores
+4. **Standards Compliance Analysis**: Evaluation against FamilySearch Observability Standards
+5. **Deletion Candidates**: Logs Dynatrace auto-captures (HTTP timing, status codes, DB queries)
+6. **Level Corrections**: Logs using wrong levels per decision tree
+7. **Metric Conversions**: Counters/timers that should use Micrometer
+8. **Missing Fields**: Logs missing required fields (dt.trace_id, event.name, etc.)
+9. **Business Events**: Identification of business/functional logs vs application logs
+10. **Field Naming Analysis**: Recommendations for standardizing field names (with trade-off assessment)
+11. **Prioritized Action List**: DELETE > METRIC > LEVEL_CHANGE > STRUCTURED_FIELDS > RENAME
+12. **Overall Compliance Score**: Percentage adhering to standards
 
 ## Analysis Process
 
@@ -1521,6 +1530,18 @@ All analysis based on: [FamilySearch Observability Standards v1.3](https://icsen
 - **Total Modules**: [N]
 - **Total Log Statements**: [N]
 - **Estimated Volume Reduction**: [P]% (via deletions + metrics)
+
+### Logging Framework Distribution (v3.0.1+)
+
+- **SLF4J**: [N] calls ([P]%) ✅ Standard facade
+- **Log4j 1.x**: [N] calls ([P]%) ⚠️ Migration candidate (legacy)
+- **Log4j 2.x**: [N] calls ([P]%) ⚠️ Migration candidate
+- **Logback**: [N] calls ([P]%) ⚠️ Framework-specific (use SLF4J facade instead)
+- **Commons Logging**: [N] calls ([P]%) ⚠️ Migration candidate
+- **Java Util Logging**: [N] calls ([P]%) ⚠️ Migration candidate
+- **Unknown**: [N] calls ([P]%) (type not resolved in noclasspath mode)
+
+**Recommendation**: Non-SLF4J frameworks should be migrated to SLF4J facade for framework independence. This allows applications to choose their logging implementation (Logback, Log4j2, etc.) without library code changes.
 
 ## Module Breakdown
 

@@ -5,7 +5,9 @@ description: Converts traditional log statements to SLF4J fluent API using hybri
 
 # Convert Logs Skill (v3.0.0)
 
-Converts traditional SLF4J log statements to fluent API with structured arguments, applying FamilySearch Observability Standards. 
+Converts traditional SLF4J log statements to fluent API with structured arguments, applying FamilySearch Observability Standards.
+
+**Multi-Framework Support (v3.0.1+)**: The analyze skill now detects usage of Log4j, Logback, Commons Logging, and Java Util Logging. Framework metadata is included in conversion-inventory.json to enable future framework-to-SLF4J migration capabilities. Currently, this skill converts SLF4J traditional → SLF4J fluent API. Framework conversion (Log4j→SLF4J, etc.) is not yet implemented but data is prepared for this feature. 
 
 **NEW in v3.0.0: Migrated to Spoon for 0% Parse Failures**
 - 🧠 **LLM**: Semantic analysis (field naming, enrichment decisions)

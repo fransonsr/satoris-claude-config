@@ -15,9 +15,18 @@ import java.util.List;
  *
  * Detection strategies (noclasspath mode):
  * 1. Type name contains "Logger" or "Log"
- * 2. Import statement includes org.slf4j.Logger
- * 3. Initializer contains "LoggerFactory"
- * 4. Lombok @Slf4j annotation (generates 'log' field)
+ * 2. Import statement includes org.slf4j.Logger, org.apache.log4j.Logger, etc.
+ * 3. Initializer contains "LoggerFactory", "Logger.getLogger", "LogFactory.getLog"
+ * 4. Lombok @Slf4j, @Log4j, @Log4j2, @CommonsLog annotations
+ *
+ * Supported logging frameworks:
+ * - SLF4J: org.slf4j.Logger
+ * - Log4j 1.x: org.apache.log4j.Logger, org.apache.log4j.Category
+ * - Log4j 2.x: org.apache.logging.log4j.Logger
+ * - Logback: ch.qos.logback.classic.Logger
+ * - Apache Commons Logging: org.apache.commons.logging.Log
+ * - Java Util Logging: java.util.logging.Logger
+ * - Lombok: @Slf4j, @Log4j, @Log4j2, @CommonsLog
  */
 public class LoggerFieldProcessor extends AbstractProcessor<CtField<?>> {
     private final List<LoggerCandidate> candidates = new ArrayList<>();
@@ -63,26 +72,35 @@ public class LoggerFieldProcessor extends AbstractProcessor<CtField<?>> {
     }
 
     private boolean isLoggerField(CtField<?> field) {
-        // Strategy 1: Type name contains "Logger" or "Log"
+        // Strategy 1: Type name contains "Logger", "Log", or "Category"
         String typeName = field.getType().getSimpleName();
-        if (typeName.contains("Logger") || typeName.equals("Log")) {
+        if (typeName.contains("Logger") || typeName.equals("Log") || typeName.equals("Category")) {
             return true;
         }
 
-        // Strategy 2: Initializer contains "LoggerFactory"
+        // Strategy 2: Initializer contains logger factory patterns
         if (field.getDefaultExpression() != null) {
             String initializer = field.getDefaultExpression().toString();
-            if (initializer.contains("LoggerFactory")) {
+            if (initializer.contains("LoggerFactory") ||    // SLF4J, Logback
+                initializer.contains("Logger.getLogger") || // Log4j, JUL
+                initializer.contains("LogManager.getLogger") || // Log4j 2.x
+                initializer.contains("LogFactory.getLog")) { // Commons Logging
                 return true;
             }
         }
 
-        // Strategy 3: Lombok @Slf4j annotation (generates 'log' field)
+        // Strategy 3: Lombok annotations (generates 'log' field)
         CtType<?> declaringType = field.getDeclaringType();
         if (declaringType != null && field.getSimpleName().equals("log")) {
-            boolean hasSlf4j = declaringType.getAnnotations().stream()
-                .anyMatch(ann -> ann.toString().contains("Slf4j"));
-            if (hasSlf4j) {
+            boolean hasLombokLogger = declaringType.getAnnotations().stream()
+                .anyMatch(ann -> {
+                    String annStr = ann.toString();
+                    return annStr.contains("Slf4j") ||      // @Slf4j
+                           annStr.contains("Log4j") ||      // @Log4j, @Log4j2
+                           annStr.contains("CommonsLog") || // @CommonsLog
+                           annStr.contains("Log");          // @Log (JUL)
+                });
+            if (hasLombokLogger) {
                 return true;
             }
         }
@@ -92,23 +110,32 @@ public class LoggerFieldProcessor extends AbstractProcessor<CtField<?>> {
 
     private String getDetectionStrategy(CtField<?> field) {
         String typeName = field.getType().getSimpleName();
-        if (typeName.contains("Logger") || typeName.equals("Log")) {
+        if (typeName.contains("Logger") || typeName.equals("Log") || typeName.equals("Category")) {
             return "type_name";
         }
 
         if (field.getDefaultExpression() != null) {
             String initializer = field.getDefaultExpression().toString();
-            if (initializer.contains("LoggerFactory")) {
+            if (initializer.contains("LoggerFactory") ||
+                initializer.contains("Logger.getLogger") ||
+                initializer.contains("LogManager.getLogger") ||
+                initializer.contains("LogFactory.getLog")) {
                 return "logger_factory_pattern";
             }
         }
 
         CtType<?> declaringType = field.getDeclaringType();
         if (declaringType != null && field.getSimpleName().equals("log")) {
-            boolean hasSlf4j = declaringType.getAnnotations().stream()
-                .anyMatch(ann -> ann.toString().contains("Slf4j"));
-            if (hasSlf4j) {
-                return "lombok_slf4j";
+            boolean hasLombokLogger = declaringType.getAnnotations().stream()
+                .anyMatch(ann -> {
+                    String annStr = ann.toString();
+                    return annStr.contains("Slf4j") ||
+                           annStr.contains("Log4j") ||
+                           annStr.contains("CommonsLog") ||
+                           annStr.contains("Log");
+                });
+            if (hasLombokLogger) {
+                return "lombok_annotation";
             }
         }
 

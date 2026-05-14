@@ -28,8 +28,12 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
     private final Set<String> knownLoggerFields;
 
     private static final Set<String> LOG_LEVELS = Set.of(
-        "trace", "debug", "info", "warn", "error",
-        "atTrace", "atDebug", "atInfo", "atWarn", "atError"
+        // Standard levels (SLF4J, Log4j, Logback)
+        "trace", "debug", "info", "warn", "error", "fatal",
+        // Log4j 2.x fluent API
+        "atTrace", "atDebug", "atInfo", "atWarn", "atError", "atFatal",
+        // Java Util Logging methods
+        "finest", "finer", "fine", "config", "warning", "severe"
     );
 
     public LoggerCallProcessor(ScannerConfig config, Set<String> knownLoggerFields) {
@@ -121,10 +125,13 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
     /**
      * Check if a type name indicates a Logger type.
      *
-     * Checks for:
-     * - org.slf4j.Logger (qualified name)
-     * - Logger (simple name)
-     * - slf4j (partial match for edge cases)
+     * Supports multiple logging frameworks:
+     * - SLF4J: org.slf4j.Logger
+     * - Log4j 1.x: org.apache.log4j.Logger, org.apache.log4j.Category
+     * - Log4j 2.x: org.apache.logging.log4j.Logger
+     * - Logback: ch.qos.logback.classic.Logger
+     * - Apache Commons Logging: org.apache.commons.logging.Log
+     * - Java Util Logging: java.util.logging.Logger
      *
      * @param typeName The type name to check
      * @return True if type is a Logger
@@ -134,13 +141,41 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             return false;
         }
 
-        // Exact matches
+        // SLF4J (standard facade)
         if (typeName.equals("org.slf4j.Logger") || typeName.equals("Logger")) {
             return true;
         }
 
-        // Contains "Logger" or "slf4j" (covers org.slf4j.Logger, custom.Logger, etc.)
-        return typeName.contains("Logger") || typeName.contains("slf4j");
+        // Log4j 1.x (org.apache.log4j.Logger, org.apache.log4j.Category)
+        if (typeName.startsWith("org.apache.log4j.")) {
+            return true;
+        }
+
+        // Log4j 2.x (org.apache.logging.log4j.Logger)
+        if (typeName.startsWith("org.apache.logging.log4j.")) {
+            return true;
+        }
+
+        // Logback (ch.qos.logback.classic.Logger)
+        if (typeName.startsWith("ch.qos.logback.")) {
+            return true;
+        }
+
+        // Apache Commons Logging (org.apache.commons.logging.Log)
+        if (typeName.startsWith("org.apache.commons.logging.")) {
+            return true;
+        }
+
+        // Java Util Logging (java.util.logging.Logger)
+        if (typeName.startsWith("java.util.logging.")) {
+            return true;
+        }
+
+        // Fallback: contains "Logger" or "Log" (covers edge cases and simple names)
+        return typeName.contains("Logger") ||
+               typeName.contains("slf4j") ||
+               typeName.contains("log4j") ||
+               typeName.equals("Log");  // Commons Logging simple name
     }
 
     private boolean isLoggerCall(CtInvocation<?> invocation) {
