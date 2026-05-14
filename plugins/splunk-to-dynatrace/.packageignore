@@ -39,6 +39,8 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+target/
+**/target/
 
 # Development notes
 NOTES.md
