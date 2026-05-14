@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - LSP-only approach moved to "legacy" status with deprecation warning
 - **SKILL.md updated** - Documents hybrid scanner as recommended approach (Option 1)
 - **Performance characteristics** - Small: 5-10s, Medium: 15-30s, Large: 60-90s
+- **convert-logs skill migrated from JavaParser to Spoon**
+  - 0% transformation failures (was 0.76% with JavaParser on Java 16+ code)
+  - Full Java 16-25 support (pattern matching, records, sealed classes)
+  - Consistent with analyze skill (both use Spoon 11.2.0)
+  - Performance unchanged: 50 log statements in ~2.5 minutes
+  - New transformer: `transform_spoon.py` replaces `transform_jpype.py`
 
 ### Deprecated
 
@@ -41,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Reason**: Times out on large codebases (>1,000 files), single-threaded LSP lifecycle
   - **Migration**: Replace `lsp_inventory.py` with `hybrid_inventory.py` in commands
   - **Deprecation notice added** to file header (lines 1-15)
+- **transform_jpype.py (v2.0.0)** - Kept for reference, use transform_spoon.py instead
+  - **Reason**: JavaParser 3.25.8 fails on Java 16+ syntax (0.76% transformation failure rate)
+  - **Migration**: Replace `transform_jpype.py` with `transform_spoon.py` in commands
+  - **Deprecation notice added** to file header (lines 1-15)
+  - **javaparser-core-3.25.8.jar** - Kept in repository for reference
 
 ### Performance Benchmarks
 

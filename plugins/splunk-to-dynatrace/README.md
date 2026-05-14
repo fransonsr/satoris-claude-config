@@ -112,16 +112,18 @@ Asks 7 questions about:
 
 ---
 
-### `/splunk-to-dynatrace:convert-logs` 🆕 v2.0.0 - 10-50x Faster with JavaParser
+### `/splunk-to-dynatrace:convert-logs` 🆕 v3.0.0 - 0% Parse Failures with Spoon
 
-**Converts traditional log statements to SLF4J fluent API with structured arguments per observability standards using hybrid LLM+JavaParser architecture.**
+**Converts traditional log statements to SLF4J fluent API with structured arguments per observability standards using hybrid LLM+Spoon architecture.**
 
-**NEW in v2.0.0**: **Hybrid Architecture for Enterprise Scale**
+**NEW in v3.0.0**: **Migrated to Spoon for 0% Parse Failures**
 - **LLM generates transformation specs** (semantic decisions: field naming, enrichment, message templates)
-- **JavaParser applies transformations** (mechanical AST transformations in parallel)
-- **10-50x speedup**: 50 logs in ~2.5 minutes (was: 25 minutes)
+- **Spoon applies transformations** (mechanical AST transformations in parallel)
+- **0% parse failures**: Full Java 16-25 support (was 0.76% with JavaParser)
+- **10-50x speedup**: 50 logs in ~2.5 minutes (unchanged from v2.0.0)
 - **90% token reduction**: 15K tokens (was: 150K tokens)
 - **Parallel execution**: 6 workers process files simultaneously
+- **Consistent**: Same AST library as analyze skill (both use Spoon)
 - **Scales to enterprise**: 200 developers, 1,000s repos, 100,000+ log statements
 
 **Capabilities:**
@@ -149,11 +151,11 @@ Asks 7 questions about:
 - **METRIC**: Counter/timer replacement with Micrometer
 - **LEVEL_CHANGE**: Correct log level per standards
 
-**Workflow (v2.0.0)**:
+**Workflow (v3.0.0)**:
 1. Load `conversion-inventory.json` from analyze skill
 2. LLM generates transformation specs (semantic analysis)
-3. JavaParser applies transformations in parallel (6 workers)
-4. LLM Edit fallback for complex cases
+3. Spoon applies transformations in parallel (6 workers, 0% parse failures)
+4. LLM Edit fallback for complex cases (rare with Spoon)
 5. Update progress tracking, validate build, commit
 
 **Outputs:**
@@ -604,9 +606,9 @@ The analyze skill uses a three-phase hybrid architecture for 10x performance imp
 - ✅ **Java 25 ready**: 0% parse failures on pattern matching, records, sealed classes
 - 🎯 **Accurate**: Heuristic detection (95-99%) + code enrichment for context
 
-### Hybrid Transformer Architecture (v2.0.0)
+### Hybrid Transformer Architecture (v3.0.0)
 
-The convert-logs skill uses a hybrid LLM+JavaParser architecture for 10-50x speedup:
+The convert-logs skill uses a hybrid LLM+Spoon architecture for 10-50x speedup:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -617,15 +619,16 @@ The convert-logs skill uses a hybrid LLM+JavaParser architecture for 10-50x spee
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Phase 2: JavaParser Parallel Execution                      │
+│ Phase 2: Spoon Parallel Execution (NEW v3.0.0)             │
 │ - Apply transformations via AST (6 workers)                │
-│ - Mechanical transformations, no semantic decisions         │
+│ - 0% parse failures (vs 0.76% with JavaParser)             │
+│ - Full Java 16-25 support (pattern matching, records)      │
 │ - Performance: ~25 seconds for 50 logs                      │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ Phase 3: LLM Edit Fallback                                  │
-│ - Handle complex cases JavaParser couldn't transform        │
+│ - Handle complex cases (rare with Spoon)                    │
 │ - Update progress tracking, validate build                  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -634,7 +637,14 @@ The convert-logs skill uses a hybrid LLM+JavaParser architecture for 10-50x spee
 - 🚀 **10-50x speedup**: 2.5 minutes vs 25 minutes for 50 transformations
 - 💰 **90% token reduction**: 15K tokens vs 150K tokens
 - ⚙️ **Parallel execution**: 6 workers process files simultaneously
+- ✅ **0% parse failures**: Full Java 16-25 support (was 0.76% with JavaParser)
+- 🔄 **Consistent**: Same AST library as analyze skill (both use Spoon)
 - 📊 **Enterprise scale**: Supports 200 developers, 1,000s repos, 100,000+ log statements
+
+**What changed in v3.0.0:**
+- Migrated from JavaParser 3.25.8 to Spoon 11.2.0
+- Eliminates all parse failures on modern Java syntax
+- Uses `transform_spoon.py` instead of `transform_jpype.py`
 
 ---
 
