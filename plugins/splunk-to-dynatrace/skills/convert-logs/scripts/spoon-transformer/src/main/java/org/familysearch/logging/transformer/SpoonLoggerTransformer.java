@@ -4,7 +4,10 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
+import spoon.reflect.code.CtFieldRead;
 import spoon.reflect.code.CtInvocation;
+import spoon.reflect.declaration.CtField;
+import spoon.reflect.declaration.CtType;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -83,17 +86,50 @@ public class SpoonLoggerTransformer {
         // Find target invocation by line number
         CtInvocation<?> targetCall = InvocationFinder.findInvocationAtLine(model, spec.getLine());
 
-        // Build fluent chain
-        CtInvocation<?> fluentCall = FluentChainBuilder.buildFluentChain(
-                targetCall.getTarget(),
-                spec.getLevel(),
-                spec.getFields(),
-                spec.getMessage(),
-                spec.getException()
-        );
+        // Step 0 - Framework migration (if needed)
+        if (spec.getFramework() != null && !spec.getFramework().equals("slf4j")) {
+            FrameworkMigrator.Framework framework = FrameworkMigrator.Framework.valueOf(
+                spec.getFramework().toUpperCase().replace('-', '_')
+            );
 
-        // Replace old call with new fluent chain
-        targetCall.replace(fluentCall);
+            // Migrate logger field declaration
+            CtField<?> loggerField = findLoggerField(targetCall);
+            if (loggerField != null) {
+                FrameworkMigrator.migrateLoggerField(loggerField, framework);
+            }
+
+            // Migrate method call
+            FrameworkMigrator.migrateLoggerCall(targetCall, framework);
+
+            // Migrate imports
+            CtType<?> enclosingType = targetCall.getParent(CtType.class);
+            FrameworkMigrator.migrateImports(enclosingType, framework);
+        }
+
+        // Step 1 - Traditional → Fluent API conversion (existing code)
+        if (spec.isFluentConversion()) {
+            CtInvocation<?> fluentCall = FluentChainBuilder.buildFluentChain(
+                    targetCall.getTarget(),
+                    spec.getLevel(),
+                    spec.getFields(),
+                    spec.getMessage(),
+                    spec.getException()
+            );
+
+            // Replace old call with new fluent chain
+            targetCall.replace(fluentCall);
+        }
+    }
+
+    /**
+     * Find logger field declaration from invocation target.
+     */
+    private static CtField<?> findLoggerField(CtInvocation<?> invocation) {
+        if (invocation.getTarget() instanceof CtFieldRead<?>) {
+            CtFieldRead<?> fieldRead = (CtFieldRead<?>) invocation.getTarget();
+            return fieldRead.getVariable().getDeclaration();
+        }
+        return null;
     }
 
     /**

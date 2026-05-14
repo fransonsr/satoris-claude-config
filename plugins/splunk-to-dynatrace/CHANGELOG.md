@@ -5,6 +5,44 @@ All notable changes to the Splunk-to-Dynatrace migration plugin will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-05-14
+
+### Added
+
+- **Framework-to-SLF4J Migration** - Convert-logs skill now supports migrating from other logging frameworks to SLF4J:
+  - Log4j 1.x → SLF4J (security remediation for CVE-2021-44228)
+  - Log4j 2.x → SLF4J (standardization)
+  - Logback → SLF4J (library best practice - use facade instead of implementation)
+  - Apache Commons Logging → SLF4J (standardization)
+  - Java Util Logging → SLF4J (modern features)
+- Framework migration can be performed independently of traditional→fluent conversion
+- CLI options: `--migrate-frameworks`, `--frameworks [list]`
+- Automatic import statement migration (removes old framework imports, adds SLF4J)
+- Method name mapping (fatal→error, atFatal→atError, severe→error, warning→warn, etc.)
+- Factory pattern replacement (Logger.getLogger → LoggerFactory.getLogger)
+- New FrameworkMigrator.java class handles all framework transformation logic
+- TransformationSpec now includes `framework` and `fluentConversion` fields
+
+### Changed
+
+- SpoonLoggerTransformer performs framework migration before fluent API conversion
+- Python wrapper filters conversion inventory by framework when in migration mode
+- transform_spoon.py updated to v3.0.2
+
+### Documentation
+
+- Added "Framework Migration" section to convert-logs/SKILL.md (pending)
+- Documented all 5 migration paths with before/after examples (pending)
+- Added migration strategy guidance for libraries vs applications (pending)
+- Updated dependency management recommendations (pending)
+
+### Use Cases Enabled
+
+- Libraries eliminating Logback-specific API (facade principle violation)
+- Security remediation for Log4j 1.x CVE vulnerabilities
+- Mixed-framework codebase standardization
+- Preparation for SLF4J 2.0+ fluent API adoption
+
 ## [3.0.1] - 2026-05-14
 
 ### Fixed

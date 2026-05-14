@@ -95,7 +95,9 @@ def transform_file(args: Tuple[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
                 'level': t['level'].lower(),
                 'fields': t.get('fields', []),
                 'message': t['message'],
-                'exception': t.get('exception', None)
+                'exception': t.get('exception', None),
+                'framework': spec.get('framework', 'slf4j'),  # v3.0.2
+                'fluentConversion': True  # v3.0.2 - default to true
             }
             spoon_specs.append(spoon_spec)
 
@@ -178,6 +180,52 @@ def filter_inventory_by_scope(inventory: Dict[str, Any], scope: str) -> Dict[str
             module['packages'] = [p for p in module['packages']
                                   if package_name in p['name']]
     return inventory
+
+
+def filter_inventory_by_framework(inventory: Dict[str, Any], target_frameworks: List[str]) -> Dict[str, Any]:
+    """Filter conversion inventory to only non-SLF4J frameworks."""
+    filtered_modules = []
+
+    for module in inventory['modules']:
+        filtered_packages = []
+
+        for package in module['packages']:
+            filtered_files = []
+
+            for file_entry in package['files']:
+                filtered_calls = [
+                    call for call in file_entry['calls']
+                    if call.get('framework') in target_frameworks
+                ]
+
+                if filtered_calls:
+                    file_entry_copy = file_entry.copy()
+                    file_entry_copy['calls'] = filtered_calls
+                    filtered_files.append(file_entry_copy)
+
+            if filtered_files:
+                package_copy = package.copy()
+                package_copy['files'] = filtered_files
+                filtered_packages.append(package_copy)
+
+        if filtered_packages:
+            module_copy = module.copy()
+            module_copy['packages'] = filtered_packages
+            filtered_modules.append(module_copy)
+
+    inventory_copy = inventory.copy()
+    inventory_copy['modules'] = filtered_modules
+    return inventory_copy
+
+
+def count_calls(inventory: Dict[str, Any]) -> int:
+    """Count total log calls in inventory."""
+    count = 0
+    for module in inventory['modules']:
+        for package in module['packages']:
+            for file_entry in package['files']:
+                count += len(file_entry['calls'])
+    return count
 
 
 def apply_batch_transformations(inventory_path: Path, llm_specs: Dict[Tuple[str, int], Dict[str, Any]],
@@ -273,7 +321,7 @@ def apply_batch_transformations(inventory_path: Path, llm_specs: Dict[Tuple[str,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Transform traditional logging to fluent API using Spoon (v3.0.0)"
+        description="Transform traditional logging to fluent API using Spoon (v3.0.2)"
     )
     parser.add_argument(
         '--specs',
@@ -303,6 +351,19 @@ def main():
         help='Output file for transformation results JSON'
     )
 
+    # Framework migration options (v3.0.2)
+    parser.add_argument(
+        '--migrate-frameworks',
+        action='store_true',
+        help='Migrate non-SLF4J frameworks to SLF4J'
+    )
+    parser.add_argument(
+        '--frameworks',
+        nargs='+',
+        choices=['log4j', 'log4j2', 'logback', 'commons-logging', 'jul'],
+        help='Specific frameworks to migrate (default: all non-SLF4J)'
+    )
+
     args = parser.parse_args()
 
     # Default inventory path
@@ -330,16 +391,42 @@ def main():
 
     print(f"Loaded {len(llm_specs)} transformation specs")
 
+    # Load inventory for framework filtering
+    with open(args.inventory) as f:
+        inventory = json.load(f)
+
+    # Framework migration filtering (v3.0.2)
+    if args.migrate_frameworks:
+        target_frameworks = args.frameworks or ['log4j', 'log4j2', 'logback', 'commons-logging', 'jul']
+        original_count = count_calls(inventory)
+        inventory = filter_inventory_by_framework(inventory, target_frameworks)
+        filtered_count = count_calls(inventory)
+
+        print(f"\nFramework migration mode: {', '.join(target_frameworks)}")
+        print(f"Found {filtered_count} calls to migrate (filtered from {original_count} total)")
+
+        # Write filtered inventory to temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
+            json.dump(inventory, tmp)
+            filtered_inventory_path = Path(tmp.name)
+    else:
+        filtered_inventory_path = args.inventory
+
     # Start JVM
     start_jvm()
 
     # Apply transformations
     results = apply_batch_transformations(
-        args.inventory,
+        filtered_inventory_path,
         llm_specs,
         scope=args.scope,
         workers=args.workers
     )
+
+    # Clean up temp file if created
+    if args.migrate_frameworks and filtered_inventory_path != args.inventory:
+        filtered_inventory_path.unlink(missing_ok=True)
 
     # Write results
     if args.output:

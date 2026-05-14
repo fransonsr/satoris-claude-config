@@ -15,6 +15,10 @@ public class TransformationSpec {
     private String message;
     private String exception;
 
+    // Framework migration support (v3.0.2)
+    private String framework;           // slf4j, log4j, log4j2, logback, commons-logging, jul
+    private boolean fluentConversion = true;   // true for traditional→fluent, false for framework-only
+
     public String getFile() {
         return file;
     }
@@ -41,6 +45,22 @@ public class TransformationSpec {
 
     public String getException() {
         return exception;
+    }
+
+    public String getFramework() {
+        return framework;
+    }
+
+    public void setFramework(String framework) {
+        this.framework = framework;
+    }
+
+    public boolean isFluentConversion() {
+        return fluentConversion;
+    }
+
+    public void setFluentConversion(boolean fluentConversion) {
+        this.fluentConversion = fluentConversion;
     }
 
     /**
