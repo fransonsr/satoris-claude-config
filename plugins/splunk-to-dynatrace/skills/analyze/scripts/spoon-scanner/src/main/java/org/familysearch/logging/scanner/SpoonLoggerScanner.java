@@ -38,12 +38,16 @@ public class SpoonLoggerScanner {
         boolean autoDiscover = contains(args, "--auto-discover");
         boolean debug = contains(args, "--debug");
 
-        // Parse --source arguments
+        // Parse --source and --classpath arguments
         List<Path> sourcePaths = new ArrayList<>();
+        String classpath = null;
         for (int i = 2; i < args.length; i++) {
             if (args[i].equals("--source") && i + 1 < args.length) {
                 Path sourcePath = projectRoot.resolve(args[i + 1]);
                 sourcePaths.add(sourcePath);
+                i++; // Skip the next arg since we consumed it
+            } else if (args[i].equals("--classpath") && i + 1 < args.length) {
+                classpath = args[i + 1];
                 i++; // Skip the next arg since we consumed it
             }
         }
@@ -59,7 +63,8 @@ public class SpoonLoggerScanner {
             outputFile,
             autoDiscover,
             sourcePaths,
-            debug
+            debug,
+            classpath
         );
 
         try {
@@ -87,18 +92,36 @@ public class SpoonLoggerScanner {
     private static List<LoggerCandidate> scan(ScannerConfig config) {
         Launcher launcher = new Launcher();
 
-        // Configure Spoon for fast mode
-        launcher.getEnvironment().setNoClasspath(true);      // Fast mode
+        // Configure Spoon - classpath mode if available
+        if (config.hasClasspath()) {
+            launcher.getEnvironment().setNoClasspath(false);
+
+            // Split classpath and add entries
+            String[] classpathEntries = config.getClasspath().split(":");
+            launcher.getEnvironment().setSourceClasspath(classpathEntries);
+
+            if (config.isDebug()) {
+                launcher.getEnvironment().setLevel("INFO");
+                System.out.println("[DEBUG] Spoon configured in classpath mode");
+                System.out.println("[DEBUG] Classpath: " +
+                    config.getClasspath().substring(0, Math.min(200, config.getClasspath().length())) + "...");
+            } else {
+                launcher.getEnvironment().setLevel("ERROR");
+            }
+        } else {
+            launcher.getEnvironment().setNoClasspath(true);  // Fast mode (existing)
+
+            if (config.isDebug()) {
+                launcher.getEnvironment().setLevel("INFO");
+                System.out.println("[DEBUG] Spoon configured in noclasspath mode");
+            } else {
+                launcher.getEnvironment().setLevel("ERROR");
+            }
+        }
+
         launcher.getEnvironment().setAutoImports(true);      // Import resolution
         launcher.getEnvironment().setCommentEnabled(false);  // Skip comments
         launcher.getEnvironment().setComplianceLevel(17);    // Java 17
-
-        if (config.isDebug()) {
-            launcher.getEnvironment().setLevel("INFO");
-            System.out.println("[DEBUG] Spoon configured in noclasspath mode");
-        } else {
-            launcher.getEnvironment().setLevel("ERROR");
-        }
 
         // Add input resources
         if (config.isAutoDiscover()) {

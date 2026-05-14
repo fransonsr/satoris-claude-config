@@ -12,14 +12,16 @@ public class ScannerConfig {
     private final boolean autoDiscover;
     private final List<Path> sourcePaths;
     private final boolean debug;
+    private final String classpath;
 
     public ScannerConfig(Path projectRoot, Path outputFile, boolean autoDiscover,
-                         List<Path> sourcePaths, boolean debug) {
+                         List<Path> sourcePaths, boolean debug, String classpath) {
         this.projectRoot = projectRoot;
         this.outputFile = outputFile;
         this.autoDiscover = autoDiscover;
         this.sourcePaths = sourcePaths;
         this.debug = debug;
+        this.classpath = classpath;
     }
 
     public Path getProjectRoot() {
@@ -40,5 +42,13 @@ public class ScannerConfig {
 
     public boolean isDebug() {
         return debug;
+    }
+
+    public String getClasspath() {
+        return classpath;
+    }
+
+    public boolean hasClasspath() {
+        return classpath != null && !classpath.isEmpty();
     }
 }

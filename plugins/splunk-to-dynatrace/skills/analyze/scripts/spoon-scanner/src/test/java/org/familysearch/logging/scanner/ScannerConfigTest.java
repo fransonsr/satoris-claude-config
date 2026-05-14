@@ -22,7 +22,8 @@ class ScannerConfigTest {
             outputFile,
             true,
             Collections.emptyList(),
-            false
+            false,
+            null
         );
 
         assertEquals(projectRoot, config.getProjectRoot());
@@ -46,7 +47,8 @@ class ScannerConfigTest {
             outputFile,
             false,
             sourcePaths,
-            true
+            true,
+            null
         );
 
         assertEquals(projectRoot, config.getProjectRoot());
@@ -63,7 +65,8 @@ class ScannerConfigTest {
             Paths.get("/tmp/output.json"),
             true,
             Collections.emptyList(),
-            true
+            true,
+            null
         );
 
         assertTrue(config.isDebug());

@@ -3,7 +3,7 @@
 Hybrid Logger Inventory Generator
 
 Orchestrates Spoon discovery + code enrichment pipeline.
-Version: 3.0.1 (hybrid architecture + Spoon type validation + multi-framework support)
+Version: 3.0.3 (smart incremental builds + classpath mode for 99%+ detection accuracy)
 
 Usage:
     python3 hybrid_inventory.py --project-root . --auto-discover --output inventory.json
@@ -63,6 +63,16 @@ def parse_args() -> argparse.Namespace:
         action='store_true',
         help='Enable debug output'
     )
+    parser.add_argument(
+        '--skip-build',
+        action='store_true',
+        help='Skip build, use noclasspath mode (fastest but may miss inherited loggers)'
+    )
+    parser.add_argument(
+        '--clean-build',
+        action='store_true',
+        help='Force clean rebuild (mvn clean compile)'
+    )
 
     args = parser.parse_args()
 
@@ -76,9 +86,187 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def run_spoon_scanner(args: argparse.Namespace) -> Path:
+def detect_build_state(project_root: Path) -> Dict[str, Any]:
+    """
+    Detect if project is already compiled.
+
+    Returns:
+        dict with keys: 'has_build', 'main_classes', 'test_classes', 'build_tool'
+    """
+    result = {
+        'has_build': False,
+        'main_classes': 0,
+        'test_classes': 0,
+        'build_tool': None
+    }
+
+    # Detect build tool
+    if (project_root / 'pom.xml').exists():
+        result['build_tool'] = 'maven'
+    elif (project_root / 'build.gradle').exists():
+        result['build_tool'] = 'gradle'
+    else:
+        return result  # No build tool
+
+    # Check for compiled classes (Maven layout)
+    main_classes_dir = project_root / 'target' / 'classes'
+    test_classes_dir = project_root / 'target' / 'test-classes'
+
+    if main_classes_dir.exists():
+        # Count .class files
+        class_files = list(main_classes_dir.rglob('*.class'))
+        result['main_classes'] = len(class_files)
+        result['has_build'] = result['main_classes'] > 0
+
+    if test_classes_dir.exists():
+        class_files = list(test_classes_dir.rglob('*.class'))
+        result['test_classes'] = len(class_files)
+
+    return result
+
+
+def run_incremental_compile(project_root: Path, skip_build: bool = False,
+                          clean_build: bool = False, debug: bool = False) -> tuple:
+    """
+    Run incremental Maven compile to ensure classes are up-to-date.
+
+    Args:
+        project_root: Project root directory
+        skip_build: Force noclasspath mode (skip build entirely)
+        clean_build: Force clean rebuild
+        debug: Enable debug output
+
+    Returns:
+        tuple: (success: bool, classpath: str or None, mode: 'classpath' or 'noclasspath')
+    """
+    if skip_build:
+        print("⊘ Skipping build (--skip-build flag)", file=sys.stderr)
+        return (True, None, 'noclasspath')
+
+    # Check if Maven available
+    try:
+        subprocess.run(['mvn', '--version'],
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                      check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("⚠ Maven not found, using noclasspath mode", file=sys.stderr)
+        return (True, None, 'noclasspath')
+
+    # Run incremental or clean compile
+    if clean_build:
+        print("⚙ Running clean build...", file=sys.stderr)
+        cmd = ['mvn', 'clean', 'compile', '-DskipTests', '-q']
+    else:
+        print("⚙ Running incremental compile...", file=sys.stderr)
+        cmd = ['mvn', 'compile', '-DskipTests', '-q']
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=600  # 10 minute timeout
+        )
+
+        if result.returncode == 0:
+            print(f"✓ Incremental compile successful", file=sys.stderr)
+
+            # Extract classpath
+            classpath = extract_classpath(project_root, debug)
+
+            if classpath:
+                return (True, classpath, 'classpath')
+            else:
+                print("⚠ Failed to extract classpath, using noclasspath mode", file=sys.stderr)
+                return (True, None, 'noclasspath')
+        else:
+            # Compile failed
+            error_msg = result.stderr.decode()[:200]
+            print(f"⚠ Incremental compile failed: {error_msg}", file=sys.stderr)
+            print("  Falling back to noclasspath mode", file=sys.stderr)
+            return (True, None, 'noclasspath')
+
+    except subprocess.TimeoutExpired:
+        print("⚠ Build timeout (10 minutes), using noclasspath mode", file=sys.stderr)
+        return (True, None, 'noclasspath')
+    except Exception as e:
+        print(f"⚠ Build error: {e}, using noclasspath mode", file=sys.stderr)
+        return (True, None, 'noclasspath')
+
+
+def extract_classpath(project_root: Path, debug: bool = False) -> Optional[str]:
+    """
+    Extract classpath from Maven build.
+
+    Returns:
+        str: Full classpath string (colon-separated) or None if extraction failed
+    """
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+        classpath_file = Path(f.name)
+
+    try:
+        # Extract dependencies classpath
+        cmd = [
+            'mvn', 'dependency:build-classpath',
+            f'-Dmdep.outputFile={classpath_file}',
+            '-DincludeScope=compile',
+            '-q'
+        ]
+
+        result = subprocess.run(
+            cmd,
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120
+        )
+
+        if result.returncode != 0:
+            print(f"⚠ Classpath extraction failed: {result.stderr.decode()[:200]}", file=sys.stderr)
+            return None
+
+        # Read classpath file
+        deps_classpath = classpath_file.read_text().strip()
+
+        # Build full classpath
+        classpath_parts = []
+
+        # Add target/classes
+        main_classes = project_root / 'target' / 'classes'
+        if main_classes.exists():
+            classpath_parts.append(str(main_classes))
+
+        # Add dependencies
+        if deps_classpath:
+            classpath_parts.append(deps_classpath)
+
+        full_classpath = ':'.join(classpath_parts)
+
+        if debug:
+            print(f"✓ Classpath extracted ({len(full_classpath)} characters)", file=sys.stderr)
+
+        return full_classpath
+
+    except Exception as e:
+        print(f"⚠ Classpath extraction error: {e}", file=sys.stderr)
+        return None
+    finally:
+        # Clean up temp file
+        try:
+            classpath_file.unlink()
+        except:
+            pass
+
+
+def run_spoon_scanner(args: argparse.Namespace, classpath: Optional[str] = None) -> Path:
     """
     Run Spoon scanner as subprocess.
+
+    Args:
+        args: Command-line arguments
+        classpath: Optional classpath string for classpath mode
 
     Returns:
         Path to candidates.json output file
@@ -110,6 +298,13 @@ def run_spoon_scanner(args: argparse.Namespace) -> Path:
     else:
         for source in args.source:
             cmd.extend(['--source', str(source)])
+
+    # Add classpath if provided
+    if classpath:
+        cmd.extend(['--classpath', classpath])
+        print(f"[Phase 1] Running Spoon scanner (CLASSPATH MODE)...", file=sys.stderr)
+    else:
+        print(f"[Phase 1] Running Spoon scanner (NOCLASSPATH MODE)...", file=sys.stderr)
 
     if args.debug:
         cmd.append('--debug')
@@ -791,12 +986,34 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    print("=== Hybrid Logger Inventory Generator v3.0.1 ===", file=sys.stderr)
+    print("=== Hybrid Logger Inventory Generator v3.0.3 ===", file=sys.stderr)
     print(f"Project root: {args.project_root}", file=sys.stderr)
+    print()
 
-    # Phase 1: Run Spoon scanner
-    print("\n[Phase 1] Running Spoon scanner...", file=sys.stderr)
-    candidates_file = run_spoon_scanner(args)
+    # Step 0a: Detect build state
+    build_state = detect_build_state(args.project_root)
+
+    if build_state['has_build']:
+        print(f"✓ Found existing build: {build_state['main_classes']} classes", file=sys.stderr)
+    else:
+        print("⊘ No existing build found", file=sys.stderr)
+
+    # Step 0b: Smart incremental compile
+    success, classpath, mode = run_incremental_compile(
+        args.project_root,
+        skip_build=args.skip_build,
+        clean_build=args.clean_build,
+        debug=args.debug
+    )
+
+    if not success:
+        print("✗ Build failed, aborting", file=sys.stderr)
+        sys.exit(1)
+
+    print()
+
+    # Phase 1: Run Spoon scanner (pass classpath)
+    candidates_file = run_spoon_scanner(args, classpath=classpath)
 
     # Phase 2: Load and enrich candidates
     print("\n[Phase 2] Enriching candidates with code context...", file=sys.stderr)

@@ -20,7 +20,8 @@ class LoggerCallProcessorTest {
             Paths.get("/tmp/output.json"),
             false,
             Collections.emptyList(),
-            false
+            false,
+            null
         );
     }
 

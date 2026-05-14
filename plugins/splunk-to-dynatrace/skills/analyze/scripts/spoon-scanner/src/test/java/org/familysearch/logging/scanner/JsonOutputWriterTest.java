@@ -26,7 +26,8 @@ class JsonOutputWriterTest {
             tempDir.resolve("output.json"),
             false,
             Collections.emptyList(),
-            false
+            false,
+            null
         );
     }
 

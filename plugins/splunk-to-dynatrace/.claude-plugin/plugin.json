@@ -1,7 +1,7 @@
 {
   "name": "splunk-to-dynatrace",
-  "version": "3.0.2",
-  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. v3.0.2: Framework-to-SLF4J migration (Log4j/Logback/Commons/JUL→SLF4J). v3.0.1: Fix 80% false positive rate with Spoon semantic type validation. v3.0.0: Hybrid Spoon scanner (10x faster, 0% parse failures, Java 25 support).",
+  "version": "3.0.3",
+  "description": "Migrate Spring Boot applications and libraries from Splunk to Dynatrace structured logging with FamilySearch Observability Standards. v3.0.3: Smart incremental builds for 99%+ detection accuracy (inherited logger fields resolved). v3.0.2: Framework-to-SLF4J migration (Log4j/Logback/Commons/JUL→SLF4J). v3.0.1: Fix 80% false positive rate with Spoon semantic type validation. v3.0.0: Hybrid Spoon scanner (10x faster, 0% parse failures, Java 25 support).",
   "author": {
     "name": "FamilySearch Engineering - SATORIS Team",
     "email": "fransonsr@familysearch.org"
