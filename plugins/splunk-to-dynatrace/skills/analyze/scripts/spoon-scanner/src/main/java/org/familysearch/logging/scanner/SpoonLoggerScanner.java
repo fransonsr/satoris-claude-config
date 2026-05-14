@@ -256,7 +256,7 @@ public class SpoonLoggerScanner {
     }
 
     private static void printUsage() {
-        System.out.println("Spoon Logger Scanner v1.0.0");
+        System.out.println("Spoon Logger Scanner v1.0.1");
         System.out.println();
         System.out.println("Usage: java -jar spoon-scanner.jar <project-root> <output-file> [options]");
         System.out.println();

@@ -6,6 +6,7 @@ import spoon.reflect.code.CtFieldRead;
 import spoon.reflect.code.CtExpression;
 import spoon.reflect.cu.SourcePosition;
 import spoon.reflect.cu.position.NoSourcePosition;
+import spoon.reflect.reference.CtTypeReference;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -14,10 +15,12 @@ import java.util.Set;
 /**
  * Spoon processor that discovers logger method calls.
  *
- * Detection strategies (noclasspath mode):
- * 1. Method name matches known log levels (trace, debug, info, warn, error, atTrace, atDebug, atInfo, atWarn, atError)
- * 2. Target is a known logger field (from LoggerFieldProcessor)
- * 3. Target name matches logger pattern (fallback heuristic)
+ * Detection strategies (noclasspath mode with type validation):
+ * 1. Known logger field: Target is a logger field identified in Phase 1 (most reliable)
+ * 2. Type-verified method: Method name matches log levels AND receiver type is Logger (semantic validation)
+ *
+ * Removed in v3.0.1:
+ * - Strategy 3 (regex pattern matching on scope name) - too broad, caused 80% false positive rate
  */
 public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
     private final List<LoggerCandidate> candidates = new ArrayList<>();
@@ -46,15 +49,19 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             int line = pos.getLine();
             int column = pos.getColumn();
             String methodName = invocation.getExecutable().getSimpleName();
-
             String loggerName = extractLoggerName(invocation);
-            String strategy = getDetectionStrategy(invocation);
-            boolean needsValidation = strategy.equals("heuristic_scope_pattern");
+
+            // NEW: Extract receiver type for validation
+            String receiverType = extractReceiverType(invocation);
+
+            String strategy = getDetectionStrategy(invocation, receiverType);
+            boolean needsValidation = strategy.equals("method_name_no_type") ||
+                                      receiverType == null;
 
             LoggerCandidate candidate = new LoggerCandidate(
                 CandidateType.LOGGER_CALL,
                 file, line, column,
-                loggerName, null, methodName,
+                loggerName, receiverType, methodName,  // receiverType added here
                 needsValidation,
                 strategy
             );
@@ -62,46 +69,123 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             candidates.add(candidate);
 
             if (config.isDebug()) {
-                System.out.printf("[DEBUG] Found logger call: %s.%s() at %s:%d (strategy: %s)%n",
-                    loggerName, methodName, file, line, strategy);
+                System.out.printf("[DEBUG] Found logger call: %s.%s() at %s:%d (type: %s, strategy: %s)%n",
+                    loggerName, methodName, file, line, receiverType, strategy);
             }
         }
     }
 
-    private boolean isLoggerCall(CtInvocation<?> invocation) {
-        String methodName = invocation.getExecutable().getSimpleName();
+    /**
+     * Extract the type of the receiver expression (target of method call).
+     *
+     * In noclasspath mode, Spoon can still infer types from:
+     * - Import statements (org.slf4j.Logger)
+     * - Field declarations
+     * - Variable declarations
+     *
+     * @param invocation The method invocation
+     * @return Type name (qualified if available, simple otherwise), or null
+     */
+    private String extractReceiverType(CtInvocation<?> invocation) {
+        CtExpression<?> target = invocation.getTarget();
+        if (target == null) {
+            return null;
+        }
 
-        // Strategy 1: Method name matches log levels
-        if (LOG_LEVELS.contains(methodName)) {
+        // Strategy 1: Get type from CtFieldRead (most common: LOGGER.info())
+        if (target instanceof CtFieldRead<?>) {
+            CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
+            CtTypeReference<?> typeRef = fieldRead.getVariable().getType();
+            if (typeRef != null) {
+                String qualifiedName = typeRef.getQualifiedName();
+                if (qualifiedName != null && !qualifiedName.isEmpty()) {
+                    return qualifiedName;  // e.g., "org.slf4j.Logger"
+                }
+                return typeRef.getSimpleName();  // e.g., "Logger"
+            }
+        }
+
+        // Strategy 2: Get type from target expression directly
+        CtTypeReference<?> typeRef = target.getType();
+        if (typeRef != null) {
+            String qualifiedName = typeRef.getQualifiedName();
+            if (qualifiedName != null && !qualifiedName.isEmpty()) {
+                return qualifiedName;
+            }
+            return typeRef.getSimpleName();
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if a type name indicates a Logger type.
+     *
+     * Checks for:
+     * - org.slf4j.Logger (qualified name)
+     * - Logger (simple name)
+     * - slf4j (partial match for edge cases)
+     *
+     * @param typeName The type name to check
+     * @return True if type is a Logger
+     */
+    private boolean isLoggerType(String typeName) {
+        if (typeName == null || typeName.isEmpty()) {
+            return false;
+        }
+
+        // Exact matches
+        if (typeName.equals("org.slf4j.Logger") || typeName.equals("Logger")) {
             return true;
         }
 
-        // Strategy 2: Called on known logger field
+        // Contains "Logger" or "slf4j" (covers org.slf4j.Logger, custom.Logger, etc.)
+        return typeName.contains("Logger") || typeName.contains("slf4j");
+    }
+
+    private boolean isLoggerCall(CtInvocation<?> invocation) {
+        String methodName = invocation.getExecutable().getSimpleName();
         CtExpression<?> target = invocation.getTarget();
+
+        // Strategy 1: Called on known logger field (from Phase 1)
+        // This is the most reliable - we already verified these are Logger fields
         if (target instanceof CtFieldRead<?>) {
             CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
             String fieldName = fieldRead.getVariable().getSimpleName();
 
             if (knownLoggerFields.contains(fieldName)) {
-                return true;
+                return true;  // High confidence - known logger field
             }
         }
 
-        // Strategy 3: Scope name pattern (fallback)
-        if (target != null) {
-            String targetName = target.toString();
-            if (targetName.matches("(?i).*(logger|log).*")) {
+        // Strategy 2: Method name matches log levels AND receiver type is Logger
+        // This catches loggers we missed in Phase 1 (local variables, parameters, etc.)
+        if (LOG_LEVELS.contains(methodName)) {
+            String receiverType = extractReceiverType(invocation);
+            if (isLoggerType(receiverType)) {
+                return true;  // Verified logger call
+            }
+
+            // If we can't determine type, mark for validation (noclasspath limitation)
+            if (receiverType == null) {
+                // Conservative: assume it might be a logger if method name matches
+                // But mark needsValidation=true so Python can verify
                 return true;
             }
+
+            // Receiver type is known and NOT a Logger - definitely not a logger call
+            return false;
         }
 
+        // Strategy 3 REMOVED - regex pattern was too broad and unreliable
+        // All other cases are not logger calls
         return false;
     }
 
-    private String getDetectionStrategy(CtInvocation<?> invocation) {
+    private String getDetectionStrategy(CtInvocation<?> invocation, String receiverType) {
         String methodName = invocation.getExecutable().getSimpleName();
 
-        // Check known logger field first (more specific)
+        // Strategy 1: Known logger field (most reliable)
         CtExpression<?> target = invocation.getTarget();
         if (target instanceof CtFieldRead<?>) {
             CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
@@ -112,12 +196,15 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             }
         }
 
-        // Then check method name
+        // Strategy 2: Method name + type verification
         if (LOG_LEVELS.contains(methodName)) {
-            return "method_name";
+            if (isLoggerType(receiverType)) {
+                return "method_name_with_type";
+            }
+            return "method_name_no_type";  // Needs validation
         }
 
-        return "heuristic_scope_pattern";
+        return "unknown";
     }
 
     private String extractLoggerName(CtInvocation<?> invocation) {

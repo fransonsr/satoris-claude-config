@@ -3,7 +3,7 @@
 Hybrid Logger Inventory Generator
 
 Orchestrates Spoon discovery + code enrichment pipeline.
-Version: 3.0.0 (hybrid architecture)
+Version: 3.0.1 (hybrid architecture + Spoon type validation)
 
 Usage:
     python3 hybrid_inventory.py --project-root . --auto-discover --output inventory.json
@@ -218,10 +218,10 @@ def read_code_snippet_cached(file_path: Path, line: int,
 
 def is_logger_statement(candidate: dict, code_snippet: str) -> bool:
     """
-    Filter out LoggerFactory.getLogger() and other non-log statements.
+    Filter out non-logger calls using Spoon's type information.
 
     Args:
-        candidate: Candidate dict from Spoon
+        candidate: Candidate dict from Spoon (includes typeName = receiver type)
         code_snippet: Code context
 
     Returns:
@@ -233,8 +233,21 @@ def is_logger_statement(candidate: dict, code_snippet: str) -> bool:
 
     # Check methodName from Spoon
     method = candidate.get('methodName', '')
-    return method in ['error', 'warn', 'info', 'debug', 'trace',
-                     'atError', 'atWarn', 'atInfo', 'atDebug', 'atTrace']
+    if method not in ['error', 'warn', 'info', 'debug', 'trace',
+                     'atError', 'atWarn', 'atInfo', 'atDebug', 'atTrace']:
+        return False
+
+    # NEW: Check receiver type from Spoon (v3.0.1)
+    receiver_type = candidate.get('typeName', '')  # Spoon provides this now
+    if receiver_type:
+        # If type is known, verify it's a Logger
+        is_logger = 'Logger' in receiver_type or 'slf4j' in receiver_type
+        if not is_logger:
+            return False  # Definitely not a logger call (e.g., AbstractTask, ServiceJobPhase)
+
+    # If type is unknown (None/empty), we still accept it (conservative)
+    # The Spoon scanner marks these with needsValidation=true
+    return True
 
 
 def extract_level(code_snippet: str, method_name: Optional[str]) -> Optional[str]:
@@ -271,9 +284,42 @@ def extract_level(code_snippet: str, method_name: Optional[str]) -> Optional[str
     return None
 
 
-def classify_pattern(code_snippet: str) -> str:
+def read_code_snippet_expanded(file_path: Path, line: int,
+                               cache: Dict[Path, List[str]],
+                               context_lines: int = 10) -> str:
     """
-    Classify logging pattern.
+    Read expanded code snippet for multi-line pattern detection.
+
+    Args:
+        file_path: Absolute path to source file
+        line: Line number (1-based)
+        cache: File content cache
+        context_lines: Lines of context before/after (default 10)
+
+    Returns:
+        Code snippet as string
+    """
+    if file_path not in cache:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                cache[file_path] = f.readlines()
+        except Exception:
+            cache[file_path] = []
+
+    lines = cache[file_path]
+    if not lines:
+        return ""
+
+    idx = line - 1
+    start = max(0, idx - context_lines)
+    end = min(len(lines), idx + context_lines + 1)
+    return ''.join(lines[start:end])
+
+
+def classify_pattern(code_snippet: str, file_path: Path, line: int,
+                    cache: Dict[Path, List[str]]) -> str:
+    """
+    Classify logging pattern with expanded context for multi-line chains.
 
     Patterns:
     - fluent: Fluent API with structured logging (.atInfo().addKeyValue(...).log())
@@ -282,12 +328,15 @@ def classify_pattern(code_snippet: str) -> str:
     - traditional: Traditional SLF4J (LOGGER.info(...))
 
     Args:
-        code_snippet: Code context (±3 lines)
+        code_snippet: Code context (±3 lines from call site)
+        file_path: File path for expanded reading
+        line: Line number for expanded reading
+        cache: File content cache
 
     Returns:
         Pattern name
     """
-    # Check for fluent API
+    # Check for fluent API in immediate context (±3 lines)
     if '.atError(' in code_snippet or '.atWarn(' in code_snippet or '.atInfo(' in code_snippet:
         if '.addKeyValue(' in code_snippet:
             return 'fluent'
@@ -296,6 +345,17 @@ def classify_pattern(code_snippet: str) -> str:
     # Check for Lombok
     if 'log.error(' in code_snippet or 'log.warn(' in code_snippet or 'log.info(' in code_snippet:
         return 'lombok'
+
+    # For potential traditional calls, check wider context (±10 lines)
+    # to catch multi-line fluent chains
+    expanded_snippet = read_code_snippet_expanded(file_path, line, cache, context_lines=10)
+
+    fluent_keywords = ['atTrace', 'atDebug', 'atInfo', 'atWarn', 'atError']
+    if any(keyword in expanded_snippet for keyword in fluent_keywords):
+        # Found fluent API in wider context - this is a multi-line chain
+        if '.addKeyValue(' in expanded_snippet:
+            return 'fluent'
+        return 'fluent_simple'
 
     # Default: traditional
     return 'traditional'
@@ -398,7 +458,7 @@ def enrich_candidates(candidates_data: Dict[str, Any],
             'line': call['line'],
             'logger_name': call.get('name', 'LOGGER'),
             'level': extract_level(code_snippet, call.get('methodName')),
-            'pattern': classify_pattern(code_snippet),
+            'pattern': classify_pattern(code_snippet, abs_path, call['line'], file_cache),
             'message_snippet': extract_message(code_snippet),
             'parameter_count': count_parameters(code_snippet)
         }
@@ -440,7 +500,7 @@ def write_lsp_inventory(inventory: Dict[str, Any], output_path: Path):
         "metadata": {
             "analysis_date": datetime.now().isoformat(),
             "scanner": "spoon+hybrid",
-            "version": "3.0.0",
+            "version": "3.0.1",
             "total_loggers": len(inventory['loggers']),
             "total_calls": len(inventory['log_calls'])
         },
@@ -634,7 +694,7 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    print("=== Hybrid Logger Inventory Generator v3.0.0 ===", file=sys.stderr)
+    print("=== Hybrid Logger Inventory Generator v3.0.1 ===", file=sys.stderr)
     print(f"Project root: {args.project_root}", file=sys.stderr)
 
     # Phase 1: Run Spoon scanner

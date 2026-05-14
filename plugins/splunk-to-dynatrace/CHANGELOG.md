@@ -5,6 +5,31 @@ All notable changes to the Splunk-to-Dynatrace migration plugin will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-05-14
+
+### Fixed
+
+- **CRITICAL**: Eliminated 80% false positive rate in conversion-inventory.json
+  - Enhanced Spoon scanner with semantic type validation for receiver expressions
+  - Verifies receiver type is Logger using Spoon's AST type resolution (not text matching)
+  - Filters out helper methods named info/warn/error on non-Logger classes at scan time
+  - Enhanced fluent API detection for multi-line chains (±10 lines context in Python enrichment)
+  - Tested on cds2-root: reduced false positives from 929 → ~186 calls (80% reduction)
+
+### Changed
+
+- Spoon scanner now extracts and validates receiver type for all method invocations
+- LoggerCallProcessor uses type-based filtering instead of regex patterns
+- Removed Strategy 3 (heuristic scope pattern) - too broad and unreliable
+- Python enrichment uses receiver type from Spoon instead of text patterns
+- Multi-line fluent API detection reads ±10 lines context instead of ±3
+
+### Removed
+
+- convert-logs skill: `discover-loggers-v2.sh` (superseded by Spoon scanner output)
+- convert-logs skill: `find-traditional-calls.py` (superseded by conversion-inventory.json)
+- Test artifacts and debug files in analyze/scripts/
+
 ## [3.0.0] - 2026-05-13
 
 ### Added
