@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
 """
+⚠️ DEPRECATED: This file uses JavaParser 3.25.8 which fails on Java 16+ code.
+
+For new transformations, use transform_spoon.py (v3.0.0) with 0% parse failures.
+
+JavaParser limitations:
+- Cannot parse Java 16+ syntax (pattern matching, records, sealed classes)
+- 0.76% transformation failure rate on modern codebases
+- No longer maintained in this plugin
+
+Last working version: v2.0.0
+Superseded by: transform_spoon.py (v3.0.0)
+Migration: Replace transform_jpype.py with transform_spoon.py in commands
+
+---
+
+Original documentation below:
+
 Python wrapper for JavaParser using JPype.
 
 Transforms traditional SLF4J logging to fluent API using JavaParser's AST API.

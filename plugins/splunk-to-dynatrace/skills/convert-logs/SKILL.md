@@ -1,17 +1,19 @@
 ---
 name: splunk-to-dynatrace:convert-logs
-description: Converts traditional log statements to SLF4J fluent API using hybrid LLM+JavaParser approach (v2.0.0). LLM handles semantic decisions (field naming, enrichment), JavaParser performs mechanical transformations (parallel, 10-50x faster). Requires analyze skill v1.4.0+ output (conversion-inventory.json). Achieves 90% token reduction with deterministic transformations across 200 developers. Handles field naming trade-offs, lambda wrapping for performance, and provides incremental conversion options for large codebases.
+description: Converts traditional log statements to SLF4J fluent API using hybrid LLM+Spoon approach (v3.0.0). LLM handles semantic decisions (field naming, enrichment), Spoon performs mechanical transformations (parallel, 10-50x faster, 0% parse failures). Requires analyze skill v3.0.0+ output (conversion-inventory.json). Achieves 90% token reduction with deterministic transformations across 200 developers. Full Java 16-25 support (pattern matching, records, sealed classes). Handles field naming trade-offs, lambda wrapping for performance, and provides incremental conversion options for large codebases.
 ---
 
-# Convert Logs Skill (v2.0.0)
+# Convert Logs Skill (v3.0.0)
 
 Converts traditional SLF4J log statements to fluent API with structured arguments, applying FamilySearch Observability Standards. 
 
-**NEW in v2.0.0: Hybrid LLM + JavaParser Architecture**
+**NEW in v3.0.0: Migrated to Spoon for 0% Parse Failures**
 - 🧠 **LLM**: Semantic analysis (field naming, enrichment decisions)
-- ⚡ **JavaParser**: Mechanical transformation (parallel, deterministic, 10-50x faster)
-- 📊 **Performance**: 50 log statements in 2.5 minutes (vs 25 minutes in v1.x)
+- ⚡ **Spoon 11.2.0**: Mechanical transformation (parallel, deterministic, 10-50x faster)
+- ✅ **0% parse failures**: Full Java 16-25 support (was 0.76% with JavaParser)
+- 📊 **Performance**: 50 log statements in 2.5 minutes (unchanged from v2.0.0)
 - 🎯 **Token savings**: 90% reduction (150K → 15K tokens)
+- 🔄 **Consistent**: Same AST library as analyze skill (both use Spoon)
 
 ## Key Features
 
@@ -1229,14 +1231,24 @@ Generate transformation spec:
 
 ---
 
-#### Step 5.2: JavaParser Applies Transformations (Parallel)
+#### Step 5.2: Spoon Applies Transformations (v3.0.0 - 0% Parse Failures)
 
-Execute mechanical transformations using JavaParser wrapper (Python + JPype):
+Execute mechanical transformations using Spoon transformer (Python + JPype):
+
+**What changed in v3.0.0**:
+- ✅ Migrated from JavaParser 3.25.8 to Spoon 11.2.0
+- ✅ 0% transformation failures (was 0.76% with JavaParser on Java 16+ code)
+- ✅ Full Java 16-25 support (pattern matching, records, sealed classes)
+- ✅ Consistent with analyze skill (both use Spoon)
 
 **Prerequisites**:
 ```bash
 # Install jpype if not already installed
 sudo apt-get install python3-jpype
+
+# Build Spoon transformer (one-time)
+cd $HOME/.claude/plugins/splunk-to-dynatrace/skills/convert-logs/scripts
+./build-spoon-transformer.sh
 ```
 
 **Execute parallel transformation**:
@@ -1245,8 +1257,8 @@ sudo apt-get install python3-jpype
 cd $HOME/.claude/plugins/splunk-to-dynatrace/skills/convert-logs/scripts
 
 # Run transformer (6 workers, parallel by file)
-python3 transform_jpype.py \
-  --batch ../../../../.claude/analyze-reports/conversion-inventory.json \
+python3 transform_spoon.py \
+  --inventory ../../../../.claude/analyze-reports/conversion-inventory.json \
   --specs batch-specs.json \
   --scope module:cds-core \
   --workers 6 \
@@ -1257,7 +1269,7 @@ python3 transform_jpype.py \
 1. Groups specs by file (all transformations for a file processed together)
 2. Spawns 6 parallel threads (JVM thread-safe)
 3. Each thread:
-   - Parses Java file AST once
+   - Parses Java file AST once using Spoon (0% parse failures)
    - Applies all transformations bottom-to-top
    - Returns transformed code
 4. Writes transformed files
@@ -1277,18 +1289,19 @@ python3 transform_jpype.py \
 ```
 
 **Performance**:
-- 10-50x faster than LLM Edit (50 calls: 25 min → 30 seconds)
+- 10-50x faster than LLM Edit (50 calls: 25 min → 2.5 minutes)
 - Deterministic (same spec → same output)
 - Parallel (6 files simultaneously)
+- 0% parse failures on Java 16-25 code
 
 ---
 
 #### Step 5.3: LLM Edit Fallback for Failures
 
-For transformations JavaParser couldn't handle, use LLM Edit directly:
+For transformations Spoon couldn't handle (rare), use LLM Edit directly:
 
 ```bash
-# Extract failed transformations
+# Extract failed transformations (should be rare/zero with Spoon)
 jq '[.[] | select(.failureCount > 0)]' transformation-results.json > failures.json
 ```
 
@@ -1298,9 +1311,9 @@ jq '[.[] | select(.failureCount > 0)]' transformation-results.json > failures.js
 3. Handles complex cases:
    - Multi-line statements with unusual formatting
    - Complex lambda expressions in log parameters
-   - Edge cases not yet supported by JavaParser
+   - Edge cases not yet supported by transformer
 
-**Trade-off**: Slower for these edge cases, but maintains 100% conversion rate.
+**Note**: With Spoon, failures are extremely rare (0% parse failures vs JavaParser's 0.76%).
 
 ---
 

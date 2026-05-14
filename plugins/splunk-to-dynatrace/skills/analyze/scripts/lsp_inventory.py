@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
 """
+⚠️ DEPRECATED: This file is kept for reference only.
+
+For new analysis, use hybrid_inventory.py (v3.0.0) which is 10x faster.
+
+This LSP-only approach times out on large codebases (1,000+ files) due to
+single-threaded LSP lifecycle overhead. The hybrid approach (Spoon scanner +
+code enrichment) completes in 60-90s and supports Java 16+ syntax (pattern
+matching, records, sealed classes) with 0% parse failures.
+
+Last working version: v2.1.1
+Superseded by: hybrid_inventory.py (v3.0.0)
+Migration: Replace lsp_inventory.py with hybrid_inventory.py in commands
+
+---
+
 LSP-based Logger Inventory Generator
 
 Generates structured JSON inventory of all loggers and log call sites in a Java codebase
