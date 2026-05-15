@@ -8,10 +8,18 @@
 
 **Operating System**: WSL (Windows Subsystem for Linux)
 
+**Path Mappings**:
+- WSL home from Windows: `\\wsl.localhost\Ubuntu\home\fransonsr`
+- Use this path format to open files in Windows browser or applications
+- Example: `file:///\\wsl.localhost\Ubuntu\home\fransonsr\file.md`
+
 **Installed Tools**:
-- `wslu` - WSL utilities package installed
+- `wslu` - WSL utilities package installed (v3.2.3)
   - Use `wslview <file>` to open files in Windows default applications
   - Works like `xdg-open` but WSL-aware (opens PDFs, URLs, etc. in Windows)
+  - **Note**: Original `wslview` uses old WSL1 paths (`\\wsl$`) which don't work in WSL2
+  - **Fix**: Created `~/bin/wslview2` wrapper that uses correct WSL2 paths (`\\wsl.localhost`)
+  - Aliased `wslview` → `wslview2` in `~/.bashrc` so it "just works"
 
 **Task Handoff System**:
 - Handoff documents location: `~/.claude/handoff/`

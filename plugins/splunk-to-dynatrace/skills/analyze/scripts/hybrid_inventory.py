@@ -3,7 +3,7 @@
 Hybrid Logger Inventory Generator
 
 Orchestrates Spoon discovery + code enrichment pipeline.
-Version: 3.0.3 (smart incremental builds + classpath mode for 99%+ detection accuracy)
+Version: 3.0.5 (multi-module classpath with external dependencies)
 
 Usage:
     python3 hybrid_inventory.py --project-root . --auto-discover --output inventory.json
@@ -280,31 +280,91 @@ def extract_classpath(project_root: Path, project_structure: dict = None, debug:
         classpath_file = Path(f.name)
 
     try:
+        if debug:
+            print("  [Step 1] Extracting external dependencies from Maven...", file=sys.stderr)
+
         # Extract dependencies classpath
-        cmd = [
-            'mvn', 'dependency:build-classpath',
-            f'-Dmdep.outputFile={classpath_file}',
-            '-DincludeScope=compile',
-            '-q'
-        ]
+        # For multi-module projects, we need to aggregate dependencies from all modules
+        # since the parent POM typically has no dependencies (packaging=pom)
+        if project_structure['type'] == 'multi-module':
+            # Multi-module: collect and deduplicate dependencies from all modules
+            all_deps = set()
+            modules_with_deps = 0
 
-        result = subprocess.run(
-            cmd,
-            cwd=project_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120
-        )
+            for module_name in project_structure['modules']:
+                module_path = project_root / module_name
+                if not (module_path / 'pom.xml').exists():
+                    continue
 
-        if result.returncode != 0:
-            print(f"⚠ Classpath extraction failed: {result.stderr.decode()[:200]}", file=sys.stderr)
-            return None
+                cmd = [
+                    'mvn', 'dependency:build-classpath',
+                    f'-Dmdep.outputFile={classpath_file}',
+                    '-DincludeScope=compile',
+                    '-q'
+                ]
 
-        # Read classpath file
-        deps_classpath = classpath_file.read_text().strip()
+                result = subprocess.run(
+                    cmd,
+                    cwd=module_path,  # Run from module directory
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=120
+                )
+
+                if result.returncode == 0:
+                    module_deps = classpath_file.read_text().strip()
+                    if module_deps:
+                        # Split and add to set (automatically deduplicates)
+                        for dep in module_deps.split(':'):
+                            if dep:  # Skip empty strings
+                                all_deps.add(dep)
+                        modules_with_deps += 1
+
+            if all_deps:
+                # Combine deduplicated dependencies
+                deps_classpath = ':'.join(sorted(all_deps))
+                if debug:
+                    jar_count = len(all_deps)
+                    print(f"    ✓ External dependencies: {jar_count} unique JARs from {modules_with_deps} modules", file=sys.stderr)
+            else:
+                deps_classpath = None
+                if debug:
+                    print(f"    ⚠ No dependencies found in any module", file=sys.stderr)
+
+        else:
+            # Single-module: run from root
+            cmd = [
+                'mvn', 'dependency:build-classpath',
+                f'-Dmdep.outputFile={classpath_file}',
+                '-DincludeScope=compile',
+                '-q'
+            ]
+
+            result = subprocess.run(
+                cmd,
+                cwd=project_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120
+            )
+
+            if result.returncode != 0:
+                if debug:
+                    print(f"    ⚠ Classpath extraction failed: {result.stderr.decode()[:200]}", file=sys.stderr)
+                return None
+
+            # Read classpath file
+            deps_classpath = classpath_file.read_text().strip()
+
+            if debug and deps_classpath:
+                jar_count = deps_classpath.count('.jar')
+                print(f"    ✓ External dependencies: {jar_count} JARs", file=sys.stderr)
 
         # Build full classpath
         classpath_parts = []
+
+        if debug:
+            print("  [Step 2] Collecting module compiled classes...", file=sys.stderr)
 
         # Add compiled classes directories
         if project_structure['type'] == 'multi-module':
@@ -315,27 +375,34 @@ def extract_classpath(project_root: Path, project_structure: dict = None, debug:
                 if module_classes.exists():
                     classpath_parts.append(str(module_classes))
                     modules_found += 1
+                    if debug:
+                        print(f"    ✓ {module_name}/target/classes", file=sys.stderr)
 
             if debug:
-                print(f"✓ Multi-module classpath: {modules_found}/{len(project_structure['modules'])} modules compiled",
-                      file=sys.stderr)
+                print(f"  [Step 3] Combining classpath components...", file=sys.stderr)
+                print(f"    Module classes: {modules_found}/{len(project_structure['modules'])} compiled", file=sys.stderr)
         else:
             # Single-module: just root target/classes
             main_classes = project_root / 'target' / 'classes'
             if main_classes.exists():
                 classpath_parts.append(str(main_classes))
+                if debug:
+                    print(f"    ✓ target/classes", file=sys.stderr)
 
         # Add dependencies
         if deps_classpath:
             classpath_parts.append(deps_classpath)
+        elif debug:
+            print(f"    ⚠ No external dependencies found", file=sys.stderr)
 
         full_classpath = ':'.join(classpath_parts)
 
         if debug:
-            print(f"✓ Classpath extracted ({len(full_classpath)} characters)", file=sys.stderr)
-            if project_structure['type'] == 'multi-module':
-                print(f"  Module classes: {len([p for p in classpath_parts if 'target/classes' in p])} directories",
-                      file=sys.stderr)
+            print(f"✓ Complete classpath: {len(full_classpath)} characters", file=sys.stderr)
+            if deps_classpath:
+                jar_count = full_classpath.count('.jar')
+                module_count = len([p for p in classpath_parts if 'target/classes' in p])
+                print(f"  Components: {module_count} module directories + {jar_count} external JARs", file=sys.stderr)
 
         return full_classpath
 
