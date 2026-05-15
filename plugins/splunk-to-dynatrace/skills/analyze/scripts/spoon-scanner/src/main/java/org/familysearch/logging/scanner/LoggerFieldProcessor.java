@@ -8,7 +8,9 @@ import spoon.reflect.cu.SourcePosition;
 import spoon.reflect.cu.position.NoSourcePosition;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Spoon processor that discovers logger field declarations.
@@ -31,6 +33,7 @@ import java.util.List;
 public class LoggerFieldProcessor extends AbstractProcessor<CtField<?>> {
     private final List<LoggerCandidate> candidates = new ArrayList<>();
     private final ScannerConfig config;
+    private final Map<String, InheritedLoggerInfo> inheritedLoggers = new HashMap<>();
 
     public LoggerFieldProcessor(ScannerConfig config) {
         this.config = config;
@@ -157,5 +160,115 @@ public class LoggerFieldProcessor extends AbstractProcessor<CtField<?>> {
 
     public List<LoggerCandidate> getCandidates() {
         return candidates;
+    }
+
+    /**
+     * Scan inheritance hierarchy to find logger fields inherited from parent classes.
+     *
+     * Requirements:
+     * - Requires classpath mode (parent types must be resolvable)
+     * - Only finds inheritable fields (protected, public, or package-private)
+     * - Traverses full inheritance chain (not just immediate parent)
+     *
+     * @param model Spoon model containing all types
+     */
+    public void scanInheritedLoggers(spoon.reflect.CtModel model) {
+        for (CtType<?> type : model.getAllTypes()) {
+            if (type.getPosition() instanceof NoSourcePosition) {
+                continue;  // Skip types not from source code
+            }
+
+            String childClassName = type.getQualifiedName();
+
+            // Traverse inheritance chain
+            CtTypeReference<?> currentSuper = type.getSuperclass();
+
+            while (currentSuper != null) {
+                try {
+                    // Resolve parent class from classpath
+                    CtType<?> parentType = currentSuper.getTypeDeclaration();
+
+                    if (parentType == null) {
+                        break;  // Parent not in classpath
+                    }
+
+                    String parentClassName = parentType.getQualifiedName();
+
+                    // Find logger fields in parent
+                    for (CtField<?> field : parentType.getFields()) {
+                        if (isLoggerField(field) && isInheritableField(field)) {
+                            String fieldName = field.getSimpleName();
+                            String loggerType = getTypeName(field);
+                            String key = childClassName + ":" + fieldName;
+
+                            InheritedLoggerInfo info = new InheritedLoggerInfo(
+                                childClassName,
+                                fieldName,
+                                parentClassName,
+                                loggerType
+                            );
+
+                            inheritedLoggers.put(key, info);
+
+                            if (config.isDebug()) {
+                                System.out.printf("[DEBUG] Inherited logger: %s in %s (from %s)%n",
+                                    fieldName, type.getSimpleName(), parentType.getSimpleName());
+                            }
+                        }
+                    }
+
+                    // Move up the inheritance chain
+                    currentSuper = parentType.getSuperclass();
+
+                } catch (Exception e) {
+                    // Parent class not resolvable from classpath - skip gracefully
+                    if (config.isDebug()) {
+                        System.out.printf("[DEBUG] Could not resolve parent class: %s (%s)%n",
+                            currentSuper.getQualifiedName(), e.getMessage());
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (config.isDebug()) {
+            System.out.printf("[DEBUG] Found %d inherited logger mappings%n", inheritedLoggers.size());
+        }
+    }
+
+    /**
+     * Check if a field is inheritable (not private).
+     *
+     * Private fields are not inherited and cannot be accessed from child classes.
+     * Protected, public, and package-private (no modifier) fields are inheritable.
+     */
+    private boolean isInheritableField(CtField<?> field) {
+        return !field.isPrivate();  // Protected, public, or package-private
+    }
+
+    public Map<String, InheritedLoggerInfo> getInheritedLoggers() {
+        return inheritedLoggers;
+    }
+
+    /**
+     * Information about a logger field inherited from a parent class.
+     */
+    public static class InheritedLoggerInfo {
+        private final String childClass;
+        private final String fieldName;
+        private final String parentClass;
+        private final String loggerType;
+
+        public InheritedLoggerInfo(String childClass, String fieldName, String parentClass, String loggerType) {
+            this.childClass = childClass;
+            this.fieldName = fieldName;
+            this.parentClass = parentClass;
+            this.loggerType = loggerType;
+        }
+
+        public String getChildClass() { return childClass; }
+        public String getFieldName() { return fieldName; }
+        public String getParentClass() { return parentClass; }
+        public String getLoggerType() { return loggerType; }
     }
 }

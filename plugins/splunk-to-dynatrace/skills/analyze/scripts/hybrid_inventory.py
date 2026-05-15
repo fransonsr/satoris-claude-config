@@ -125,13 +125,15 @@ def detect_build_state(project_root: Path) -> Dict[str, Any]:
     return result
 
 
-def run_incremental_compile(project_root: Path, skip_build: bool = False,
-                          clean_build: bool = False, debug: bool = False) -> tuple:
+def run_incremental_compile(project_root: Path, project_structure: dict = None,
+                          skip_build: bool = False, clean_build: bool = False,
+                          debug: bool = False) -> tuple:
     """
     Run incremental Maven compile to ensure classes are up-to-date.
 
     Args:
         project_root: Project root directory
+        project_structure: Output from detect_maven_modules()
         skip_build: Force noclasspath mode (skip build entirely)
         clean_build: Force clean rebuild
         debug: Enable debug output
@@ -139,6 +141,10 @@ def run_incremental_compile(project_root: Path, skip_build: bool = False,
     Returns:
         tuple: (success: bool, classpath: str or None, mode: 'classpath' or 'noclasspath')
     """
+    # Default to single-module if not provided
+    if project_structure is None:
+        project_structure = {'type': 'single-module', 'modules': []}
+
     if skip_build:
         print("⊘ Skipping build (--skip-build flag)", file=sys.stderr)
         return (True, None, 'noclasspath')
@@ -174,7 +180,7 @@ def run_incremental_compile(project_root: Path, skip_build: bool = False,
             print(f"✓ Incremental compile successful", file=sys.stderr)
 
             # Extract classpath
-            classpath = extract_classpath(project_root, debug)
+            classpath = extract_classpath(project_root, project_structure, debug)
 
             if classpath:
                 return (True, classpath, 'classpath')
@@ -196,13 +202,80 @@ def run_incremental_compile(project_root: Path, skip_build: bool = False,
         return (True, None, 'noclasspath')
 
 
-def extract_classpath(project_root: Path, debug: bool = False) -> Optional[str]:
+def detect_maven_modules(project_root: Path, debug: bool = False) -> dict:
+    """
+    Detect if project is multi-module Maven and parse module list from pom.xml.
+
+    Returns:
+        dict: {
+            'type': 'single-module' | 'multi-module',
+            'modules': [...]  # List of module names (relative to project root)
+        }
+    """
+    pom_path = project_root / 'pom.xml'
+
+    if not pom_path.exists():
+        return {'type': 'single-module', 'modules': []}
+
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(pom_path)
+        root = tree.getroot()
+
+        # Maven namespace handling
+        ns = {'mvn': 'http://maven.apache.org/POM/4.0.0'}
+
+        # Try with namespace
+        modules_elem = root.find('mvn:modules', ns)
+        if modules_elem is None:
+            # Try without namespace (some poms omit it)
+            modules_elem = root.find('modules')
+
+        if modules_elem is None:
+            # No <modules> section - single module project
+            return {'type': 'single-module', 'modules': []}
+
+        # Extract module names
+        module_names = []
+        for module_elem in modules_elem.findall('mvn:module', ns):
+            module_names.append(module_elem.text.strip())
+
+        # Fallback: try without namespace
+        if not module_names:
+            for module_elem in modules_elem.findall('module'):
+                module_names.append(module_elem.text.strip())
+
+        if module_names:
+            if debug:
+                print(f"✓ Multi-module Maven project detected: {len(module_names)} modules", file=sys.stderr)
+                print(f"  Modules: {', '.join(module_names)}", file=sys.stderr)
+            return {'type': 'multi-module', 'modules': module_names}
+        else:
+            return {'type': 'single-module', 'modules': []}
+
+    except Exception as e:
+        if debug:
+            print(f"⚠ Could not parse pom.xml for modules: {e}", file=sys.stderr)
+        return {'type': 'single-module', 'modules': []}
+
+
+def extract_classpath(project_root: Path, project_structure: dict = None, debug: bool = False) -> Optional[str]:
     """
     Extract classpath from Maven build.
+
+    For multi-module projects, collects all module target/classes directories.
+
+    Args:
+        project_root: Project root directory
+        project_structure: Output from detect_maven_modules()
+        debug: Enable debug output
 
     Returns:
         str: Full classpath string (colon-separated) or None if extraction failed
     """
+    # Default to single-module if not provided
+    if project_structure is None:
+        project_structure = {'type': 'single-module', 'modules': []}
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
         classpath_file = Path(f.name)
 
@@ -233,10 +306,24 @@ def extract_classpath(project_root: Path, debug: bool = False) -> Optional[str]:
         # Build full classpath
         classpath_parts = []
 
-        # Add target/classes
-        main_classes = project_root / 'target' / 'classes'
-        if main_classes.exists():
-            classpath_parts.append(str(main_classes))
+        # Add compiled classes directories
+        if project_structure['type'] == 'multi-module':
+            # Multi-module: collect all module target/classes
+            modules_found = 0
+            for module_name in project_structure['modules']:
+                module_classes = project_root / module_name / 'target' / 'classes'
+                if module_classes.exists():
+                    classpath_parts.append(str(module_classes))
+                    modules_found += 1
+
+            if debug:
+                print(f"✓ Multi-module classpath: {modules_found}/{len(project_structure['modules'])} modules compiled",
+                      file=sys.stderr)
+        else:
+            # Single-module: just root target/classes
+            main_classes = project_root / 'target' / 'classes'
+            if main_classes.exists():
+                classpath_parts.append(str(main_classes))
 
         # Add dependencies
         if deps_classpath:
@@ -246,6 +333,9 @@ def extract_classpath(project_root: Path, debug: bool = False) -> Optional[str]:
 
         if debug:
             print(f"✓ Classpath extracted ({len(full_classpath)} characters)", file=sys.stderr)
+            if project_structure['type'] == 'multi-module':
+                print(f"  Module classes: {len([p for p in classpath_parts if 'target/classes' in p])} directories",
+                      file=sys.stderr)
 
         return full_classpath
 
@@ -986,11 +1076,14 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    print("=== Hybrid Logger Inventory Generator v3.0.3 ===", file=sys.stderr)
+    print("=== Hybrid Logger Inventory Generator v3.0.4 ===", file=sys.stderr)
     print(f"Project root: {args.project_root}", file=sys.stderr)
     print()
 
-    # Step 0a: Detect build state
+    # Step 0a: Detect project structure (single-module vs multi-module)
+    project_structure = detect_maven_modules(args.project_root, debug=args.debug)
+
+    # Step 0b: Detect build state
     build_state = detect_build_state(args.project_root)
 
     if build_state['has_build']:
@@ -998,9 +1091,10 @@ def main():
     else:
         print("⊘ No existing build found", file=sys.stderr)
 
-    # Step 0b: Smart incremental compile
+    # Step 0c: Smart incremental compile
     success, classpath, mode = run_incremental_compile(
         args.project_root,
+        project_structure,
         skip_build=args.skip_build,
         clean_build=args.clean_build,
         debug=args.debug

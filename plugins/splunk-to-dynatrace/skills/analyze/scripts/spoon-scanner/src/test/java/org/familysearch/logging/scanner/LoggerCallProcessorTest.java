@@ -34,7 +34,7 @@ class LoggerCallProcessorTest {
         launcher.getEnvironment().setComplianceLevel(17);
         launcher.buildModel();
 
-        LoggerCallProcessor processor = new LoggerCallProcessor(createTestConfig(), knownLoggerFields);
+        LoggerCallProcessor processor = new LoggerCallProcessor(createTestConfig(), knownLoggerFields, new java.util.HashMap<>());
         launcher.addProcessor(processor);
         launcher.process();
 

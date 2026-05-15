@@ -14,10 +14,17 @@ public class LoggerCandidate {
     private final boolean needsValidation;
     private final String detectionStrategy;
     private final String framework;
+    private final String inheritedFrom;  // Nullable: parent class name if logger is inherited
 
     public LoggerCandidate(CandidateType type, String file, int line, int column,
                            String name, String typeName, String methodName,
                            boolean needsValidation, String detectionStrategy) {
+        this(type, file, line, column, name, typeName, methodName, needsValidation, detectionStrategy, null);
+    }
+
+    public LoggerCandidate(CandidateType type, String file, int line, int column,
+                           String name, String typeName, String methodName,
+                           boolean needsValidation, String detectionStrategy, String inheritedFrom) {
         this.type = type;
         this.file = file;
         this.line = line;
@@ -28,6 +35,7 @@ public class LoggerCandidate {
         this.needsValidation = needsValidation;
         this.detectionStrategy = detectionStrategy;
         this.framework = detectFramework(typeName);
+        this.inheritedFrom = inheritedFrom;
     }
 
     /**
@@ -117,5 +125,9 @@ public class LoggerCandidate {
 
     public String getFramework() {
         return framework;
+    }
+
+    public String getInheritedFrom() {
+        return inheritedFrom;
     }
 }

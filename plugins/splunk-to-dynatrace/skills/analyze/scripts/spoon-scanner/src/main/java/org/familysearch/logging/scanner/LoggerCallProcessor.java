@@ -10,6 +10,7 @@ import spoon.reflect.reference.CtTypeReference;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -26,6 +27,7 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
     private final List<LoggerCandidate> candidates = new ArrayList<>();
     private final ScannerConfig config;
     private final Set<String> knownLoggerFields;
+    private final Map<String, LoggerFieldProcessor.InheritedLoggerInfo> inheritedLoggers;
 
     private static final Set<String> LOG_LEVELS = Set.of(
         // Standard levels (SLF4J, Log4j, Logback)
@@ -36,9 +38,11 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
         "finest", "finer", "fine", "config", "warning", "severe"
     );
 
-    public LoggerCallProcessor(ScannerConfig config, Set<String> knownLoggerFields) {
+    public LoggerCallProcessor(ScannerConfig config, Set<String> knownLoggerFields,
+                              Map<String, LoggerFieldProcessor.InheritedLoggerInfo> inheritedLoggers) {
         this.config = config;
         this.knownLoggerFields = knownLoggerFields;
+        this.inheritedLoggers = inheritedLoggers;
     }
 
     @Override
@@ -58,6 +62,10 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             // NEW: Extract receiver type for validation
             String receiverType = extractReceiverType(invocation);
 
+            // NEW: Extract inherited logger info
+            LoggerFieldProcessor.InheritedLoggerInfo inheritedInfo = getInheritedLoggerInfo(invocation);
+            String inheritedFrom = inheritedInfo != null ? inheritedInfo.getParentClass() : null;
+
             String strategy = getDetectionStrategy(invocation, receiverType);
             boolean needsValidation = strategy.equals("method_name_no_type") ||
                                       receiverType == null;
@@ -67,14 +75,16 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
                 file, line, column,
                 loggerName, receiverType, methodName,  // receiverType added here
                 needsValidation,
-                strategy
+                strategy,
+                inheritedFrom  // NEW: Add inherited source
             );
 
             candidates.add(candidate);
 
             if (config.isDebug()) {
-                System.out.printf("[DEBUG] Found logger call: %s.%s() at %s:%d (type: %s, strategy: %s)%n",
-                    loggerName, methodName, file, line, receiverType, strategy);
+                System.out.printf("[DEBUG] Found logger call: %s.%s() at %s:%d (type: %s, strategy: %s%s)%n",
+                    loggerName, methodName, file, line, receiverType, strategy,
+                    inheritedFrom != null ? ", inherited from: " + inheritedFrom : "");
             }
         }
     }
@@ -183,13 +193,26 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
         CtExpression<?> target = invocation.getTarget();
 
         // Strategy 1: Called on known logger field (from Phase 1)
-        // This is the most reliable - we already verified these are Logger fields
+        // This includes both locally declared AND inherited logger fields
         if (target instanceof CtFieldRead<?>) {
             CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
             String fieldName = fieldRead.getVariable().getSimpleName();
 
+            // Check local logger fields
             if (knownLoggerFields.contains(fieldName)) {
-                return true;  // High confidence - known logger field
+                return true;  // High confidence - known local logger field
+            }
+
+            // Check inherited logger fields
+            // Need to determine the current class context
+            spoon.reflect.declaration.CtType<?> enclosingType = invocation.getParent(spoon.reflect.declaration.CtType.class);
+            if (enclosingType != null) {
+                String className = enclosingType.getQualifiedName();
+                String inheritedKey = className + ":" + fieldName;
+
+                if (inheritedLoggers.containsKey(inheritedKey)) {
+                    return true;  // High confidence - inherited logger field
+                }
             }
         }
 
@@ -226,8 +249,20 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
             String fieldName = fieldRead.getVariable().getSimpleName();
 
+            // Check local logger field
             if (knownLoggerFields.contains(fieldName)) {
                 return "known_logger_field";
+            }
+
+            // Check inherited logger field
+            spoon.reflect.declaration.CtType<?> enclosingType = invocation.getParent(spoon.reflect.declaration.CtType.class);
+            if (enclosingType != null) {
+                String className = enclosingType.getQualifiedName();
+                String inheritedKey = className + ":" + fieldName;
+
+                if (inheritedLoggers.containsKey(inheritedKey)) {
+                    return "inherited_logger_field";
+                }
             }
         }
 
@@ -248,6 +283,33 @@ public class LoggerCallProcessor extends AbstractProcessor<CtInvocation<?>> {
             CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
             return fieldRead.getVariable().getSimpleName();
         }
+        return null;
+    }
+
+    /**
+     * Extract information about inherited logger for output.
+     *
+     * @param invocation Method invocation
+     * @return InheritedLoggerInfo if this is an inherited logger call, null otherwise
+     */
+    private LoggerFieldProcessor.InheritedLoggerInfo getInheritedLoggerInfo(CtInvocation<?> invocation) {
+        CtExpression<?> target = invocation.getTarget();
+        if (!(target instanceof CtFieldRead<?>)) {
+            return null;
+        }
+
+        CtFieldRead<?> fieldRead = (CtFieldRead<?>) target;
+        String fieldName = fieldRead.getVariable().getSimpleName();
+
+        // Determine current class context
+        spoon.reflect.declaration.CtType<?> enclosingType = invocation.getParent(spoon.reflect.declaration.CtType.class);
+        if (enclosingType != null) {
+            String className = enclosingType.getQualifiedName();
+            String inheritedKey = className + ":" + fieldName;
+
+            return inheritedLoggers.get(inheritedKey);  // Returns null if not found
+        }
+
         return null;
     }
 

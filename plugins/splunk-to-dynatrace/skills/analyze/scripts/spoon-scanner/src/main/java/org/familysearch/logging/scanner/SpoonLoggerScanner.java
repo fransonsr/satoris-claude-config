@@ -7,7 +7,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -209,6 +211,25 @@ public class SpoonLoggerScanner {
             System.out.printf("[DEBUG] Found %d logger declarations%n", fieldProcessor.getCandidates().size());
         }
 
+        // Phase 1b: Find inherited logger fields (requires classpath mode)
+        Map<String, LoggerFieldProcessor.InheritedLoggerInfo> inheritedLoggers = new HashMap<>();
+        if (config.getClasspath() != null && !config.getClasspath().isEmpty()) {
+            if (config.isDebug()) {
+                System.out.println("[DEBUG] Phase 1b: Scanning for inherited logger fields...");
+            }
+
+            fieldProcessor.scanInheritedLoggers(launcher.getModel());
+            inheritedLoggers = fieldProcessor.getInheritedLoggers();
+
+            if (config.isDebug()) {
+                System.out.printf("[DEBUG] Found %d inherited logger mappings%n", inheritedLoggers.size());
+            }
+        } else {
+            if (config.isDebug()) {
+                System.out.println("[DEBUG] Skipping Phase 1b (requires classpath mode)");
+            }
+        }
+
         // Phase 2: Find logger calls
         Set<String> knownLoggerFields = fieldProcessor.getCandidates().stream()
             .map(LoggerCandidate::getName)
@@ -263,7 +284,7 @@ public class SpoonLoggerScanner {
         }
 
         launcher2.buildModel();
-        LoggerCallProcessor callProcessor = new LoggerCallProcessor(config, knownLoggerFields);
+        LoggerCallProcessor callProcessor = new LoggerCallProcessor(config, knownLoggerFields, inheritedLoggers);
         launcher2.addProcessor(callProcessor);
         launcher2.process();
 
@@ -289,7 +310,7 @@ public class SpoonLoggerScanner {
     }
 
     private static void printUsage() {
-        System.out.println("Spoon Logger Scanner v1.0.2");
+        System.out.println("Spoon Logger Scanner v1.0.4");
         System.out.println();
         System.out.println("Usage: java -jar spoon-scanner.jar <project-root> <output-file> [options]");
         System.out.println();
