@@ -1,7 +1,7 @@
 {
   "name": "handoff",
-  "version": "1.0.0",
-  "description": "Create comprehensive handoff documents for tasks to be implemented in fresh sessions",
+  "version": "2.0.0",
+  "description": "Create comprehensive handoff documents with Handoff + Progress pattern: immutable specifications paired with mutable progress tracking for clear inter-agent communication",
   "author": {
     "name": "Satori Franson",
     "email": "fransonsr@familysearch.org"
@@ -10,6 +10,7 @@
     "handoff",
     "documentation",
     "task-management",
-    "productivity"
+    "productivity",
+    "inter-agent-communication"
   ]
 }

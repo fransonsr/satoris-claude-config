@@ -163,6 +163,10 @@ Creates a surgical, production-ready handoff document with:
    - Follows comprehensive template (see README.md)
    - Includes verified context with citations
    - Lists explicit unknowns for implementer to discover
+   - **Note**: The implementing agent should create a progress document on first session:
+     - Location: `~/.claude/handoff/<task-id>-<slug>-PROGRESS.md`
+     - Template: `~/.claude/plugins/*/handoff/templates/IMPLEMENTATION-PROGRESS-template.md`
+     - Pattern: Implementing agent reads handoff (immutable), updates progress (mutable)
 
 3. **Quality Validation**:
    - Verifies all file paths exist
@@ -251,6 +255,81 @@ A good handoff document enables a fresh Claude session to:
 - Trivial bug fixes (< 50 lines)
 - Documentation-only changes
 - Tasks you'll implement immediately (in same session)
+
+## Inter-Agent Communication Pattern
+
+This skill implements the **Handoff + Progress** pattern for inter-agent communication.
+
+### Two-File Approach
+
+**Handoff Document (Immutable)**:
+- Location: `~/.claude/handoff/{task-slug}.md`
+- Purpose: Original specification for implementing agent
+- Content: Executive summary, technical specs, architecture, implementation guide, acceptance criteria
+- Update policy: Only on fundamental architecture changes
+
+**Implementation Progress (Mutable)**:
+- Location: `~/.claude/handoff/{task-slug}-PROGRESS.md`
+- Purpose: Track implementation evolution, decisions, blockers
+- Content: Architectural decisions, progress checklist, blockers, questions
+- Update policy: Implementing agent updates frequently
+
+### Responsibility Model
+
+**Orchestrating Agent (this skill)**:
+- Creates handoff document with complete specification
+- Does NOT create progress document (implementing agent creates it)
+- Reviews progress document to answer questions
+- Updates handoff only on fundamental changes
+
+**Implementing Agent (reads handoff)**:
+- Reads handoff document (does not modify)
+- Creates progress document on first session
+- Updates progress document frequently
+- Records decisions, progress, blockers, questions
+- May request handoff updates for fundamental changes
+
+### When to Update Handoff Document
+
+**Orchestrating agent updates handoff only when**:
+- Fundamental architecture changes invalidate original spec
+- Major scope changes require new implementation approach
+- Technology stack changes
+- Integration patterns change
+
+**Examples**:
+- Change: "Use PostgreSQL" → "Use MongoDB" (update handoff)
+- Change: "Analyze skill creates conversion-inventory.json" → "Maven plugin creates it" (update handoff)
+
+**NOT reasons to update handoff**:
+- Implementation details (Java class structure)
+- Progress notes
+- Questions/blockers
+- Tactical decisions within original architecture
+
+(These go in progress document)
+
+### When Implementing Agent Updates Progress
+
+**Update progress document for**:
+- Architectural decisions made during implementation
+- Progress on tasks
+- Current blockers
+- Questions for orchestrating agent
+- Deviations from spec (with rationale)
+
+**Update after**:
+- Completing a task or phase
+- Making an architectural decision
+- Encountering a blocker
+- Discovering ambiguity in spec
+
+### Benefits
+
+- **Clean Specification**: Handoff remains readable, focused on "what to build"
+- **Clear Progress**: Progress document tracks "how we're building it"
+- **Better Communication**: Implementing agent can ask questions without polluting spec
+- **Audit Trail**: Decisions captured with date, rationale, impact
 
 ## Related Documentation
 
