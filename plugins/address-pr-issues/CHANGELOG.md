@@ -1,5 +1,38 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-05-20 - v1.1.0: Fix Script Organization & Documentation
+
+### Problem: Scripts at Wrong Plugin Level
+**Issue**: Scripts were organized at plugin root (`plugins/address-pr-issues/scripts/`) instead of skill level (`plugins/address-pr-issues/skills/address-pr-issues/scripts/`), causing them to be inaccessible when following documentation.
+
+**Impact**: Users saw "No such file or directory" errors when trying to use automation scripts.
+
+**Root Cause**: During marketplace conversion, scripts remained at plugin root level instead of being organized per-skill as per plugin conventions (see `splunk-to-dynatrace` for correct pattern).
+
+**Fix Applied** (commits c0ccfa9, 916e2d8, 946c9b2):
+1. **Added working directory requirement**: Scripts must run from within git repository
+2. **Moved scripts to skill level**: `skills/address-pr-issues/scripts/` (per conventions)
+3. **Simplified paths**: Use relative paths `./scripts/` instead of complex discovery
+
+**Structure After Fix**:
+```
+plugins/address-pr-issues/
+  └── skills/
+      └── address-pr-issues/
+          ├── SKILL.md
+          └── scripts/           ✅ Correct location
+              ├── init-pr-state.sh
+              ├── fetch-pr-threads.sh
+              ├── resolve-threads-bulk.sh
+              └── lib/
+```
+
+**Benefits**:
+- Scripts properly co-located with skill
+- Simple relative path references work naturally
+- Matches plugin organization conventions
+- Version-agnostic (no hardcoded paths)
+
 ## 2026-04-27 - Bug Fixes: Bulk Resolution & GitHub API
 
 ### Problem: Bulk Thread Resolution Failed After First Thread

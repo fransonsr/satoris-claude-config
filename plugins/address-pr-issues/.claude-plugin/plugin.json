@@ -1,6 +1,6 @@
 {
   "name": "address-pr-issues",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Systematically address GitHub Copilot and SonarQube issues on pull requests with comprehensive tests",
   "author": {
     "name": "Satori Franson",
