@@ -38,6 +38,23 @@ gh auth login
 
 **Windows Users**: Install WSL (Windows Subsystem for Linux) first, then install tools within WSL.
 
+## Working Directory Requirement
+
+**CRITICAL**: All scripts must be executed from within the git repository you're working on. The scripts use `git remote get-url origin` to determine the GitHub owner/repo, so they will fail with `ERROR: Not in a git repository with origin remote` if run from outside the repository.
+
+```bash
+# ❌ WRONG - Running from home directory or wrong location
+cd ~
+./init-pr-state.sh 68  # FAILS: "ERROR: Not in a git repository"
+
+# ✅ CORRECT - Running from within the target repository
+cd /path/to/your/repository
+git remote -v  # Verify origin points to correct GitHub repo
+./init-pr-state.sh 68  # WORKS
+```
+
+**For Claude Code agents**: Always `cd` into the repository directory before invoking any script.
+
 ## Overview
 
 These scripts provide a **hybrid automation approach**:

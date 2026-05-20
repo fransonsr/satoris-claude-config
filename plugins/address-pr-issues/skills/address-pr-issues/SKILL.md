@@ -100,6 +100,7 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 
 ## Prerequisites
 
+- **CRITICAL**: All scripts must be run from within the target git repository directory (scripts use `git remote get-url origin` to determine owner/repo)
 - GitHub CLI (`gh`) authenticated
 - SonarQube token in `SONAR_TOKEN` environment variable
 - `sonar-scanner` installed locally
