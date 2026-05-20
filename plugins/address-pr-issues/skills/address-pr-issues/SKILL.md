@@ -109,32 +109,9 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 
 **Important**: Always use `gh pr view --json <fields>` instead of `gh pr view` alone to avoid GitHub Projects (classic) deprecation warnings. The `--json` flag queries only the modern GraphQL API.
 
-## Script Path Setup
+## Note on Script Paths
 
-**IMPORTANT**: Before using any scripts, set the `SCRIPT_DIR` variable to point to the plugin's script directory:
-
-```bash
-# Find the installed plugin version dynamically
-PLUGIN_BASE="$HOME/.claude/plugins/cache/satoris-claude-config/address-pr-issues"
-SCRIPT_DIR="$(find "$PLUGIN_BASE" -maxdepth 1 -type d -name "[0-9]*" | sort -V | tail -1)/scripts"
-
-# Verify scripts directory exists
-if [ ! -d "$SCRIPT_DIR" ]; then
-  echo "ERROR: Scripts directory not found at $SCRIPT_DIR" >&2
-  echo "Plugin may not be installed correctly" >&2
-  exit 1
-fi
-
-# Export for use in all commands
-export SCRIPT_DIR
-```
-
-**Alternative**: If you know the version number (e.g., `1.0.0`), use the direct path:
-```bash
-SCRIPT_DIR="$HOME/.claude/plugins/cache/satoris-claude-config/address-pr-issues/1.0.0/scripts"
-```
-
-All script examples below use `$SCRIPT_DIR` to reference the scripts directory.
+Scripts are bundled with this skill in the `scripts/` subdirectory. In the examples below, `./scripts/` refers to scripts relative to this skill's installation directory. Claude Code agents will automatically resolve these paths when executing the skill.
 
 ## Step 1: Gather PR Information
 
@@ -152,7 +129,7 @@ gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url
 
 **Use script** (recommended - saves tokens):
 ```bash
-$SCRIPT_DIR/init-pr-state.sh $PR_NUMBER
+./scripts/init-pr-state.sh $PR_NUMBER
 ```
 
 **Manual approach** (for debugging or customization):
@@ -177,7 +154,7 @@ echo $ROUND > $ROUND_FILE
 
 # Cache thread metadata for reuse (uses lib/github-api.sh functions)
 THREADS_FILE="$WORKSPACE_DIR/threads.json"
-source "$SCRIPT_DIR/lib/github-api.sh"
+source "./scripts/lib/github-api.sh"
 fetch_pr_threads "$PR_NUMBER" "$THREADS_FILE"
 
 COPILOT_COUNT=$(jq -s 'map(select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]")) | length' "$THREADS_FILE")
@@ -238,7 +215,7 @@ EOF
 **Use script** (recommended):
 ```bash
 # Display unresolved threads with summary
-$SCRIPT_DIR/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
+./scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
 ```
 
 **Manual jq queries** (for custom filtering):
@@ -312,7 +289,7 @@ Issues are: Simple style fixes, obvious bugs with clear solutions
 
 **Use script** (recommended - checks quality gate + fetches blocking issues):
 ```bash
-$SCRIPT_DIR/check-sonar-quality-gate.sh $PR_NUMBER
+./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
 
 **Manual API calls** (for custom queries):
@@ -324,7 +301,7 @@ if [ ! -f "sonar-project.properties" ]; then
 fi
 
 # Use library function (DRY)
-source "$SCRIPT_DIR/lib/sonar-api.sh"
+source "./scripts/lib/sonar-api.sh"
 get_quality_gate_status "$PR_NUMBER" > quality-gate.json
 format_quality_gate_status quality-gate.json
 
@@ -790,17 +767,17 @@ echo ""
 **Use bulk script** (recommended - resolve multiple threads at once):
 ```bash
 # Resolve all threads in a specific file
-$SCRIPT_DIR/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --filter-path 'FullExportJobIntegrationTest.java' \
   --message 'Fixed integration test setup'
 
 # Resolve specific threads
-$SCRIPT_DIR/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --threads 'THREAD_ID_1,THREAD_ID_2,THREAD_ID_3' \
   --message 'Fixed null handling'
 
 # Resolve all unresolved threads (use carefully!)
-$SCRIPT_DIR/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --all-unresolved \
   --message 'Addressed all review feedback'
 ```
@@ -808,11 +785,11 @@ $SCRIPT_DIR/resolve-threads-bulk.sh $PR_NUMBER \
 **Use single-thread script** (when different messages needed):
 ```bash
 # Resolve thread with optional message (tries threaded reply, falls back to direct resolution)
-$SCRIPT_DIR/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
 
 # Multiple threads with different messages (loop)
 for thread_id in "$THREAD_ID_1" "$THREAD_ID_2" "$THREAD_ID_3"; do
-  $SCRIPT_DIR/resolve-thread.sh $PR_NUMBER "$thread_id" "Fixed specific issue"
+  ./scripts/resolve-thread.sh $PR_NUMBER "$thread_id" "Fixed specific issue"
 done
 ```
 
@@ -822,7 +799,7 @@ done
 
 ```bash
 # Use library function (handles capability detection)
-source "$SCRIPT_DIR/lib/github-api.sh"
+source "./scripts/lib/github-api.sh"
 
 if try_threaded_reply "$COMMENT_ID" "✅ Fixed: Added null check"; then
   echo "Reply added"
@@ -1046,7 +1023,7 @@ fi
 git add <files>
 
 # Generate commit and update fix tracking
-$SCRIPT_DIR/commit-pr-fixes.sh $PR_NUMBER
+./scripts/commit-pr-fixes.sh $PR_NUMBER
 ```
 
 **Manual approach** (for customization):
