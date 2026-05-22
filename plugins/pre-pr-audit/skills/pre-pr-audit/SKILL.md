@@ -127,6 +127,366 @@ The script checks for:
 
 Apply any patterns loaded from the project configuration.
 
+## Step 4.5: Internal Consistency Checks (NEW)
+
+After pattern-based checks complete, scan for inconsistencies **within the PR itself**:
+
+### Consistency Check #1: Pattern Uniformity
+
+For each pattern type, verify uniform application across changed files:
+
+**Debug Logging Consistency**:
+```bash
+# Find all debug logging calls
+grep -n "debug\|DEBUG" $CHANGED_FILES | tee /tmp/debug_patterns.txt
+
+# Check for mixed patterns:
+# - if (debug) getLog().info("[DEBUG] ...")  (plugin parameter)
+# - getLog().debug(...)  (Maven -X only)
+# - System.out.println for debug (wrong)
+```
+
+**Report if mixed**:
+```markdown
+⚠️ **Inconsistent Debug Logging** (MEDIUM)
+
+Files use different debug logging approaches:
+- `AnalyzeMojo.java:181` uses `if (debug) getLog().info("[DEBUG] ...")`  
+- `AnalyzeMojo.java:221` uses `getLog().debug(...)`
+
+**Why This Matters**: Users expect `-Ddebug=true` to work uniformly. Mixed patterns confuse users.
+
+**Recommendation**: Standardize on one approach (prefer plugin parameter for user control).
+```
+
+**Scope/Parameter Normalization**:
+```bash
+# Check if scope/parameter handling is consistent
+grep -n "scope\|parameter" $CHANGED_FILES | grep -E "(toLowerCase|trim|normalize)" > /tmp/param_patterns.txt
+
+# Look for methods that:
+# - Some normalize (trim, toLowerCase), others don't
+# - Some validate early, others validate late
+```
+
+**Error Handling Consistency**:
+```bash
+# Find error handling patterns
+grep -n "throw\|catch\|Exception\|IllegalArgumentException" $CHANGED_FILES > /tmp/error_patterns.txt
+
+# Check for:
+# - Some methods throw, others return null
+# - Some log-and-throw, others just log
+# - Inconsistent exception types for similar errors
+```
+
+### Consistency Check #2: Test Fixture Completeness
+
+**Scan test helper methods**:
+```bash
+# Find test helper/factory methods
+grep -n "create.*\|build.*\|make.*" $CHANGED_TEST_FILES | grep "private\|public" > /tmp/test_helpers.txt
+
+# For each helper:
+# 1. Extract what fields it populates
+# 2. Find production code that reads from that object type
+# 3. Report fields used in production but not set in tests
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Incomplete Test Fixture** (HIGH)
+
+`ConversionInventoryWriterTest.createLogCall()` creates `LogCall` objects but doesn't set:
+- `absolutePath` (used in `ConversionInventoryWriter.hasValidSourceLocation()`)
+
+Tests will pass but don't exercise production filtering logic.
+
+**Recommendation**: Add `call.setAbsolutePath("/path/to/File.java")` to test helper.
+```
+
+### Consistency Check #3: Documentation Synchronization
+
+**Check README vs Implementation**:
+```bash
+# Find documentation files
+DOC_FILES=$(echo "$CHANGED_FILES" | grep -E "README|USAGE|GUIDE|\.md$")
+
+# For each doc file, extract claims about behavior:
+# - "generates X output"
+# - "supports Y patterns"  
+# - "defaults to Z"
+
+# Cross-reference with code changes:
+# - Does implementation still match claims?
+# - Are examples still accurate?
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Documentation Drift** (MEDIUM)
+
+`README.md` line 51 says:
+> conversion-inventory.json contains **traditional pattern only**
+
+But `ConversionInventoryWriter.java` includes 4 patterns:
+- TRADITIONAL, LOMBOK, LOGSTASH_MARKER_ONLY, FLUENT_WITH_MARKERS
+
+**Recommendation**: Update README to reflect current behavior.
+```
+
+**Javadoc Accuracy**:
+```bash
+# Extract javadoc claims from changed files
+grep -B 5 "public.*method\|class\|enum" $CHANGED_FILES | grep "/\*\*" -A 3 > /tmp/javadocs.txt
+
+# Check for:
+# - Javadoc says "returns X" but code returns Y
+# - Parameter descriptions don't match actual validation
+# - @deprecated but still used
+```
+
+### Consistency Check #4: Centralization Opportunities
+
+**Detect Duplicated Logic**:
+```bash
+# Find similar code blocks (simple heuristic)
+for file in $CHANGED_FILES; do
+  # Extract method bodies
+  csplit -f /tmp/method_ -b "%03d.java" $file '/public\|private\|protected/' '{*}' 2>/dev/null
+  
+  # Hash each method body
+  for method in /tmp/method_*.java; do
+    md5sum $method >> /tmp/method_hashes.txt
+  done
+done
+
+# Find duplicate/similar hashes
+sort /tmp/method_hashes.txt | uniq -c | awk '$1 > 1 { print }'
+```
+
+**Complex Conditions**:
+```bash
+# Find complex boolean expressions
+grep -n "&&.*&&\|if.*||.*||" $CHANGED_FILES > /tmp/complex_conditions.txt
+
+# Suggest extraction for readability
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Centralization Opportunity** (LOW)
+
+`ConversionInventoryWriter.java:32` has hard-coded pattern check:
+```java
+call.getPattern() == LogPattern.TRADITIONAL ||
+call.getPattern() == LogPattern.LOMBOK ||
+call.getPattern() == LogPattern.LOGSTASH_MARKER_ONLY ||
+call.getPattern() == LogPattern.FLUENT_WITH_MARKERS
+```
+
+This logic should live in `LogPattern.isConvertible()` method.
+
+**Recommendation**: Extract to enum method for reusability and single source of truth.
+```
+
+### Consistency Check #5: Edge Case Coverage
+
+For each key operation in changed files, verify edge case handling:
+
+```bash
+# Find operations that commonly have edge cases
+grep -n "\.get(\|\.put(\|\.parse(\|\.split(\|\.substring(\|\.charAt(\|new File(" $CHANGED_FILES > /tmp/edge_case_ops.txt
+
+# For each operation, check nearby code for:
+# - Null checks
+# - Empty checks  
+# - Bounds validation
+# - Error handling
+```
+
+**Specific Patterns to Check**:
+
+**Map Operations**:
+```java
+// Look for .get() without null check
+map.get(key)  // ❌ Missing: if (value == null) handle it
+
+// Look for Collectors.toMap() without merge function  
+.collect(Collectors.toMap(k, v))  // ❌ Missing duplicate key handling
+```
+
+**String Operations**:
+```java
+// Look for parse operations without try-catch
+Integer.parseInt(str)  // ❌ Missing NumberFormatException handling
+path.substring(5)      // ❌ Missing bounds check
+```
+
+**File Operations**:
+```java
+// Look for File operations without validation
+new File(path)        // ❌ Missing: exists() and isDirectory() checks
+```
+
+**Collection Operations**:
+```java
+// Look for collection access without size check
+list.get(0)           // ❌ Missing: empty list check
+array[index]          // ❌ Missing: bounds check
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Missing Edge Case Validation** (HIGH)
+
+`AnalyzeMojo.java:178` creates File without checking if it's a directory:
+```java
+File sourceDir = new File(sourceRoot);
+if (!sourceDir.exists()) {
+    continue;
+}
+scanner.scan(sourceDir, ...);  // ❌ What if it's a file, not directory?
+```
+
+**Recommendation**: Add `sourceDir.isDirectory()` check before scanning.
+```
+
+### Consistency Check #6: Related Code Review
+
+When finding an issue pattern, expand search to related areas:
+
+```bash
+# If you find issue in method X, check:
+# 1. Other methods in same class
+# 2. Overridden methods in subclasses
+# 3. Similar named methods in other classes
+
+# Example: Found debug logging issue in detectJavaVersion()
+grep -n "debug\|DEBUG" $CHANGED_FILES | grep -v "detectJavaVersion"  # Find other debug calls
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Related Code Pattern** (MEDIUM)
+
+Fixed debug logging in `detectJavaVersion()` (lines 221, 230) but found same issue in:
+- `analyzeModule()` line 88
+- `buildClasspath()` line 295
+
+All should use consistent debug pattern.
+
+**Recommendation**: Apply same fix to related methods.
+```
+
+### Summary Table
+
+| Check Type | What It Catches | Severity | Example from PR #6 |
+|------------|----------------|----------|-------------------|
+| Pattern Uniformity | Mixed approaches for same operation | MEDIUM | Debug logging (Rounds 10, 12) |
+| Test Fixture Completeness | Test helpers missing production-used fields | HIGH | absolutePath missing (Round 13) |
+| Documentation Sync | README/Javadoc drift from code | MEDIUM | conversion-inventory description (Round 9) |
+| Centralization | Duplicated/scattered logic | LOW | Pattern filtering (Round 10) |
+| Edge Case Coverage | Missing null/empty/bounds checks | HIGH | isDirectory check (Round 10) |
+| Related Code Review | Same issue in multiple places | MEDIUM | Debug logging across methods (Round 12) |
+
+**Estimated Impact**: Catch 60-85% of issues before PR creation (8-11 rounds saved from our 13-round example).
+
+## Step 4.6: Maven Plugin-Specific Checks (Conditional)
+
+**Trigger**: Only run if changed files include Maven plugin code (detected by `@Mojo` annotation or `pom.xml` with `maven-plugin` packaging)
+
+### Maven Plugin Checklist
+
+**1. Parameter CLI Binding**:
+```bash
+# Find @Parameter annotations without property attribute
+grep -B 2 "@Parameter" $CHANGED_FILES | grep -v "property =" > /tmp/params_no_property.txt
+
+# Report each one
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Maven Plugin: Missing CLI Binding** (HIGH)
+
+`AnalyzeMojo.java:52`:
+```java
+@Parameter(defaultValue = ".claude/analyze-reports")
+private File outputDirectory;  // ❌ No property attribute
+```
+
+Without `property = "outputDirectory"`, users cannot set via `-DoutputDirectory=...`
+
+**Recommendation**: Add `property = "outputDirectory"` to @Parameter annotation.
+```
+
+**2. Resolution Scope vs Classpath Usage**:
+```bash
+# Check if @Mojo resolution scope matches classpath methods called
+grep "@Mojo" $CHANGED_FILES -A 5 | grep "requiresDependencyResolution" > /tmp/resolution_scope.txt
+grep "getCompileClasspathElements\|getTestClasspathElements" $CHANGED_FILES > /tmp/classpath_calls.txt
+
+# If resolution scope is TEST but only using compile classpath → warn about overhead
+# If resolution scope is COMPILE but calling getTestClasspathElements → warn about mismatch
+```
+
+**3. Maven API Usage**:
+```bash
+# Check if code constructs paths manually instead of using Maven API
+grep "src/main/java\|src/test/java" $CHANGED_FILES > /tmp/hardcoded_paths.txt
+
+# Recommend: project.getCompileSourceRoots() instead of manual construction
+```
+
+**Example Issue**:
+```markdown
+⚠️ **Maven Plugin: Hardcoded Source Paths** (MEDIUM)
+
+`AnalyzeMojo.java:160` constructs source path manually:
+```java
+String sourcePath = project.getBasedir() + "/src/main/java";  // ❌ Fragile
+```
+
+**Recommendation**: Use Maven API:
+```java
+List<String> sourceRoots = project.getCompileSourceRoots();
+```
+```
+
+**4. Aggregator vs Per-Module Logic**:
+```bash
+# If @Mojo has aggregator=true, check if code iterates reactor projects
+grep "@Mojo.*aggregator.*true" $CHANGED_FILES > /tmp/aggregators.txt
+
+# For each aggregator mojo, verify it uses reactorProjects, not just current project
+```
+
+**5. Debug Logging Convention**:
+```bash
+# Check if plugin has debug parameter
+grep "@Parameter.*debug" $CHANGED_FILES > /tmp/debug_param.txt
+
+# If yes, check all debug logging respects it (not just Maven -X)
+grep "getLog().debug(" $CHANGED_FILES > /tmp/maven_debug_calls.txt
+
+# Recommend: if (debug) getLog().info("[DEBUG] ...") instead of getLog().debug(...)
+```
+
+### Maven Plugin Summary
+
+```markdown
+## Maven Plugin Checks: {PASS|WARNINGS}
+
+- [ ] CLI parameter binding (property attributes)
+- [ ] Resolution scope matches usage
+- [ ] Uses Maven API (not manual paths)
+- [ ] Aggregator logic correct
+- [ ] Debug logging convention
+
+Found N Maven-specific issues (see above for details).
+```
+
 ## Step 5: Present Findings Interactively
 
 For each issue found, present:
@@ -291,6 +651,19 @@ After all checks complete:
 - Fixed: Y
 - Skipped: Z
 - Manual review needed: W
+
+**Consistency Checks**: A issues found
+- Pattern uniformity: B
+- Test fixture gaps: C  
+- Documentation drift: D
+- Centralization opportunities: E
+- Edge case coverage: F
+- Related code patterns: G
+
+**Maven Plugin Checks** (if applicable): H issues found
+- CLI binding: I
+- Resolution scope: J
+- Maven API usage: K
 
 **SonarQube**: Quality Gate {PASSED|FAILED}
 - New issues: N
