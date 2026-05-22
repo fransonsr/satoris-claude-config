@@ -34,6 +34,29 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 - Obvious bugs with clear solutions
 - Low complexity, no edge case risk
 
+## ⚠️ CRITICAL: Use Automation Scripts First
+
+**Token Efficiency**: Scripts save 80-85% tokens (25k-37.5k per 15-round PR)
+
+**ALWAYS use scripts for repetitive operations** - they are in the skill's `scripts/` directory:
+
+| Operation | Script Command | Token Savings |
+|-----------|----------------|---------------|
+| Initialize state | `./scripts/init-pr-state.sh <pr_number>` | ~5k tokens |
+| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` | ~3k tokens |
+| Resolve threads | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` | ~2k tokens |
+| Check quality gate | `./scripts/check-sonar-quality-gate.sh <pr_number>` | ~3k tokens |
+| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number>` | ~2k tokens |
+
+**🚨 Red flag**: If you're typing `gh api graphql -f query=...` or building JSON manually, you should be using a script instead.
+
+**Only use manual commands for**:
+- One-off custom operations not covered by scripts
+- Debugging script failures
+- Understanding what scripts do internally (read the code)
+
+**Why this matters**: A 15-round PR using manual commands consumes 40k-50k tokens. The same PR using scripts consumes 8k-12k tokens. Scripts make the workflow sustainable and efficient.
+
 ## Workflow Overview
 
 1. **Fetch Issues**: Read Copilot PR comments and SonarQube analysis
@@ -127,12 +150,13 @@ gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url
 
 ### Initialize State Management (AUTOMATED)
 
-**Use script** (recommended - saves tokens):
+⚠️ **USE SCRIPT** (saves ~5k tokens):
 ```bash
 ./scripts/init-pr-state.sh $PR_NUMBER
 ```
 
-**Manual approach** (for debugging or customization):
+<details>
+<summary>Manual approach (for reference only - don't use unless script fails)</summary>
 ```bash
 # Setup workspace directory for this PR
 WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
@@ -197,6 +221,8 @@ cat > "$CHECKLIST_FILE" <<EOF
 EOF
 ```
 
+</details>
+
 **State Files Created**:
 - `$WORKSPACE_DIR/round.txt` - Current round number (auto-incremented)
 - `$WORKSPACE_DIR/threads.json` - Cached thread metadata (avoids re-fetching)
@@ -212,13 +238,14 @@ EOF
 
 ### Query Cached Threads (AUTOMATED)
 
-**Use script** (recommended):
+⚠️ **USE SCRIPT** (saves ~3k tokens):
 ```bash
 # Display unresolved threads with summary
 ./scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
 ```
 
-**Manual jq queries** (for custom filtering):
+<details>
+<summary>Manual jq queries (for reference only - use for custom filtering if needed)</summary>
 ```bash
 # Get unresolved Copilot threads
 jq -r 'select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]") | select(.isResolved == false)' "$THREADS_FILE" | jq -s .
@@ -230,6 +257,8 @@ UNRESOLVED=$(jq 'select(.isResolved == false)' "$THREADS_FILE" | jq -s length)
 
 echo "Thread Status: $RESOLVED/$TOTAL resolved, $UNRESOLVED unresolved"
 ```
+
+</details>
 
 ## Step 2: Assess Complexity & Edge Case Risk (NEW)
 
@@ -287,12 +316,13 @@ Issues are: Simple style fixes, obvious bugs with clear solutions
 
 ### Fetch SonarQube Issues (AUTOMATED)
 
-**Use script** (recommended - checks quality gate + fetches blocking issues):
+⚠️ **USE SCRIPT** (saves ~3k tokens - checks quality gate + fetches blocking issues):
 ```bash
 ./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
 
-**Manual API calls** (for custom queries):
+<details>
+<summary>Manual API calls (for reference only - use for custom queries if needed)</summary>
 ```bash
 # Ensure sonar-project.properties exists
 if [ ! -f "sonar-project.properties" ]; then
@@ -318,6 +348,8 @@ curl -s -u "$SONAR_TOKEN:" \
 - `get_quality_gate_status` - Quality gate for PR
 - `get_pr_issues` - Issues by severity
 - `wait_for_analysis` - Poll for analysis completion
+
+</details>
 
 ## Step 3: Categorize and Prioritize Issues
 
@@ -764,7 +796,7 @@ echo ""
 
 ### Resolve Fixed Issues (AUTOMATED)
 
-**Use bulk script** (recommended - resolve multiple threads at once):
+⚠️ **USE BULK SCRIPT** (saves ~2k tokens - resolve multiple threads at once):
 ```bash
 # Resolve all threads in a specific file
 ./scripts/resolve-threads-bulk.sh $PR_NUMBER \
@@ -782,7 +814,7 @@ echo ""
   --message 'Addressed all review feedback'
 ```
 
-**Use single-thread script** (when different messages needed):
+⚠️ **USE SINGLE-THREAD SCRIPT** (when different messages needed for each thread):
 ```bash
 # Resolve thread with optional message (tries threaded reply, falls back to direct resolution)
 ./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
@@ -793,7 +825,8 @@ for thread_id in "$THREAD_ID_1" "$THREAD_ID_2" "$THREAD_ID_3"; do
 done
 ```
 
-**Manual approach** (for customization):
+<details>
+<summary>Manual approach (for reference only - use when scripts don't meet your needs)</summary>
 
 #### Option A: Threaded Reply + Resolve (Preferred)
 
@@ -832,6 +865,8 @@ gh api graphql -f query='
 - ❌ Top-level comments alone are NOT sufficient - threads must be resolved
 - ✅ Script automatically detects threaded reply capability and adapts
 - ✅ Resolve threads even if you can't add threaded replies
+
+</details>
 
 ### Document Won't-Fix Decisions
 
@@ -1017,7 +1052,7 @@ fi
 
 ### Commit with Structured Message (AUTOMATED)
 
-**Use script** (recommended - auto-generates message with round tracking):
+⚠️ **USE SCRIPT** (saves ~2k tokens - auto-generates message with round tracking):
 ```bash
 # Stage changes first
 git add <files>
@@ -1026,7 +1061,8 @@ git add <files>
 ./scripts/commit-pr-fixes.sh $PR_NUMBER
 ```
 
-**Manual approach** (for customization):
+<details>
+<summary>Manual approach (for reference only - use for heavy customization)</summary>
 ```bash
 # Collect resolved thread IDs from cache
 RESOLVED_THREADS=$(jq -r 'select(.isResolved == true) | .threadId' "$THREADS_FILE" | tr '\n' ', ' | sed 's/,$//')
@@ -1069,6 +1105,8 @@ git push origin $(git branch --show-current)
 - **file:line**: Help reviewers locate changes
 - **Test Coverage**: Auto-counted from test output
 - **Resolves**: Auto-generated from resolved threads in cache
+
+</details>
 
 ## Step 8: Monitor for New Copilot Comments
 
