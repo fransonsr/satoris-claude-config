@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-02-11
+**Last Updated**: 2026-05-22
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -27,6 +27,78 @@
 - Naming convention: `<task-id>-<slug>.md` (e.g., `task-4.16.2-collection-indices-writer.md`)
 - Use `/handoff` skill to create handoff documents for complex tasks
 - Handoff documents contain: executive summary, technical specs, implementation plan, acceptance criteria, testing strategy, reference materials
+
+## Development Tools
+
+### LSP (Language Server Protocol) Integration
+
+**Status**: ✅ Available for all projects
+
+**Supported Languages**:
+- Java (via Eclipse JDT Language Server)
+- Python, JavaScript, TypeScript, Go, and other common languages
+
+**When to Use LSP vs Other Tools**:
+
+| Task | Use LSP | Use grep/find | Use Read |
+|------|---------|---------------|----------|
+| Find all references to a symbol | ✅ LSP (accurate) | ❌ grep (false positives) | ❌ |
+| Go to definition | ✅ LSP (accurate) | ⚠️ grep (multiple matches) | ❌ |
+| Find symbol in workspace | ✅ LSP (fast, accurate) | ⚠️ find + grep (slower) | ❌ |
+| Understand file structure | ✅ LSP (symbols/outline) | ❌ | ⚠️ Read (must read whole file) |
+| Get diagnostics/errors | ✅ LSP (real-time) | ❌ | ❌ |
+| Type hierarchy/implementations | ✅ LSP (accurate) | ❌ grep (unreliable) | ❌ |
+| Rename refactoring | ✅ LSP (safe) | ❌ grep (misses cases) | ❌ |
+| Search file contents | ⚠️ | ✅ grep (faster) | ❌ |
+| List directory contents | ❌ | ✅ find (better) | ❌ |
+| Read specific lines | ❌ | ❌ | ✅ Read (best) |
+
+**Best Practices**:
+1. **Load LSP early**: Use `ToolSearch` to load LSP at start of programming sessions
+2. **Use for navigation**: Finding definitions, references, implementations
+3. **Use for refactoring**: Renaming symbols across project
+4. **Use for diagnostics**: Getting compile errors before building
+5. **Fall back to grep**: When LSP is slow or for simple string searches
+
+**Example Workflow**:
+```markdown
+# At start of coding session
+Load LSP tool: ToolSearch(query="select:LSP")
+
+# When exploring code
+- Find where method is defined: LSP(method="definition", symbol="methodName")
+- Find all usages: LSP(method="references", symbol="methodName")
+- See class structure: LSP(method="documentSymbol", file="path/to/File.java")
+- Check for errors: LSP(method="diagnostics", file="path/to/File.java")
+
+# When making changes
+- Before renaming: Use LSP to find all references
+- After changes: Use LSP to check diagnostics
+- Final validation: Run build
+```
+
+**Note**: LSP is a deferred tool - use ToolSearch to load it before first use in a session.
+
+**Common Use Cases**:
+
+1. **Consistency Checking** (e.g., PR #6 Round 10):
+   ```
+   Instead of: grep -n "debug" src/
+   Use: LSP references("debug") to find actual method calls (not comments)
+   ```
+
+2. **Test Coverage Analysis** (e.g., PR #6 Round 13):
+   ```
+   Instead of: grep "setAbsolutePath" src/main/
+   Use: LSP references("setAbsolutePath") to see all actual usages
+   ```
+
+3. **Refactoring Impact** (e.g., PR #6 Round 15):
+   ```
+   Before renaming totalFilesScanned → totalFilesWithFindings:
+   - LSP references("totalFilesScanned") shows all locations
+   - More reliable than grep (handles Java naming conventions)
+   ```
 
 ## Core Principles
 
