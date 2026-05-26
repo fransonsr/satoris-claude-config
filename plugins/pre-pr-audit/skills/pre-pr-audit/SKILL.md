@@ -9,21 +9,27 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 
 ## When to Use This Skill
 
-Run this skill when:
+✅ **BEFORE creating PR** (proactive):
 - User says "ready to create PR", "before I push", "check my code", "quality check"
 - User asks to "catch issues early", "avoid PR feedback", "pre-commit review"
 - After implementing a feature but before committing
-- Before running `/address-pr-issues` (this skill is proactive, that one is reactive)
+- This skill predicts what Copilot will flag BEFORE you push
+
+❌ **AFTER creating PR** (reactive):
+- Use `/address-pr-issues` instead
+- That skill handles existing Copilot comments and SonarQube issues
+- Different workflows for different stages
 
 ## Workflow Overview
 
 1. **Identify changed files** (git diff against base branch)
 2. **Load project patterns** (from CLAUDE.md if present)
-3. **Run pattern-based checks** (fast, lightweight)
-4. **Optionally run SonarQube** (comprehensive but slower)
+3. **Run pattern-based checks** (fast, structural analysis)
+4. **Run Copilot simulator** (MANDATORY - semantic analysis via adversarial agent)
 5. **Report findings** with severity and recommendations
 6. **Offer to fix** issues automatically
-7. **Re-check after fixes** to verify
+7. **Validate fixes** (tests + optional SonarQube)
+8. **Re-check after fixes** to verify
 
 ## Step 1: Determine Base Branch
 
@@ -487,6 +493,60 @@ grep "getLog().debug(" $CHANGED_FILES > /tmp/maven_debug_calls.txt
 Found N Maven-specific issues (see above for details).
 ```
 
+## Step 4.7: Run Copilot Simulator (MANDATORY)
+
+**This is the core value of pre-pr-audit** - predicting semantic issues that pattern checks can't catch.
+
+Spawn an adversarial agent to simulate GitHub Copilot's review:
+
+```
+Agent(
+  description="Simulate Copilot code review",
+  prompt="You are simulating GitHub Copilot's code review to predict issues BEFORE creating the PR.
+
+Analyze these changed files and predict what Copilot will flag:
+
+{git diff output or changed file contents}
+
+**Focus on Copilot's common concerns**:
+- Scope bugs (methods processing wrong types/scopes - e.g., visitVariable processing params as fields)
+- Type safety (null handling, cross-class false positives, unvalidated casts)
+- Missing checks (deduplication, validation, edge case handling)
+- Incomplete logic (only checks one level instead of full chain, missing branches)
+- Visibility/access control (package-private across packages, protected visibility)
+- Resource cleanup (missing finally blocks, unclosed resources)
+
+**Output format** - For each HIGH confidence prediction (>80% Copilot would flag):
+
+## Issue: {brief description}
+**File**: {path}:{line}
+**Likelihood**: {0-100}%
+**Copilot would say**: \"{simulate Copilot's comment style}\"
+**Fix**: {specific suggestion}
+
+**Important**:
+- Only output HIGH confidence issues (>80% likelihood)
+- Skip theoretical edge cases unless they're likely to be flagged
+- Focus on REAL bugs Copilot catches, not academic concerns
+- Be specific about file locations and line numbers
+"
+)
+```
+
+**Present agent findings to user**:
+```
+Copilot Simulator Results:
+- Found {N} high-confidence predictions
+
+High Confidence (>80% Copilot will flag):
+1. LoggerFieldVisitor.java:63 - visitVariable processes all variable types
+2. LoggerCallVisitor.java:164 - cross-class type resolution defeats isolation
+[... list all high-confidence issues]
+
+These are semantic issues that pattern matching cannot catch.
+Should we fix all {N} issues before creating the PR?
+```
+
 ## Step 5: Present Findings Interactively
 
 For each issue found, present:
@@ -592,13 +652,14 @@ When user approves a fix, apply the appropriate fix pattern:
 
 ## Step 7: Optional SonarQube Analysis
 
-After pattern checks complete, offer to run full SonarQube analysis:
+After pattern checks AND Copilot simulator complete, offer to run full SonarQube analysis:
 
 ```markdown
 Pattern checks complete. Found X issues (Y fixed, Z skipped).
+Copilot simulator complete. Predicted N high-confidence issues.
 
-Would you like me to run SonarQube analysis for comprehensive checking?
-(This will take 2-3 minutes but catches issues pattern matching can't detect)
+Would you like me to run SonarQube analysis for additional checking?
+(This will take 2-3 minutes but may catch build-time issues)
 
 Options:
 1. Yes, run SonarQube now

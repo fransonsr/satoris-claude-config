@@ -58,6 +58,7 @@ class PatternChecker:
             self._check_silent_failures(file, content, lines, diff_lines)
             self._check_edge_cases(file, content, lines, diff_lines)
             self._check_try_finally_scope(file, content, lines, diff_lines)
+            self._check_deduplication(file, content, lines, diff_lines)
             self._check_test_coverage(file)
 
         # Sort by severity
@@ -302,6 +303,53 @@ class PatternChecker:
                             ))
                             self.issue_counter += 1
                             break
+
+    def _check_deduplication(self, file: str, content: str, lines: List[str], diff_lines: set):
+        """Check for list.add() in loops without deduplication (Set or contains() check)."""
+
+        # Pattern: list.add() inside loops without Set or contains() check
+        # This is a general pattern that Copilot commonly flags
+
+        for i, line in enumerate(lines):
+            line_num = i + 1
+
+            # Skip lines not in diff
+            if line_num not in diff_lines:
+                continue
+
+            # Check for list.add() pattern
+            if '.add(' in line and 'list' in line.lower():
+                # Look for enclosing loop (for/while) in previous ~10 lines
+                start_idx = max(0, i - 10)
+                context_lines = lines[start_idx:i+1]
+                has_loop = any(re.search(r'\b(for|while)\s*\(', ctx) for ctx in context_lines)
+
+                if has_loop:
+                    # Check if there's Set usage or contains() check nearby
+                    # Look within ~20 lines before and after
+                    check_start = max(0, i - 20)
+                    check_end = min(len(lines), i + 20)
+                    scope_lines = lines[check_start:check_end]
+
+                    has_set = any('Set<' in l or 'HashSet' in l or 'TreeSet' in l for l in scope_lines)
+                    has_contains = any('.contains(' in l for l in scope_lines)
+                    has_visited = any('visited' in l.lower() for l in scope_lines)
+
+                    if not (has_set or has_contains or has_visited):
+                        snippet = self._get_code_snippet(lines, line_num, context=3)
+                        self.issues.append(Issue(
+                            id=self.issue_counter,
+                            severity="MEDIUM",
+                            category="Missing Deduplication",
+                            file=file,
+                            line=line_num,
+                            pattern="list.add() in loop without deduplication check",
+                            code_snippet=snippet,
+                            why_it_matters="Adding to a list in a loop without checking for duplicates can create unwanted duplicate entries, especially if the same item is encountered multiple times.",
+                            recommendation="Use Set<> instead of List<>, or add a .contains() check before adding, or track visited items in a Set.",
+                            fix_available=False
+                        ))
+                        self.issue_counter += 1
 
     def _check_test_coverage(self, file: str):
         """Check if new/modified main classes have corresponding tests."""
