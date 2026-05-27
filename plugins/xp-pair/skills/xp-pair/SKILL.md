@@ -22,12 +22,46 @@ Creates a two-person XP pairing team:
 - ✅ Multiple valid design approaches needing discussion
 - ✅ Code with unclear requirements needing collaboration
 
-**Skip it for:**
-- ❌ Simple CRUD operations or straightforward validation
-- ❌ Documentation-only work
-- ❌ Trivial bug fixes (< 50 lines changed)
-- ❌ Time-sensitive tasks (pairing has overhead)
-- ❌ Obvious implementations with predetermined design
+**When you think "this is straightforward" - STOP:**
+
+**Things that SEEM simple but consistently hide bugs:**
+- Prefix/suffix stripping
+  - Example: Missed super., nested classes, fully-qualified names
+- Name matching and resolution
+  - Example: Missed collisions, shadowing, package disambiguation
+- Type resolution
+  - Example: Missed wildcards, fully-qualified patterns, imports
+- Collection operations
+  - Example: Missed HashMap nondeterminism, duplicates, empty
+- Null/empty checks
+  - Example: Missed combinations, parent fields, field hiding
+
+**If your change involves ANY of the above → Use xp-pair OR test-first**
+
+**Only skip when ALL of these are true:**
+- Change is <20 lines
+- Zero string/collection manipulation
+- Single execution path (no conditionals)
+- Adding logging/comments/constants only
+- Can enumerate 3+ edge cases right now
+
+## XP-Pair Decision Checklist
+
+Before deciding to skip xp-pair, complete this checklist:
+
+**Complexity Factors:**
+- [ ] >50 lines of code to change
+- [ ] >3 files to modify
+- [ ] >5 methods to change
+- [ ] Involves string/collection manipulation
+- [ ] Multiple conditional paths
+- [ ] Cross-class interactions
+- [ ] Type/name resolution
+
+**If 2+ boxes checked → MUST use xp-pair OR test-first with adversarial review**
+
+**Justification for skipping xp-pair:**
+[If skipping, state specific reason and show to user for approval]
 
 ## Setup
 

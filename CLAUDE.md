@@ -122,20 +122,29 @@ Load LSP tool: ToolSearch(query="select:LSP")
 
 **Non-Negotiable Rule: Every production code change MUST have corresponding tests**
 
-**Order depends on complexity:**
+**Test-First is the default. Test-After requires ALL of these:**
 
-**Test-First (When design needs thinking through):**
-- Complex algorithms or business logic
-- Unclear requirements or edge cases
-- Behavior changes to critical code paths
-- When you need to think through the problem
+- [ ] <10 lines of production code
+- [ ] Single execution path (no conditionals or loops)
+- [ ] No string/collection manipulation
+- [ ] No type/name resolution
+- [ ] Obvious bug fix with known solution
+- [ ] Can enumerate 3+ edge cases right now
 
-**Test-After (When design is obvious):**
-- Simple CRUD operations
-- Obvious bug fixes with known solutions
-- Refactoring with clear target state
-- Straightforward validation logic
-- Constants, getters, trivial utilities
+**If ANY checkbox is unchecked → Use Test-First**
+
+**Test-After is a privilege earned by simplicity, not a default.**
+
+**Why Test-First for "straightforward" code:**
+- Forces edge case enumeration during RED phase
+- Reveals incorrect assumptions before implementation
+- Prevents writing tests that confirm bias
+- Evidence: PR #8's 38 issues came from test-after on "simple" code
+
+**When you think "test-after is fine here":**
+- This is when you most need test-first
+- Show the checklist to user
+- Get approval for test-after override
 
 **Required: RED-GREEN-REFACTOR (when test-first):**
 - RED: Write failing test, verify it fails for the right reason
@@ -327,6 +336,53 @@ mvn clean compile test -pl <module>
 - [ ] Are abstractions at the right level?
 - [ ] Are error cases tested?
 - [ ] Is the code self-documenting?
+
+## Decision Override Protocol
+
+### When I Think Something is "Straightforward"
+
+**⚠️ STOP. This is a red flag.**
+
+"Straightforward" is the word I use before:
+- Missing edge cases (receiver normalization: 4 rounds)
+- Skipping test-first (inheritance: 5 rounds)
+- Avoiding adversarial review (type resolution: 3 rounds)
+- Writing tests that confirm my bias instead of challenging it
+
+**Evidence from PR #8**: 38 Copilot issues across 16 rounds, primarily from:
+- "Straightforward prefix stripping" → missed super., nested, fully-qualified
+- "Obvious name matching" → missed HashMap nondeterminism, collisions
+- "Simple type resolution" → missed wildcards, fully-qualified patterns
+
+### Protocol When Tempted to Skip Process
+
+1. **Re-read the complexity assessment questions** from address-pr-issues skill
+2. **Complete the checklist** - don't skip it
+3. **Show my reasoning to user**: 
+   ```
+   This seems straightforward to me because [reason].
+   However, it involves [risk factors].
+   Recommend: [process step]
+   Proceed with override? (yes/no)
+   ```
+4. **If user says "use the process"** - use it without debate
+
+### Remember
+
+- Test-after confirms my understanding, doesn't challenge it
+- Test-first forces me to enumerate edge cases upfront
+- Adversarial review questions assumptions I didn't know I had
+- **Default to process, not judgment**
+
+### Process Decision Defaults
+
+**When in doubt:**
+- Use test-first (not test-after)
+- Spawn adversarial reviewer (not skip)
+- Use xp-pair (not solo)
+- Run pre-pr-audit (before every PR)
+
+Prefer false positives (extra process) over false negatives (missed bugs).
 
 ## Anti-Patterns to Avoid
 

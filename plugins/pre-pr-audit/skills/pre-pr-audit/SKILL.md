@@ -133,6 +133,31 @@ The script checks for:
 
 Apply any patterns loaded from the project configuration.
 
+### Silent Failure Patterns
+
+Check for operations that can fail without clear user-visible errors:
+
+**Parse/Compile Failures**:
+- Methods that catch exceptions and return null/empty
+- Error logging without exception propagation
+- Success flags set before operations complete
+- Diagnostic collectors that are never inspected
+
+**Type/Name Resolution**:
+- Type resolution falling back to simple names without validation
+- Name matching without disambiguation (HashMap iteration order)
+- Import resolution without wildcard handling
+
+**Platform Compatibility**:
+- Path separators (forward slash vs backslash)
+- File.separator not used where needed
+- Hardcoded path assumptions
+
+**Example issues found in PR #8:**
+- IOException caught → return null → treated as success (Issue #37)
+- Flag set before scan → all failures still "successful" (Issue #27)
+- DiagnosticCollector created but never read (Issue #38)
+
 ## Step 4.5: Internal Consistency Checks (NEW)
 
 After pattern-based checks complete, scan for inconsistencies **within the PR itself**:

@@ -298,21 +298,74 @@ Before implementing fixes, ask:
 4. **What combinations exist?** (null + empty, valid + invalid, etc.)
 5. **Are there similar patterns elsewhere?** (same bug in other methods?)
 
-### Decision: Use Adversarial Agent?
+### Step 3.5: Adversarial Review Gate (MANDATORY CHECK)
 
-**YES - Spawn reviewer agent**:
+**⚠️ STOP: Do not skip this step without completing the checklist.**
+
+Before deciding whether to use adversarial review, answer these questions:
+
+#### Complexity Indicators (check all that apply)
+
+**Code Characteristics:**
+- [ ] Multiple execution paths (if/else, loops, recursion)
+- [ ] String manipulation or parsing
+- [ ] Collections (iteration, filtering, mapping, grouping)
+- [ ] Inheritance or type resolution
+- [ ] Null handling or defensive checks
+- [ ] Cross-class or cross-module interactions
+- [ ] Error handling or exception propagation
+
+**Edge Case Enumeration:**
+Can you enumerate ALL edge cases right now? (Requires at least 3 specific cases)
+- Happy path: _________________
+- Edge case 1: _________________
+- Edge case 2: _________________
+- Edge case 3: _________________
+
+**Confidence Check:**
+Would you bet that Copilot review finds zero logic issues (not style) in your implementation?
+- [ ] Yes - high confidence
+- [ ] No - uncertain
+
+#### Decision Rules
+
+**MUST spawn adversarial reviewer if:**
+- 2 or more complexity indicators checked
+- Cannot enumerate at least 3 specific edge cases
+- Not confident Copilot finds zero issues
+
+**MAY skip adversarial review ONLY if ALL of these are true:**
+- 0-1 complexity indicators
+- Can enumerate 3+ edge cases
+- Confident in implementation
+- Changes are one of:
+  - Pure style/formatting (whitespace, imports, comments)
+  - Simple constants or configuration
+  - Documentation-only
+  - Renaming via IDE refactoring
+
+#### When Skipping (Rare)
+
+If you decide to skip, document your reasoning:
+
 ```
-Issues involve: Privacy filtering + null checks + conservative cleanup
-→ High risk of cascading edge cases
-→ Spawn adversarial reviewer to challenge completeness BEFORE implementing
+Skipping adversarial review because:
+- Complexity indicators: [X checked]
+- Edge cases enumerated: [list]
+- Change type: [specific reason]
 ```
 
-**NO - Proceed directly**:
-```
-Issues are: Simple style fixes, obvious bugs with clear solutions
-→ Low complexity, no edge case risk
-→ Fix directly without agent overhead
-```
+**Show this reasoning to the user** so they can override if needed.
+
+#### Things That SEEM Simple But AREN'T
+
+These patterns consistently hide edge cases - always use adversarial review:
+- Prefix/suffix stripping (What about: nested? qualified? super.?)
+- Name matching (What about: collisions? shadowing? packages? imports?)
+- Type resolution (What about: wildcards? fully-qualified? ambiguous?)
+- Null checks (What about: empty? combinations? parent fields?)
+- String splitting (What about: delimiters in data? edge counts? escaping?)
+- HashMap/Set operations (What about: iteration order? duplicates? collisions?)
 
 ### Fetch SonarQube Issues (AUTOMATED)
 
@@ -493,6 +546,34 @@ Agent: "You're fixing substring matching - what else can go wrong?
 ```
 
 **Result**: 80% reduction in rounds, better code quality, faster delivery
+
+## Step 3.8: Show Decision Summary to User
+
+Before implementing, present your process decisions to the user:
+
+```
+📋 **Implementation Approach**
+
+**Complexity Assessment:**
+- Risk factors: [count] 
+  - [list checked items]
+- Edge cases identified: [count]
+  - [list enumerated cases]
+
+**Process Decisions:**
+- Test approach: [Test-First | Test-After]
+  - Reason: [why this choice]
+- Adversarial review: [Yes | Skipped]
+  - Reason: [why this choice]
+- XP Pair: [Yes | No]
+  - Reason: [why this choice]
+
+**If skipping recommended process steps, I need your approval.**
+
+Proceed? (yes/no/use more process)
+```
+
+This makes decisions visible and gives user a chance to correct before work starts.
 
 ## Step 4: Create Implementation Plan
 
