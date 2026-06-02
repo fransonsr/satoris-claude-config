@@ -675,9 +675,9 @@ When user approves a fix, apply the appropriate fix pattern:
    ```
 3. Ask user to fill in test logic (or offer to generate based on class methods)
 
-## Step 7: Optional SonarQube Analysis
+## Step 7: SonarQube Analysis (MANDATORY - Always Present This Choice)
 
-After pattern checks AND Copilot simulator complete, offer to run full SonarQube analysis:
+**NEVER skip this step silently.** After pattern checks AND Copilot simulator complete, you MUST present the SonarQube option to the user. The agent must wait for an explicit user decision — skipping without asking is not allowed.
 
 ```markdown
 Pattern checks complete. Found X issues (Y fixed, Z skipped).

@@ -8,6 +8,24 @@
 
 **Operating System**: WSL (Windows Subsystem for Linux)
 
+## Model Access Restrictions
+
+**CRITICAL: When spawning agents, always specify `model="opus"` (Opus 4.6)**
+
+- ✅ Opus 4.6 (`claude-opus-4-6`): Available
+- ❌ Opus 4.7 (`claude-opus-4-7`): NOT authorized - causes authentication errors
+- ⚠️ Default agent spawning tries Opus 4.7 first, which fails
+
+**When spawning agents:**
+```
+Agent(
+  model="opus",  # REQUIRED - forces Opus 4.6, prevents auth errors
+  ...
+)
+```
+
+**Known issue:** Agents that fail authentication on first call get stuck in retry loops and cannot be shutdown. If this happens, manually close the UI panel.
+
 **Path Mappings**:
 - WSL home from Windows: `\\wsl.localhost\Ubuntu\home\fransonsr`
 - Use this path format to open files in Windows browser or applications
