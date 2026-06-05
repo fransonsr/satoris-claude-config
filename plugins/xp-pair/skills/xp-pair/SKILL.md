@@ -109,25 +109,30 @@ TaskCreate:
 - **Review data formats and external dependencies** (file structures, API formats, S3 paths, database schemas)
 - Any edge cases or gotchas to watch for?
 
-**CRITICAL: Verify Assumptions Before Deciding**
+**CRITICAL: Verify Assumptions Before Deciding (Parallel Workflow)**
 
-Before committing to an approach:
-- ✅ **Check legacy code** (if exists) - How did it actually work? Not how we assume it worked.
-- ✅ **Inspect actual data** (if accessible) - File formats, API responses, database schemas
-- ✅ **Test key assumptions** - "Does StringUtils.split(line, ",", 4) handle commas in column 3?" → Test it!
-- ✅ **Read documentation** - Handoff docs, README files, comments in legacy code
+Use the Workflow tool to run discovery agents in parallel before committing to an approach. This keeps the architecture discussion grounded in facts rather than assumptions, without loading all the discovery work into this session's context.
 
-**Why this matters**: Assumptions discovered to be wrong during implementation require rework and wasted TDD cycles. Five minutes of verification saves thirty minutes of pivot.
+Spawn these agents simultaneously, each receiving the task description and relevant file paths:
 
-**Example verification checks:**
+- **Legacy code agent**: How did the legacy implementation actually work? What patterns did it use?
+- **Data format agent**: What do actual file formats, API responses, or database schemas look like? Read samples from disk or S3.
+- **Codebase patterns agent**: What similar patterns exist in the current codebase that the implementation should follow?
+- **Handoff/docs agent**: What do handoff documents, READMEs, and inline comments say about constraints or decisions?
+
+Each agent returns a brief findings summary. Synthesize into the architecture discussion with the user.
+
+**Why this matters**: Assumptions discovered to be wrong during implementation require rework and wasted TDD cycles. Five minutes of parallel verification saves thirty minutes of pivot.
+
+**Example synthesis:**
 ```
-"Before deciding on CSV parsing approach:
-1. Let me check the legacy code... [reads cds-export repo]
-2. Legacy uses StringUtils.split(line, ",", 4) and takes parts[3]
-3. Question: Does this handle commas in column 3?
-4. Test: split("1,2,Name,with,commas,{json}", ",", 4) → [1,2,Name," with,commas,{json}"]
-5. Result: Works! The limit parameter handles it correctly.
-6. Decision: Use StringUtils.split approach (proven in production)"
+"Verification complete:
+- Legacy: Uses StringUtils.split(line, ",", 4) — limit param handles commas in data columns
+- Data format: S3 key pattern is {prefix}/{yyyy}/{MM}/{dd}/{recordId}.json (confirmed from sample)
+- Codebase: CollectionMetadataReader uses DataStorage abstraction — PartitionMetadataReader should match
+- Docs: Handoff says 'cross-account S3 access requires DataStorage, not S3Client directly'
+
+Decision: Use StringUtils.split approach with DataStorage abstraction."
 ```
 
 **Examples:**
@@ -382,18 +387,23 @@ If you want to expand scope (e.g., user suggests new validation):
 
 ### Step 5: Final Review
 
-When driver completes all tests:
-1. **Review entire implementation for:**
-   - Code quality and test coverage
-   - **Architecture compliance** (abstractions, patterns, dependencies)
-   - SOLID principles adherence
-   - Consistent naming and structure
-2. Check test coverage (run project tests - see project-specific CLAUDE.md for commands)
-3. Request additional refactoring if needed
-4. **Run pre-commit validation (Step 5.5a below) - MANDATORY**
-5. **Review documentation (Step 5.5b below) - MANDATORY**
-6. Approve and commit work
-7. Shut down driver with thanks
+When driver completes all tests, run a parallel review workflow before the commit decision. This catches issues across multiple dimensions simultaneously without loading all the review work into this session's context.
+
+Use the Workflow tool to spawn these review agents in parallel, each receiving the diff and relevant source files:
+
+- **Architecture compliance agent**: Are abstractions, patterns, and dependencies consistent with the codebase? Any SOLID violations?
+- **Test coverage agent**: Are there gaps in happy path, edge case, or error path coverage? Any untested production paths?
+- **Documentation drift agent**: Do README files, Javadoc, and inline docs still accurately describe the implementation?
+- **Code quality agent**: Naming clarity, method length, SRP, anything that should be refactored before commit?
+
+Merge findings, address any issues with the driver, then proceed to pre-commit validation.
+
+**After workflow review:**
+1. Request additional refactoring if needed
+2. **Run pre-commit validation (Step 5.5a below) - MANDATORY**
+3. **Review documentation (Step 5.5b below) - MANDATORY**
+4. Approve and commit work
+5. Shut down driver with thanks
 
 ### Step 5.5a: Pre-Commit Build Validation (CRITICAL)
 
