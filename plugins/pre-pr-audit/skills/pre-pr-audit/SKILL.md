@@ -89,7 +89,29 @@ fi
 - Record count validation
 ```
 
-## Step 4: Run Pattern-Based Checks
+## Step 4: Run Parallel Analysis (Workflow)
+
+Steps 4, 4.5, 4.6, and 4.7 run as parallel workflow agents — not sequentially in this session. This keeps the implementation session's context lean: only findings return, not the full analysis work.
+
+Use the Workflow tool to spawn these agents simultaneously. Pass each agent the git diff output, changed file contents, and project patterns from CLAUDE.md:
+
+- **Pattern Checks** — checks described in Step 4 details below
+- **Consistency Checks** — checks described in Step 4.5 details below
+- **Maven Plugin Checks** (skip if no `@Mojo` annotation or `maven-plugin` packaging detected) — checks in Step 4.6 below
+- **Copilot Simulator** — simulation described in Step 4.7 below
+
+Each agent returns findings as a list:
+```json
+[{"severity": "CRITICAL|HIGH|MEDIUM|LOW", "file": "path:line", "description": "...", "recommendation": "..."}]
+```
+
+Merge all findings by severity, then proceed to Step 5 to present interactively.
+
+The detailed check instructions for each agent follow below.
+
+---
+
+## Step 4 Details: Pattern-Based Checks
 
 Use the bundled pattern checker script:
 

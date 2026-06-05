@@ -298,6 +298,26 @@ Before implementing fixes, ask:
 4. **What combinations exist?** (null + empty, valid + invalid, etc.)
 5. **Are there similar patterns elsewhere?** (same bug in other methods?)
 
+### Parallel Issue Triage (Workflow)
+
+After fetching threads, triage all issues in parallel — one agent per issue. This offloads assessment from the implementation session's context; only the structured results return.
+
+Use the Workflow tool, spawning one agent per issue. Each agent receives the thread body, file path, line number, and the relevant code section (read from disk).
+
+Each agent returns:
+```json
+{
+  "issue_id": "thread_id",
+  "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+  "complexity_indicators": ["null handling", "collections", "type resolution"],
+  "proposed_fix": "brief description of the fix",
+  "cascading_risk": true,
+  "notes": "any context about related bugs or edge cases"
+}
+```
+
+Use the merged triage results to drive Step 3 categorization and the Step 3.5 adversarial review decision.
+
 ### Step 3.5: Adversarial Review Gate (MANDATORY CHECK)
 
 **⚠️ STOP: Do not skip this step without completing the checklist.**
@@ -459,57 +479,55 @@ Should I address these? (yes/no/selective)
 
 ### Adversarial Review Agent Pattern
 
-**Agent Role**: Challenge completeness, probe edge cases, demand comprehensive tests
+**Use the Workflow tool to spawn parallel reviewers**, each examining the code through a different lens. Running them concurrently gives broader coverage in the same wall-clock time as a single reviewer, and each lens stays independent — no anchor bias from reading the others' findings.
 
-**Agent Prompt Template**:
+Spawn one agent per lens below. Each receives the same inputs: code section (file:line), issue description, and proposed fix summary.
+
+**Lens 1 — Null/Empty/Malformed**:
 ```
-You are an adversarial code reviewer. Your job is to challenge the proposed fixes for completeness BEFORE implementation.
-
-Context: We're fixing [describe issues - e.g., "null handling bugs in privacy-critical persona filtering"]
-
-Code Section: [file paths and line numbers]
-
-Proposed Fixes: [brief summary of intended changes]
-
-Your Task:
-1. **Challenge Missing Edge Cases**
-   - What can be null that isn't being checked?
-   - What can be empty that isn't being validated?
-   - What combinations are missing? (null + empty, valid + invalid)
-   
-2. **Probe Related Bugs**
-   - If fixing null persona refs, what about null resource URIs?
-   - If checking persona IDs, what about relationship IDs?
-   - Are similar patterns buggy elsewhere in this file?
-
-3. **Demand Comprehensive Tests**
-   - List ALL scenarios that must be tested (not just reported issues)
-   - Include: null, empty, malformed, duplicates, combinations
-   - Require: happy path + edge cases + error paths
-
-4. **Question Design**
-   - Is this a proper fix or a patch?
-   - Should logic be extracted/simplified?
-   - Is conservative approach applied consistently?
-
-Output Format:
-## Edge Cases to Test
-- [scenario 1]
-- [scenario 2]
-...
-
-## Related Bugs to Check
-- [potential bug 1]
-- [potential bug 2]
-...
-
-## Design Questions
-- [question 1]
-- [question 2]
-...
-
-Be thorough and skeptical. Force comprehensive analysis BEFORE coding.
+You are an adversarial reviewer focused on null/empty/malformed data.
+For the proposed fix, challenge:
+- What can be null that isn't being checked? (object, field, nested field, collection element)
+- What can be empty? (string, collection, optional)
+- What can be malformed? (invalid format, unexpected type, out of bounds)
+- What combinations are missing? (null + empty, valid + invalid mix)
+Output: list of edge cases that must be tested.
 ```
+
+**Lens 2 — Related Bugs / Cascading**:
+```
+You are an adversarial reviewer focused on cascading and related bugs.
+For the proposed fix, challenge:
+- If fixing null persona refs, what about null resource URIs?
+- Are similar patterns buggy elsewhere in this class or module?
+- Does the fix address the root cause or just the symptom?
+- What related code paths are NOT covered by this fix?
+Output: list of related bugs and code locations to inspect.
+```
+
+**Lens 3 — Type Safety / Scope**:
+```
+You are an adversarial reviewer focused on type safety and scope bugs.
+For the proposed fix, challenge:
+- Are methods processing the correct types/scopes? (e.g., visitVariable processing params as fields)
+- Are there unvalidated casts or cross-class false positives?
+- Does HashMap/Set usage have nondeterminism risk (iteration order, duplicates)?
+- Are wildcard imports, fully-qualified names, and `super.` handled consistently?
+Output: list of type-safety and scope issues.
+```
+
+**Lens 4 — Design / Consistency**:
+```
+You are an adversarial reviewer focused on design and consistency.
+For the proposed fix, challenge:
+- Is the conservative approach (fail-safe) applied consistently across all related paths?
+- Is this a proper fix or a patch that hides the underlying issue?
+- Should logic be extracted/simplified for testability?
+- Are there visibility or access-control issues (package-private across packages, protected)?
+Output: list of design and consistency concerns.
+```
+
+Merge findings from all four lenses, deduplicate, and present the combined list before implementation begins.
 
 ### When to Skip Adversarial Review
 

@@ -105,48 +105,43 @@ Creates a surgical, production-ready handoff document with:
 - [ ] Manual verification: Run against `/test-data/sample-data.json`
 ```
 
-### 6. Test Strategy Justification
-- Explicit recommendation: test-first or test-after
-- Reasoning based on complexity
+### 6. Complexity Signal
+
+The implementing session decides its own process (test-first vs test-after, `/xp-pair` vs solo). Your job is to surface the evidence that informs those decisions — not to prescribe the outcome.
+
+Document which complexity indicators are actually present in this task:
+- Multiple execution paths (if/else, loops, recursion)
+- String manipulation or parsing
+- Collections (iteration, filtering, mapping, grouping)
+- Inheritance or type resolution
+- Null handling or defensive checks
+- Cross-class or cross-module interactions
+- Privacy/security critical code
+- Unclear or ambiguous requirements
 
 **Example**:
 ```markdown
-**Use Test-First (RED-GREEN-REFACTOR)** because:
-- Requirements unclear (test helps clarify)
-- Privacy-critical code (comprehensive coverage required)
+### Complexity Signal
+**Indicators**: type resolution across 3 inheritance levels, HashMap iteration (nondeterminism risk), privacy-critical filtering
 
-**NOT Test-After** because:
-- Design is NOT obvious (need to explore via tests)
+**Specific risks**:
+- `PersonaFilter.java:45` uses HashMap for deduplication — iteration order is nondeterministic
+- Type resolution must handle: simple names, `super.`, fully-qualified, and wildcard imports
+- Privacy-critical: conservative fail-safe required (remove ALL relationships if ANY fails verification)
 ```
 
-### 7. Iteration Expectations
-- Expected complexity (LOW/MEDIUM/HIGH)
-- Likely number of feedback rounds
-- When to pause and ask
+### 7. When to Pause and Ask
+
+Set expectations for when the implementing session should stop and ask rather than push forward.
 
 **Example**:
 ```markdown
-### Expected Complexity: LOW
-- Straightforward null checks
+### Complexity: MEDIUM
 
-### Expected Iterations
-- **Likely**: 1-2 rounds
-- **If blockers**: Pause and ask (missing test data, unclear legacy behavior)
-- **Don't spin**: If stuck >30min, ask for guidance
-```
-
-### 8. Skill Routing Recommendations
-- Should implementer use `/xp-pair`? (YES/NO with justification)
-- Other skills needed?
-
-**Example**:
-```markdown
-### Use `/xp-pair`? **NO**
-- Complexity: LOW (straightforward null checks)
-- Pattern established (similar to PR #63)
-
-**Switch to xp-pair IF**:
-- Complexity increases (unexpected edge cases)
+**Pause and ask if**:
+- Test data for null resource URIs not found in S3 sample files
+- Legacy `LegacyFilter` behavior differs from documented expectation
+- Scope expansion required beyond `PersonaFilter.java`
 ```
 
 ## How It Works
@@ -221,9 +216,8 @@ Every handoff document must have:
 ### Essential Content (REQUIRED)
 - [ ] Prior work referenced (similar patterns + anti-patterns)
 - [ ] Known gotchas documented (edge cases, constraints)
-- [ ] Test strategy justified (why test-first or test-after)
-- [ ] Iteration expectations set (complexity, likely rounds)
-- [ ] Skill routing recommendations (xp-pair yes/no)
+- [ ] Complexity signal present (specific indicators, not "LOW/MEDIUM/HIGH" alone)
+- [ ] Pause-and-ask conditions explicit
 
 ### Self-Contained Verification
 - [ ] Implementer can start without reading conversation history
@@ -235,12 +229,11 @@ Every handoff document must have:
 
 A good handoff document enables a fresh Claude session to:
 - ✅ Understand the task without reading conversation history
-- ✅ Know exactly what to implement and how
+- ✅ Know exactly what to implement and what is out of scope
 - ✅ Have clear acceptance criteria for completion
 - ✅ Follow project patterns and standards
-- ✅ Know when to use TDD vs test-after
-- ✅ Know when to use `/xp-pair` skill
-- ✅ Mitigate risks proactively
+- ✅ Make its own informed process decisions (TDD approach, xp-pair) from the complexity signal
+- ✅ Know when to pause and ask rather than push forward
 
 ## When to Use This Skill
 
