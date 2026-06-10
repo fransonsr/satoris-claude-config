@@ -343,6 +343,19 @@ This logic should live in `LogPattern.isConvertible()` method.
 **Recommendation**: Extract to enum method for reusability and single source of truth.
 ```
 
+**Parallel Derivation Anti-Pattern** (highest-value check):
+When the same conceptual value (truncated string, formatted key, computed hash, normalized name) is derived from the same input in two or more classes with no shared constant or shared method, the algorithms can silently diverge. Look specifically for:
+- The same numeric constant (e.g., `60`, `80`, `MAX_LENGTH`) appearing in multiple files to control truncation, padding, or formatting
+- The same string manipulation (prefix stripping, suffix appending, case normalization) repeated across classes
+- Equality guards or lookup keys built from derived values where the derivation logic lives in each consumer independently
+
+**Report if found**:
+> ⚠️ **Parallel Derivation** (HIGH)
+>
+> The value `X` is derived from input `Y` in both `ClassA` and `ClassB` with no shared constant or method. If the two algorithms ever differ (different truncation lengths, different separator chars, different edge-case handling), equality checks between them will silently fail.
+>
+> **Recommendation**: Extract derivation to a shared constant + shared method so both classes are guaranteed to agree.
+
 ### Consistency Check #5: Edge Case Coverage
 
 For each key operation in changed files, verify edge case handling:
@@ -562,6 +575,8 @@ Analyze these changed files and predict what Copilot will flag:
 - Incomplete logic (only checks one level instead of full chain, missing branches)
 - Visibility/access control (package-private across packages, protected visibility)
 - Resource cleanup (missing finally blocks, unclosed resources)
+- Inclusive/exclusive boundary mismatch: when end positions, lengths, or offsets are read from one API and passed to another positional API, are inclusive/exclusive conventions explicitly reconciled (e.g., subtract 1 when converting exclusive end to inclusive position)?
+- Measurement scope: is the code measuring the boundary of the correct construct? When a child node is matched (e.g., a method call in a fluent chain, an argument in an expression), should the boundary measurement use the enclosing statement or expression instead?
 
 **Output format** - For each HIGH confidence prediction (>80% Copilot would flag):
 

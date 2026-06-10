@@ -1,6 +1,6 @@
 {
   "name": "pre-pr-audit",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Proactive code quality audit before creating pull requests with automated issue detection and fixes",
   "author": {
     "name": "Satori Franson",

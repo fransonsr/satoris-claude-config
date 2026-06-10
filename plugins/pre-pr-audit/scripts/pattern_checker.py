@@ -60,6 +60,12 @@ class PatternChecker:
             self._check_try_finally_scope(file, content, lines, diff_lines)
             self._check_deduplication(file, content, lines, diff_lines)
             self._check_test_coverage(file)
+            self._check_tostring_equals(file, content, lines, diff_lines)
+            self._check_string_shape_type_proxy(file, content, lines, diff_lines)
+            self._check_narrow_catch_on_library_api(file, content, lines, diff_lines)
+
+        # Cross-file checks (run after per-file loop)
+        self._check_parallel_derivation_constants()
 
         # Sort by severity
         severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
@@ -401,6 +407,166 @@ class PatternChecker:
                             fix_available=False
                         ))
                         self.issue_counter += 1
+
+    def _check_tostring_equals(self, file: str, content: str, lines: List[str], diff_lines: set):
+        """Flag .toString().equals() on non-primitive receivers — fragile on polymorphic types."""
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            if line_num not in diff_lines:
+                continue
+            if re.search(r'\.toString\(\)\.equals\(', line):
+                snippet = self._get_code_snippet(lines, line_num, context=2)
+                self.issues.append(Issue(
+                    id=self.issue_counter,
+                    severity="HIGH",
+                    category="Silent Failure",
+                    file=file,
+                    line=line_num,
+                    pattern=".toString().equals() on potentially polymorphic type",
+                    code_snippet=snippet,
+                    why_it_matters=(
+                        "When the receiver's declared type is an interface or abstract class with "
+                        "known subclasses (e.g., expression trees, AST nodes, query builders), "
+                        "toString() output differs across subtypes. Equality on toString() silently "
+                        "fails for decorated or wrapped instances that represent the same value."
+                    ),
+                    recommendation=(
+                        "Use instanceof checks, a type discriminator (.getKind(), .getClass()), "
+                        "or an explicit type-safe equality method instead of comparing toString() output."
+                    ),
+                    fix_available=False
+                ))
+                self.issue_counter += 1
+
+    def _check_string_shape_type_proxy(self, file: str, content: str, lines: List[str], diff_lines: set):
+        """Flag startsWith/endsWith on toString() used as a type discriminator."""
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            if line_num not in diff_lines:
+                continue
+            if re.search(r'\.toString\(\)\.(startsWith|endsWith)\(', line):
+                snippet = self._get_code_snippet(lines, line_num, context=2)
+                self.issues.append(Issue(
+                    id=self.issue_counter,
+                    severity="HIGH",
+                    category="Type/Name Resolution",
+                    file=file,
+                    line=line_num,
+                    pattern="startsWith/endsWith on toString() used as type discriminator",
+                    code_snippet=snippet,
+                    why_it_matters=(
+                        "Using string shape (e.g., starts with '\"', ends with ')') to detect type "
+                        "is fragile. Multiple distinct types can produce the same string shape "
+                        "(e.g., a string concatenation expression also starts and ends with '\"' "
+                        "in some representations). Use .getKind(), instanceof, or an enum discriminator."
+                    ),
+                    recommendation=(
+                        "Replace shape-based type detection with a proper type check: "
+                        "instanceof, .getKind() == Kind.STRING_LITERAL, or an equivalent "
+                        "type-safe discriminator provided by the API."
+                    ),
+                    fix_available=False
+                ))
+                self.issue_counter += 1
+
+    def _check_parallel_derivation_constants(self):
+        """Flag same numeric literal appearing in multiple changed files (parallel derivation smell)."""
+        constant_locations: Dict[str, List[tuple]] = {}
+
+        for file in self.changed_files:
+            if not os.path.exists(file):
+                continue
+            with open(file, 'r', encoding='utf-8') as f:
+                lines = f.read().split('\n')
+            diff_lines = self._get_changed_lines(file)
+
+            for i, line in enumerate(lines):
+                line_num = i + 1
+                if line_num not in diff_lines:
+                    continue
+                for match in re.finditer(r'\b(\d{2,4})\b', line):
+                    val = match.group(1)
+                    if int(val) in {10, 16, 32, 64, 100, 128, 256, 512, 1000, 1024}:
+                        continue
+                    if val not in constant_locations:
+                        constant_locations[val] = []
+                    constant_locations[val].append((file, line_num, self._get_code_snippet(lines, line_num, context=1)))
+
+        for val, locations in constant_locations.items():
+            files_involved = {loc[0] for loc in locations}
+            if len(files_involved) >= 2:
+                snippet = '\n'.join(f"  {loc[0]}:{loc[1]}\n{loc[2]}" for loc in locations[:4])
+                self.issues.append(Issue(
+                    id=self.issue_counter,
+                    severity="MEDIUM",
+                    category="Parallel Derivation",
+                    file=locations[0][0],
+                    line=locations[0][1],
+                    pattern=f"Numeric constant {val} appears in {len(files_involved)} files — possible parallel derivation",
+                    code_snippet=snippet,
+                    why_it_matters=(
+                        f"The same value ({val}) is hardcoded independently in multiple files. "
+                        "If this controls truncation, padding, or a derived key, the two "
+                        "computations must agree exactly. Independent copies can silently diverge "
+                        "when one is updated and the other is not."
+                    ),
+                    recommendation=(
+                        f"Extract {val} to a shared constant in a single location. "
+                        "Both files should import and use the same constant."
+                    ),
+                    fix_available=False
+                ))
+                self.issue_counter += 1
+
+    def _check_narrow_catch_on_library_api(self, file: str, content: str, lines: List[str], diff_lines: set):
+        """Flag catch blocks for specific RuntimeException subtypes on library/JDK boundaries."""
+        specific_catch_pattern = re.compile(
+            r'\bcatch\s*\(\s*([A-Z][A-Za-z]*Exception|[A-Z][A-Za-z]*Error)\s+\w+\s*\)'
+        )
+        broad_types = {
+            'Exception', 'RuntimeException', 'IOException', 'Error',
+            'Throwable', 'SQLException', 'InterruptedException'
+        }
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            if line_num not in diff_lines:
+                continue
+            match = specific_catch_pattern.search(line)
+            if match:
+                caught_type = match.group(1)
+                if caught_type in broad_types:
+                    continue
+                context_start = max(0, i - 5)
+                context_lines = lines[context_start:i]
+                has_library_call = any(
+                    re.search(r'\b(java|javax|com\.sun|org\.slf4j|org\.apache|com\.google)\b', ctx)
+                    for ctx in context_lines
+                )
+                if has_library_call:
+                    snippet = self._get_code_snippet(lines, line_num, context=4)
+                    self.issues.append(Issue(
+                        id=self.issue_counter,
+                        severity="HIGH",
+                        category="Edge Case",
+                        file=file,
+                        line=line_num,
+                        pattern=f"catch ({caught_type}) on library/JDK call — may miss sibling exception types",
+                        code_snippet=snippet,
+                        why_it_matters=(
+                            f"Catching {caught_type} specifically may not cover all exception subtypes "
+                            "that the library or JDK throws. The API contract often only documents "
+                            "'may throw RuntimeException' without committing to a specific subtype. "
+                            "A different JDK implementation or library version can throw a sibling "
+                            "exception that escapes the catch."
+                        ),
+                        recommendation=(
+                            "Catch the broadest exception type the API documents (often RuntimeException "
+                            "or Exception), or catch multiple sibling types. Verify the API's Javadoc "
+                            "to confirm which exception subtypes are possible."
+                        ),
+                        fix_available=False
+                    ))
+                    self.issue_counter += 1
 
     def _has_cleanup_in_scope(self, file: str, line_num: int, cleanup_pattern: str, lines: List[str]) -> bool:
         """Check if cleanup exists in the same method scope."""
