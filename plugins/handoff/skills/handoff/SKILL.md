@@ -255,6 +255,10 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 
 ### Two-File Approach
 
+> **⚠️ Do NOT use Claude memory for inter-agent communication.**  
+> Progress, decisions, blockers, and questions belong in the `-PROGRESS.md` file — not in memory.  
+> Memory is for durable cross-project preferences, not task-level noise that would clutter future sessions.
+
 **Handoff Document (Immutable)**:
 - Location: `~/.claude/handoff/{task-slug}.md`
 - Purpose: Original specification for implementing agent
@@ -263,9 +267,9 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 
 **Implementation Progress (Mutable)**:
 - Location: `~/.claude/handoff/{task-slug}-PROGRESS.md`
-- Purpose: Track implementation evolution, decisions, blockers
+- Purpose: Track implementation evolution, decisions, blockers, and feedback to the orchestrating session
 - Content: Architectural decisions, progress checklist, blockers, questions
-- Update policy: Implementing agent updates frequently
+- Update policy: Implementing agent updates frequently — this is the communication channel back to the orchestrator
 
 ### Responsibility Model
 
@@ -278,8 +282,8 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 **Implementing Agent (reads handoff)**:
 - Reads handoff document (does not modify)
 - Creates progress document on first session
-- Updates progress document frequently
-- Records decisions, progress, blockers, questions
+- Updates progress document frequently — **this is the only feedback channel back to the orchestrator**
+- Records decisions, progress, blockers, questions in progress document (NOT in memory)
 - May request handoff updates for fundamental changes
 
 ### When to Update Handoff Document
