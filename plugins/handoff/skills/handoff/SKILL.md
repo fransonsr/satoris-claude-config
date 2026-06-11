@@ -316,6 +316,7 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 - Updates progress document frequently — **this is the only feedback channel back to the orchestrator**
 - Records decisions, progress, blockers, questions in progress document (NOT in memory)
 - May request handoff updates for fundamental changes
+- **Does NOT archive** — leave both files in `active/` when done; the orchestrating session archives after verifying
 
 ### When to Update Handoff Document
 
