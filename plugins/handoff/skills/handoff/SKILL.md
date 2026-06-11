@@ -154,12 +154,12 @@ Set expectations for when the implementing session should stop and ask rather th
    - **VERIFIES** facts (no assumptions)
 
 2. **Document Generation**:
-   - Creates `~/.claude/handoff/<task-id>-<slug>.md`
+   - Creates `~/.claude/handoff/active/<task-id>-<slug>.md`
    - Follows comprehensive template (see README.md)
    - Includes verified context with citations
    - Lists explicit unknowns for implementer to discover
    - **Note**: The implementing agent should create a progress document on first session:
-     - Location: `~/.claude/handoff/<task-id>-<slug>-PROGRESS.md`
+     - Location: `~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md`
      - Template: `~/.claude/plugins/*/handoff/templates/IMPLEMENTATION-PROGRESS-template.md`
      - Pattern: Implementing agent reads handoff (immutable), updates progress (mutable)
 
@@ -173,13 +173,13 @@ Set expectations for when the implementing session should stop and ask rather th
 
 Handoff documents are saved as:
 ```
-~/.claude/handoff/<task-id>-<slug>.md
+~/.claude/handoff/active/<task-id>-<slug>.md
 ```
 
 **Examples**:
-- `task-4.16.2-collection-indices-writer.md`
-- `bug-123-null-pointer-fix.md`
-- `feature-kafka-retry-logic.md`
+- `active/task-4.16.2-collection-indices-writer.md`
+- `active/bug-123-null-pointer-fix.md`
+- `active/feature-kafka-retry-logic.md`
 
 ## Key Philosophy
 
@@ -260,13 +260,13 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 > Memory is for durable cross-project preferences, not task-level noise that would clutter future sessions.
 
 **Handoff Document (Immutable)**:
-- Location: `~/.claude/handoff/{task-slug}.md`
+- Location: `~/.claude/handoff/active/{task-slug}.md`
 - Purpose: Original specification for implementing agent
 - Content: Executive summary, technical specs, architecture, implementation guide, acceptance criteria
 - Update policy: Only on fundamental architecture changes
 
 **Implementation Progress (Mutable)**:
-- Location: `~/.claude/handoff/{task-slug}-PROGRESS.md`
+- Location: `~/.claude/handoff/active/{task-slug}-PROGRESS.md`
 - Purpose: Track implementation evolution, decisions, blockers, and feedback to the orchestrating session
 - Content: Architectural decisions, progress checklist, blockers, questions
 - Update policy: Implementing agent updates frequently — this is the communication channel back to the orchestrator
@@ -327,6 +327,44 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 - **Clear Progress**: Progress document tracks "how we're building it"
 - **Better Communication**: Implementing agent can ask questions without polluting spec
 - **Audit Trail**: Decisions captured with date, rationale, impact
+
+### Handoff Lifecycle (Orchestrating Session Responsibility)
+
+Handoff documents are **task-scoped** — they live in `active/` while a task is in flight and move to `archive/` when complete.
+
+**Directory layout**:
+```
+~/.claude/handoff/
+  active/    ← in-progress tasks (small, scannable)
+  archive/   ← completed tasks (audit trail preserved)
+```
+
+**When creating a handoff**, write it to `active/`:
+```
+~/.claude/handoff/active/<task-id>-<slug>.md
+~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md  (created by implementing agent)
+```
+
+**When to archive**: Once the orchestrating session confirms the result is complete and accurate (all acceptance criteria met, output verified), move both files to `archive/`:
+
+```bash
+SLUG="<task-id>-<slug>"
+mkdir -p ~/.claude/handoff/archive
+mv ~/.claude/handoff/active/${SLUG}.md ~/.claude/handoff/archive/
+mv -f ~/.claude/handoff/active/${SLUG}-PROGRESS.md ~/.claude/handoff/archive/ 2>/dev/null || true
+```
+
+**When NOT to archive**:
+- Implementation is still in progress (progress document shows incomplete items)
+- Acceptance criteria have not been verified by the orchestrating session
+- The implementing session flagged blockers or open questions
+
+**Verification before archiving**: Read the PROGRESS document and confirm:
+- [ ] All acceptance criteria checklist items are checked
+- [ ] No open blockers or questions remain
+- [ ] The orchestrating session has verified the output (not just taken the implementing agent's word)
+
+> **Why archive rather than delete?** Completed handoff docs preserve the *why* behind design decisions, anti-patterns to avoid on re-entry, and scope constraints that aren't obvious from the code. Archiving keeps `active/` small and scannable while retaining the audit trail.
 
 ## Related Documentation
 
