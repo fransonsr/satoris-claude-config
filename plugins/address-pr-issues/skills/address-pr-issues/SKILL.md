@@ -62,6 +62,7 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 1. **Fetch Issues**: Read Copilot PR comments and SonarQube analysis
 2. **Assess Complexity**: Determine if adversarial review agent needed (NEW)
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
+3.5. **Sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
 4. **Plan**: Create implementation plan using TDD principles
 5. **Execute**: Fix issues using xp-pair for complex changes
 6. **Validate**: Run local sonar-scanner to catch new issues before committing
@@ -564,6 +565,68 @@ Agent: "You're fixing substring matching - what else can go wrong?
 ```
 
 **Result**: 80% reduction in rounds, better code quality, faster delivery
+
+## Step 3.7: Similar-Pattern Sweep (Mandatory)
+
+**Always run this step** — even if the sweep finds nothing, the cost is a grep; the payoff when it hits is eliminating an entire issue class in one commit instead of being surprised next round.
+
+### What to Do
+
+For each confirmed issue class from Step 3:
+
+1. **Abstract the pattern** — identify the class of issue, not just the literal string.
+   - Too literal: `"except json.JSONDecodeError"`
+   - Right level: `"single-exception catch missing OSError"`
+
+2. **Grep the PR's changed files** — scope to `git diff --name-only` only. Do not sweep the entire repo.
+   ```bash
+   git diff --name-only | xargs grep -n "<pattern>"
+   ```
+
+3. **Evaluate hits** — for each result not already in the fix list:
+   - Is this the same anti-pattern, or superficially similar?
+   - Would fixing it belong in this commit's logical scope?
+   - If yes: add to fix list at the same severity as the original finding.
+
+4. **Merge into the working fix list** — de-duplicate and carry forward into Step 3.8's decision summary.
+
+### Output for Step 3.8
+
+For each issue class swept, report one of:
+- **Hits found**: "Found the same pattern in N additional location(s) — fixing all of them eliminates this issue class rather than surfacing it again next round"
+- **Nothing found**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+
+### Example
+
+```
+Issue flagged: fleet_state.py _load_fleet_state catches JSONDecodeError but not OSError
+
+Sweep pattern: single-exception catch missing companion error type
+Grep: git diff --name-only | xargs grep -n "except json\."
+
+  fleet_state.py:88 — already in fix list (the original finding)
+
+Result: No additional hits — only one catch site in the changed files.
+
+---
+
+Issue flagged: fleet_runner.py ignores return code from cmd_set_merged
+
+Sweep pattern: return code from state-mutation command calls not captured or checked
+Grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
+
+  fleet_runner.py:719 — already in fix list
+  fleet_runner.py:831 — NOT in fix list: rc = cmd_advance(...) assigned but never checked
+
+Adding fleet_runner.py:831 to fix list (same severity: medium).
+→ Fixing both sites in one commit; issue class fully addressed.
+```
+
+### Key Principles
+
+- **Sweep is mandatory, not conditional.** Single-file typo fixes are a no-op — fast and safe to run anyway.
+- **Scope is the PR's changed files**, not the full repo. False positives from unrelated code are noise.
+- **If the sweep surfaces a new instance that, when fixed, would introduce a Sonar finding**, that Sonar finding belongs in this commit too. The sweep never creates new rounds — it widens the current one.
 
 ## Step 3.8: Show Decision Summary to User
 
@@ -1470,27 +1533,7 @@ git push
 
 ### Anticipate Further Issues
 
-When making changes, think ahead:
-- Will this introduce new SonarQube warnings?
-- Does Copilot flag similar patterns elsewhere?
-- Should I apply this fix consistently across the file?
-
-**Run local scans** to catch issues before CI/CD:
-```bash
-# After each significant change
-sonar-scanner -Dsonar.analysis.mode=preview
-
-# Review console output for new issues
-```
-
-### Batch Related Issues
-
-Group similar issues in one commit:
-- All null checks together
-- All resource leaks together
-- All style fixes together
-
-**Rationale**: Easier to review, clearer git history
+See **Step 3.7 — Similar-Pattern Sweep**: mandatory grep of all PR-touched files for each confirmed issue class before any fix is implemented. This handles the "batch related issues" concern automatically.
 
 ### Lessons from Real-World Usage
 
