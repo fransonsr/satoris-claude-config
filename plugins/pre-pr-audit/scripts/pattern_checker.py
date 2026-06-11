@@ -64,6 +64,10 @@ class PatternChecker:
             self._check_string_shape_type_proxy(file, content, lines, diff_lines)
             self._check_narrow_catch_on_library_api(file, content, lines, diff_lines)
 
+            # Python-specific checks
+            if file.endswith('.py'):
+                self._check_python_subprocess_safety(file, content, lines, diff_lines)
+
         # Cross-file checks (run after per-file loop)
         self._check_parallel_derivation_constants()
 
@@ -567,6 +571,97 @@ class PatternChecker:
                         fix_available=False
                     ))
                     self.issue_counter += 1
+
+    def _check_python_subprocess_safety(self, file: str, content: str, lines: List[str], diff_lines: set):
+        """Check subprocess.run/Popen calls for cwd, timeout, TimeoutExpired handler, and executable guard."""
+        call_pattern = re.compile(r'\bsubprocess\.(run|Popen)\s*\(')
+
+        for i, line in enumerate(lines):
+            line_num = i + 1
+            if line_num not in diff_lines:
+                continue
+            if not call_pattern.search(line):
+                continue
+
+            # Gather context window for the call site
+            window_start = max(0, i - 15)
+            window_end = min(len(lines), i + 11)
+            window = lines[window_start:window_end]
+            window_text = '\n'.join(window)
+
+            # Check for cwd= argument (HIGH — wrong directory silently breaks command)
+            if 'cwd=' not in window_text[:window_text.find('\n', window_text.find(lines[i]))+200 if '\n' in window_text else len(window_text)]:
+                # More precisely: check within ~10 lines after the call for cwd=
+                call_context = '\n'.join(lines[i:min(i + 10, len(lines))])
+                if 'cwd=' not in call_context:
+                    snippet = self._get_code_snippet(lines, line_num, context=3)
+                    self.issues.append(Issue(
+                        id=self.issue_counter,
+                        severity="HIGH",
+                        category="Subprocess Safety",
+                        file=file,
+                        line=line_num,
+                        pattern="subprocess call missing cwd= argument",
+                        code_snippet=snippet,
+                        why_it_matters="Without cwd=, the subprocess inherits the caller's working directory, which may differ from the expected directory and silently produce wrong results.",
+                        recommendation="Add cwd= to specify the working directory explicitly.",
+                        fix_available=False
+                    ))
+                    self.issue_counter += 1
+
+            # Check for timeout= argument (HIGH — process can hang indefinitely)
+            call_context = '\n'.join(lines[i:min(i + 10, len(lines))])
+            if 'timeout=' not in call_context:
+                snippet = self._get_code_snippet(lines, line_num, context=3)
+                self.issues.append(Issue(
+                    id=self.issue_counter,
+                    severity="HIGH",
+                    category="Subprocess Safety",
+                    file=file,
+                    line=line_num,
+                    pattern="subprocess call missing timeout= argument",
+                    code_snippet=snippet,
+                    why_it_matters="Without timeout=, the subprocess can hang indefinitely, blocking the process forever.",
+                    recommendation="Add timeout= to limit how long the subprocess can run.",
+                    fix_available=False
+                ))
+                self.issue_counter += 1
+
+            # Check for TimeoutExpired handler (HIGH — unhandled hang on timeout)
+            broader_context = '\n'.join(lines[max(0, i - 5):min(len(lines), i + 20)])
+            if 'subprocess.TimeoutExpired' not in broader_context:
+                snippet = self._get_code_snippet(lines, line_num, context=3)
+                self.issues.append(Issue(
+                    id=self.issue_counter,
+                    severity="HIGH",
+                    category="Subprocess Safety",
+                    file=file,
+                    line=line_num,
+                    pattern="subprocess call missing except subprocess.TimeoutExpired handler",
+                    code_snippet=snippet,
+                    why_it_matters="Without a TimeoutExpired handler, a timed-out subprocess raises an unhandled exception.",
+                    recommendation="Add `except subprocess.TimeoutExpired` to handle the case where the subprocess exceeds its timeout.",
+                    fix_available=False
+                ))
+                self.issue_counter += 1
+
+            # Check for executable guard: shutil.which( or os.path.exists( within ~15 lines above (MEDIUM)
+            guard_context = '\n'.join(lines[max(0, i - 15):i])
+            if 'shutil.which(' not in guard_context and 'os.path.exists(' not in guard_context:
+                snippet = self._get_code_snippet(lines, line_num, context=3)
+                self.issues.append(Issue(
+                    id=self.issue_counter,
+                    severity="MEDIUM",
+                    category="Subprocess Safety",
+                    file=file,
+                    line=line_num,
+                    pattern="subprocess call missing executable existence check (shutil.which or os.path.exists)",
+                    code_snippet=snippet,
+                    why_it_matters="Calling a nonexistent or uninstalled executable raises FileNotFoundError at runtime with no helpful context.",
+                    recommendation="Add `shutil.which('executable')` or `os.path.exists(path)` guard before the subprocess call.",
+                    fix_available=False
+                ))
+                self.issue_counter += 1
 
     def _has_cleanup_in_scope(self, file: str, line_num: int, cleanup_pattern: str, lines: List[str]) -> bool:
         """Check if cleanup exists in the same method scope."""

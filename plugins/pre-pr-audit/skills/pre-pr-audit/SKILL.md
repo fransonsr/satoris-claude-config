@@ -142,6 +142,8 @@ The script checks for:
 - Collection operations without null/empty checks
 - Parse operations (`parseInt`, `parse`, `valueOf`) without try-catch
 - Array access without bounds checking
+- Python `dict.get(key, non_None_value)` where the key may be present with value `None` in externally-sourced dicts (JSON, API responses, subprocess output) — `dict.get` only uses the default for absent keys; flag and recommend `d.get(key) or default` instead (Python files only)
+- Value extracted from a dict or parsed JSON immediately used in a type-dependent operation (iterated, sliced, `len()`, indexed, arithmetic) without a preceding `isinstance()` / `typeof` guard — applies to values from external sources where the schema is not compiler-enforced
 
 **Try/Finally Scope**:
 - Operations between resource acquisition and try block
@@ -445,6 +447,56 @@ All should use consistent debug pattern.
 **Recommendation**: Apply same fix to related methods.
 ```
 
+### Consistency Check #7: Partial-Success Audit Write Guard
+
+When a function uses a boolean flag to track partial failures (`had_failures`, `errors`,
+`failed_count`, `partial`, or similar), any write of a timestamp, audit record, approval
+marker, or status field must be guarded by `not had_failures` (or equivalent). Flag
+unconditional writes of such fields in functions that have a failure-tracking variable.
+
+**Report if found**:
+> ⚠️ **Unguarded Audit Write on Partial Failure** (HIGH)
+>
+> `had_failures` is set to `True` in some paths, but `<field>` is written unconditionally
+> afterward. If any repo/item fails, the audit record will claim full success.
+>
+> **Recommendation**: Guard the audit write behind `if not had_failures:` (or equivalent).
+
+### Consistency Check #8: Nullable Field Normalization Consistency
+
+When a field is read from a shared data structure (dict, record, JSON object), identify
+whether some read sites apply a normalization expression (`x or default`,
+`x if x is not None else default`, `x ?? default`). If ≥2 read sites apply it, flag
+read sites that don't — they will produce different behavior on null inputs.
+
+**Report if found**:
+> ⚠️ **Inconsistent Null Normalization** (MEDIUM)
+>
+> Field `<name>` is normalized with `or <default>` in N places but read raw in M others.
+> Raw reads will expose `None`/`null` to consumers that expect a concrete value.
+>
+> **Recommendation**: Apply the same normalization at every read site, or normalize once
+> at the write/load boundary.
+
+### Consistency Check #9: Factory/Blank-Record Completeness
+
+For functions whose role is to produce a default/empty instance of a data structure
+(heuristic: name matches `_empty_*`, `create_*`, `make_*`, `_default_*`, or a builder
+pattern), cross-reference the fields they initialize against:
+(a) all fields read from that structure type elsewhere in the same file, and
+(b) any schema documentation in docstrings or comments.
+
+Flag fields that appear in (a) or (b) but are absent from the factory.
+
+**Report if found**:
+> ⚠️ **Factory Missing Documented Field** (MEDIUM)
+>
+> `<factory_function>` does not initialize `<field>`, but it is read in `<location>` and/or
+> listed in the schema documentation. Consumers that rely on the field being present
+> (even as `None`) will behave inconsistently compared to deserialized instances.
+>
+> **Recommendation**: Add `"<field>": None` (or equivalent zero value) to the factory.
+
 ### Summary Table
 
 | Check Type | What It Catches | Severity | Example from PR #6 |
@@ -455,6 +507,9 @@ All should use consistent debug pattern.
 | Centralization | Duplicated/scattered logic | LOW | Pattern filtering (Round 10) |
 | Edge Case Coverage | Missing null/empty/bounds checks | HIGH | isDirectory check (Round 10) |
 | Related Code Review | Same issue in multiple places | MEDIUM | Debug logging across methods (Round 12) |
+| Partial-success audit write | Audit markers written on partial failure | HIGH | Pattern 3 |
+| Nullable normalization consistency | Mixed null-guard on same field | MEDIUM | Pattern 6 |
+| Factory completeness | Blank-record factory missing schema fields | MEDIUM | Pattern 4 |
 
 **Estimated Impact**: Catch 60-85% of issues before PR creation (8-11 rounds saved from our 13-round example).
 
