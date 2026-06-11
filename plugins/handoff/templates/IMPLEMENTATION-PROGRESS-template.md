@@ -1,5 +1,6 @@
 # Implementation Progress: {Task Name}
 
+**Location**: `~/.claude/handoff/active/{task-id}-{slug}-PROGRESS.md`  
 **Started**: {date}  
 **Last Updated**: {date}  
 **Status**: {In Progress / Blocked / Complete}
@@ -34,30 +35,26 @@
 
 ---
 
-## Current Blockers
+## Feedback for Orchestrating Session
 
-{None | Description of blockers with context}
+### Blockers (reply needed before continuing)
+
+{None | Each item is a hard stop — the implementing session is waiting}
 
 **Example**:
-### Blocker: Spoon AST Cannot Detect Inherited Logger Fields
-
-**Context**: Using Spoon's CtFieldVisitor to find Logger fields, but it only finds fields declared in current class, not inherited from parent classes.
-
-**Attempted Solutions**:
-- Tried getSuperclass() traversal - requires fully resolved classpath
-- Tried getReferences() - doesn't work on field declarations
-
-**Question for Orchestrating Agent**: Should we switch to LSP for inherited field detection, or can Spoon handle this?
+- **BLOCKED**: `fleet.json` discovery strategy not documented — should `directory` scan
+  follow symlinks or only real directories? Cannot implement `discoverRepos()` without this.
 
 ---
 
-## Questions for Orchestrating Agent
+### Observations (no reply needed — FYI only)
 
-{None | List of questions requiring architectural input}
+{None | Corrections, surprises, lessons learned — work continues regardless}
 
 **Example**:
-1. **conversion-inventory.json ownership**: Should Maven plugin create this, or should analyze skill? (User confirmed: Maven plugin)
-2. **Logstash Marker detection**: Syntactic (Spoon) or semantic (LLM)?
+- `-Djava-stack-logging.dryRun=true` is the correct flag; handoff doc had `-Dtransform.dryRun=true`
+  (silently does nothing). Corrected in the production dry-run procedure above.
+- `gh pr edit --body` silently fails on repos with Projects (classic); used REST API instead.
 
 ---
 

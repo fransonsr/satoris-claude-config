@@ -154,8 +154,25 @@ Set expectations for when the implementing session should stop and ask rather th
    - **VERIFIES** facts (no assumptions)
 
 2. **Document Generation**:
+   - Run `mkdir -p ~/.claude/handoff/active` (idempotent)
    - Creates `~/.claude/handoff/active/<task-id>-<slug>.md`
-   - Follows comprehensive template (see README.md)
+   - Begin document with YAML frontmatter (generate from gathered context):
+     ```yaml
+     ---
+     task-id: <task-id>
+     task-type: <implementation | port | fix | research | refactor>
+     repo: <org/repo-name>
+     branch-from: <branch name>
+     plugin-version: <if applicable, e.g. "0.5.0">
+     key-files:
+       - <path/to/file.java>
+       - <path/to/other.java>
+     dependencies-complete: <true | false — are all prerequisite tasks done?>
+     estimated-complexity: <trivial | small | medium | large>
+     ---
+     ```
+   - Verify all `key-files` paths exist before writing — fail if any path is wrong
+   - Follows comprehensive template for prose sections
    - Includes verified context with citations
    - Lists explicit unknowns for implementer to discover
    - **Note**: The implementing agent should create a progress document on first session:
@@ -163,11 +180,25 @@ Set expectations for when the implementing session should stop and ask rather th
      - Template: `~/.claude/plugins/*/handoff/templates/IMPLEMENTATION-PROGRESS-template.md`
      - Pattern: Implementing agent reads handoff (immutable), updates progress (mutable)
 
-3. **Quality Validation**:
-   - Verifies all file paths exist
-   - Checks line number references for accuracy
-   - Ensures no "TODO" or placeholder sections
-   - Confirms all references are real (no made-up commit hashes)
+3. **Quality Gate** (do not write the file until all pass):
+
+   **Critical (MUST pass)**:
+   - [ ] All file paths in `key-files` and "What to Change" verified to exist
+   - [ ] All line number references checked for accuracy (read the file, confirm lines)
+   - [ ] No "TODO", "fill this in", or placeholder sections remain
+   - [ ] No invented commit hashes or unverified references
+   - [ ] Explicit unknowns listed — if a fact could not be verified, it is in "Explicit Unknowns"
+   - [ ] Scope boundaries present (what to change AND what NOT to change)
+   - [ ] Pause-and-ask conditions explicit
+
+   **Essential (REQUIRED)**:
+   - [ ] YAML frontmatter complete and all paths verified
+   - [ ] Prior work referenced with file:line citations
+   - [ ] Complexity signal present with specific indicators (not "MEDIUM" alone)
+   - [ ] Acceptance criteria are checkable (not "tests pass" — specific test names or commands)
+
+   If any Critical item fails: fix the handoff before writing. Do not write a
+   handoff with known gaps and leave them as TODOs.
 
 ## File Naming Convention
 
@@ -320,6 +351,11 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 - Making an architectural decision
 - Encountering a blocker
 - Discovering ambiguity in spec
+
+**Distinguish blockers from observations**: Use `### Blockers` for items requiring
+orchestrator reply before work continues. Use `### Observations` for corrections,
+surprises, or lessons that don't block progress. The orchestrating session will scan
+`### Blockers` first.
 
 ### Benefits
 

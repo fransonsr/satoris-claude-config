@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Create comprehensive handoff documents with Handoff + Progress pattern: immutable specifications paired with mutable progress tracking for clear inter-agent communication",
   "author": {
     "name": "Satori Franson",

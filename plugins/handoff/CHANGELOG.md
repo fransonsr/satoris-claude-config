@@ -5,6 +5,52 @@ All notable changes to the Handoff skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-06-11
+
+### Added
+
+- **YAML frontmatter on generated handoff documents**
+  - Every generated handoff now begins with structured metadata: `task-id`, `task-type`,
+    `repo`, `branch-from`, `plugin-version`, `key-files`, `dependencies-complete`,
+    `estimated-complexity`
+  - Receiving agent can pre-load context and determine xp-pair vs solo without reading prose
+  - `key-files` paths verified to exist before writing the document
+
+- **Feedback taxonomy in PROGRESS template**
+  - Replaced single "Questions for Orchestrating Agent" section with two explicit sections:
+    `### Blockers` (hard stops requiring orchestrator reply) and `### Observations`
+    (corrections/surprises that don't block progress)
+  - Prevents actionable blockers from being buried in informational text
+  - Orchestrating session scans `### Blockers` first
+
+- **Checklist-gated generation workflow**
+  - Quality checklist promoted from post-hoc documentation to an explicit generation gate
+    (step 3 of "How It Works")
+  - Handoff is not written until all Critical items pass
+  - Critical gate: paths verified, line numbers confirmed, no TODOs, no invented references,
+    explicit unknowns present, scope boundaries clear, pause-and-ask conditions explicit
+
+### Changed
+
+- **`active/` directory enforced throughout**
+  - Generation step now runs `mkdir -p ~/.claude/handoff/active` before writing
+  - All path references in SKILL.md consistently use `~/.claude/handoff/active/`
+  - PROGRESS template header updated to reflect `active/` path
+  - "Inter-Agent Communication" section updated with blocker/observation guidance
+
+## [2.2.0] - 2026-06-11
+
+### Added
+
+- **Handoff lifecycle (active/archive)**
+  - Documents live in `~/.claude/handoff/active/` while in flight
+  - Orchestrating session moves to `~/.claude/handoff/archive/` on completion
+  - Preserves audit trail while keeping `active/` small and scannable
+
+### Changed
+
+- All path references updated from flat `~/.claude/handoff/` to `~/.claude/handoff/active/`
+
 ## [2.1.1] - 2026-06-10
 
 ### Changed
