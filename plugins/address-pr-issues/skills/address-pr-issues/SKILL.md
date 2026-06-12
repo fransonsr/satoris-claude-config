@@ -156,6 +156,31 @@ gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url
 ./scripts/init-pr-state.sh $PR_NUMBER
 ```
 
+> **Pagination note**: The init script fetches at most 100 threads. If the PR has
+> approached or exceeded 100 review comments, there may be additional threads on page 2
+> that the script does not see — it will falsely report "0 unresolved" while threads
+> remain open. The script will warn you if `hasNextPage` is true. If you see that warning,
+> fetch page 2 manually:
+>
+> ```bash
+> # Step 1: Check whether page 2 exists
+> gh api graphql -f query='
+> query($owner:String!, $repo:String!, $pr:Int!) {
+>   repository(owner:$owner, name:$repo) {
+>     pullRequest(number:$pr) {
+>       reviewThreads(first:100) {
+>         pageInfo { hasNextPage endCursor }
+>       }
+>     }
+>   }
+> }' -F owner=OWNER -F repo=REPO -F pr=NUMBER \
+>   | jq '.data.repository.pullRequest.reviewThreads.pageInfo'
+> ```
+>
+> If `hasNextPage` is true, re-run the unresolved-thread query with
+> `-F cursor='<endCursor>'` and `reviewThreads(first:100, after:$cursor)` to fetch the
+> next page, then merge the results into `threads.json`.
+
 <details>
 <summary>Manual approach (for reference only - don't use unless script fails)</summary>
 ```bash
@@ -578,9 +603,20 @@ For each confirmed issue class from Step 3:
    - Too literal: `"except json.JSONDecodeError"`
    - Right level: `"single-exception catch missing OSError"`
 
-2. **Grep the PR's changed files** — scope to `git diff --name-only` only. Do not sweep the entire repo.
+2. **Run a two-tier grep**:
+
+   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only.
    ```bash
    git diff --name-only | xargs grep -n "<pattern>"
+   ```
+
+   **Tier 3b — File-scoped grep** (structural absence): when the issue involves a property
+   that *all members of a set* should share (e.g., all `run_step_*` functions, all
+   `cmd_*` functions, all JSON-read sites), grep the *full changed file*, not just diff
+   lines. The sibling that's missing the property is often not in the diff.
+   ```bash
+   grep -n "<sibling-class-pattern>" <changed-file>
+   # Then check each hit for the missing property
    ```
 
 3. **Evaluate hits** — for each result not already in the fix list:
@@ -588,21 +624,28 @@ For each confirmed issue class from Step 3:
    - Would fixing it belong in this commit's logical scope?
    - If yes: add to fix list at the same severity as the original finding.
 
-4. **Merge into the working fix list** — de-duplicate and carry forward into Step 3.8's decision summary.
+4. **On "nothing found" for structural issues** — a zero result on a diff-scoped grep
+   does not mean the issue class is absent from the file. For absence-of-pattern issues
+   (missing preflight checks, fallback paths, guard conditions), enumerate the set:
+   "What other functions/call-sites of this class exist in the file?" Check each for the
+   property. Report any gaps at the same severity as the original finding.
+
+5. **Merge into the working fix list** — de-duplicate and carry forward into Step 3.8's decision summary.
 
 ### Output for Step 3.8
 
 For each issue class swept, report one of:
 - **Hits found**: "Found the same pattern in N additional location(s) — fixing all of them eliminates this issue class rather than surfacing it again next round"
-- **Nothing found**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Nothing found (textual)**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Gap found (structural)**: "Diff-scoped grep found nothing, but file-scoped check found N sibling(s) also missing this property — adding to fix list"
 
-### Example
+### Examples
 
 ```
 Issue flagged: fleet_state.py _load_fleet_state catches JSONDecodeError but not OSError
 
 Sweep pattern: single-exception catch missing companion error type
-Grep: git diff --name-only | xargs grep -n "except json\."
+Tier 3a grep: git diff --name-only | xargs grep -n "except json\."
 
   fleet_state.py:88 — already in fix list (the original finding)
 
@@ -613,19 +656,37 @@ Result: No additional hits — only one catch site in the changed files.
 Issue flagged: fleet_runner.py ignores return code from cmd_set_merged
 
 Sweep pattern: return code from state-mutation command calls not captured or checked
-Grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
+Tier 3a grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
 
   fleet_runner.py:719 — already in fix list
   fleet_runner.py:831 — NOT in fix list: rc = cmd_advance(...) assigned but never checked
 
 Adding fleet_runner.py:831 to fix list (same severity: medium).
 → Fixing both sites in one commit; issue class fully addressed.
+
+---
+
+Issue flagged: run_step_analyze missing shutil.which("mvn") preflight
+
+Sweep pattern: run_step_* functions that call mvn lack preflight check
+Tier 3a grep: git diff --name-only | xargs grep -n "shutil.which"
+  → Nothing found in diff
+
+Tier 3b structural check: grep full file for all run_step_* functions
+  grep -n "^def run_step_" fleet_runner.py
+  → run_step_discover (no mvn — no gap), run_step_analyze (no preflight ← GAP),
+    run_step_tier1 (has preflight), run_step_verify (has preflight)
+
+Adding run_step_analyze preflight to fix list (same severity: high).
+→ Issue class fully addressed in one commit.
 ```
 
 ### Key Principles
 
 - **Sweep is mandatory, not conditional.** Single-file typo fixes are a no-op — fast and safe to run anyway.
 - **Scope is the PR's changed files**, not the full repo. False positives from unrelated code are noise.
+- **When the issue is structural** (a property that all members of a function/call-site class should share), extend the grep to the *full changed file*, not just the diff. The sibling that's missing the property is likely not in the diff.
+- **"Nothing found" on a structural issue triggers a set-difference check**, not a clean pass. Enumerate the siblings; the absence is the finding.
 - **If the sweep surfaces a new instance that, when fixed, would introduce a Sonar finding**, that Sonar finding belongs in this commit too. The sweep never creates new rounds — it widens the current one.
 
 ## Step 3.8: Show Decision Summary to User
@@ -1122,6 +1183,7 @@ gh api graphql -f query='
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         reviewThreads(first: 100) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             id
             isResolved
@@ -1298,6 +1360,7 @@ gh api graphql -f query='
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         reviewThreads(first: 100) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             id
             isResolved

@@ -1,5 +1,26 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-06-12 - v1.5.0: Sweep Improvements + Pagination Warning
+
+### Step 3.7: Two-tier sweep for structural absence (Changes 1 & 2)
+
+**Problem**: The diff-scoped sweep caught textual repetition but missed *structural absence* — when a function lacked a property that all sibling functions already had (e.g., `run_step_analyze` missing a preflight check that `run_step_tier1` and `run_step_verify` already had). The sibling wasn't in the diff, so grep found nothing and reported a clean pass.
+
+**Fix**:
+- Added **Tier 3b file-scoped grep**: for structural issues, grep the *full changed file*, not just diff lines, to find all sibling functions/call-sites of the same class.
+- Added **absence-detection logic**: "nothing found" on a structural issue now triggers an explicit set-difference check — enumerate the siblings, verify each has the property, report gaps.
+- Added new Key Principles: "When the issue is structural, extend the grep to the full changed file" and "'Nothing found' on a structural issue triggers a set-difference check."
+- Added new `run_step_analyze` preflight example to Step 3.7.
+
+### Step 1: Pagination warning (Change 3)
+
+**Problem**: `init-pr-state.sh` silently capped at 100 threads. On PR #32 (130+ threads), every round falsely reported "0 unresolved" while page-2 threads remained open.
+
+**Fix**:
+- Added pagination warning note after `init-pr-state.sh` in Step 1, including the two-step detection query.
+- `scripts/lib/github-api.sh`: `fetch_pr_threads` now requests `pageInfo { hasNextPage endCursor }` and emits a `⚠️ WARNING` to stderr if `hasNextPage` is true, including the `endCursor` needed to fetch page 2.
+- Both GraphQL queries in Step 6 (OLD METHOD and Check for New Copilot Comments) now request `pageInfo { hasNextPage endCursor }`.
+
 ## 2026-05-20 - v1.1.0: Fix Script Organization & Documentation
 
 ### Problem: Scripts at Wrong Plugin Level

@@ -34,11 +34,13 @@ fetch_pr_threads() {
 
   get_repo_info || return 1
 
-  gh api graphql -f query='
+  local raw_response
+  raw_response=$(gh api graphql -f query='
     query($owner: String!, $repo: String!, $pr: Int!) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $pr) {
           reviewThreads(first: 100) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               id
               isResolved
@@ -58,7 +60,21 @@ fetch_pr_threads() {
         }
       }
     }
-  ' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$pr_number" \
+  ' -F owner="$REPO_OWNER" -F repo="$REPO_NAME" -F pr="$pr_number")
+
+  # Warn if there are more threads than the 100-thread page can hold
+  local has_next_page
+  has_next_page=$(echo "$raw_response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+  if [[ "$has_next_page" == "true" ]]; then
+    local end_cursor
+    end_cursor=$(echo "$raw_response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+    echo "⚠️  WARNING: PR has more than 100 review threads — page 2 not fetched." >&2
+    echo "   Threads on page 2+ are NOT included in threads.json." >&2
+    echo "   To fetch page 2, use endCursor: $end_cursor" >&2
+    echo "   See Step 1 pagination note in SKILL.md for the full query." >&2
+  fi
+
+  echo "$raw_response" \
     | jq -c '.data.repository.pullRequest.reviewThreads.nodes[] | {
       threadId: .id,
       commentId: .comments.nodes[0].databaseId,
