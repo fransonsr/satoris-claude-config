@@ -9,15 +9,6 @@
   },
   "plugins": [
     {
-      "name": "splunk-to-dynatrace",
-      "description": "Migrate Spring Boot apps from Splunk to Dynatrace structured logging",
-      "author": {
-        "name": "FamilySearch Engineering - SATORIS Team"
-      },
-      "source": "./plugins/splunk-to-dynatrace",
-      "category": "development"
-    },
-    {
       "name": "xp-pair",
       "description": "XP pair programming with navigator and driver",
       "author": {

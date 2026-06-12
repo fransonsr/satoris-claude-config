@@ -1,7 +1,0 @@
-# Python dependencies for log transformation tools
-
-# JPype - Java/Python bridge for transform_jpype.py
-jpype1>=1.4.1
-
-# Note: JavaParser JAR (javaparser-core-3.25.8.jar) downloads automatically
-# on first run of transform_jpype.py
