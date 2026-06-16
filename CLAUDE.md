@@ -1,30 +1,32 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-05-22
+**Last Updated**: 2026-06-16
 **Scope**: All projects in this environment
 
 ## Environment Configuration
 
 **Operating System**: WSL (Windows Subsystem for Linux)
 
-## Model Access Restrictions
+## Model Access & Selection
 
-**CRITICAL: When spawning agents, always specify `model="opus"` (Opus 4.6)**
+**License:** Claude Enterprise (migrated off Amazon Bedrock, June 2026). All current
+Claude models are authorized — Opus 4.8, Sonnet 4.x, Haiku 4.5, etc. The old Bedrock-era
+restriction pinning agents to Opus 4.6 (and the "Opus 4.7 causes auth errors" / retry-loop
+issue) no longer applies.
 
-- ✅ Opus 4.6 (`claude-opus-4-6`): Available
-- ❌ Opus 4.7 (`claude-opus-4-7`): NOT authorized - causes authentication errors
-- ⚠️ Default agent spawning tries Opus 4.7 first, which fails
+**Enterprise rate limits:** there are 5-hour and weekly token usage limits. Spend the budget
+deliberately — Opus draws far more from it than Sonnet.
 
-**When spawning agents:**
+**Default model:** `opusplan` (set in `~/.claude/settings.json`) — Opus for plan mode, Sonnet
+for execution.
+
+**When spawning agents:** no need to pin a model. Let agents inherit the session model unless a
+task warrants otherwise — prefer Sonnet for routine search/exploration/mechanical work, and Opus
+for genuinely complex reasoning. Pin a model only when the task clearly calls for it:
 ```
-Agent(
-  model="opus",  # REQUIRED - forces Opus 4.6, prevents auth errors
-  ...
-)
+Agent(model="opus", ...)    # reserve for hard reasoning; omit to inherit
 ```
-
-**Known issue:** Agents that fail authentication on first call get stuck in retry loops and cannot be shutdown. If this happens, manually close the UI panel.
 
 **Path Mappings**:
 - WSL home from Windows: `\\wsl.localhost\Ubuntu\home\fransonsr`
