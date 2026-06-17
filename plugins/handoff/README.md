@@ -1,10 +1,88 @@
 ---
 name: handoff
-description: Create comprehensive handoff documents for tasks to be implemented in a fresh Claude Code session. Includes verified context, explicit unknowns, scope boundaries, and acceptance criteria.
-argument-hint: <task-id> <brief-description>
+description: Two-skill plugin for session continuity — handoff (task specifications) and continue (in-session continuation prompts for /clear-based context refresh).
 ---
 
-# Task Handoff Skill
+# Handoff Plugin
+
+Two skills for keeping Claude sessions continuous and context-rich:
+
+| Skill | Command | Purpose |
+|---|---|---|
+| **handoff** | `/handoff <task-id> <desc>` | Create a task specification for a different session or worker |
+| **continue** | `/handoff:continue [slug]` | Checkpoint the current session for resumption after `/clear` |
+
+---
+
+## `handoff:continue` — In-Session Continuation
+
+Produces a self-contained continuation document that lets you resume the current session
+with full fidelity after `/clear` — avoiding the lossy summaries that automatic compaction
+produces.
+
+**Optimized for orchestration sessions** where context fills fastest (agent results flood in)
+and compaction is most damaging (the coordinator's pivot reasoning is exactly what gets
+summarized away). Works for any long or complex session.
+
+### How `continue` differs from `handoff`
+
+| | `/handoff` | `/handoff:continue` |
+|---|---|---|
+| Audience | A *different* fresh session / worker | The *same* worker, post-`/clear` |
+| Background | Includes project background + specs | Assumes same goals — **no** background |
+| Focus | "What to build" spec + acceptance criteria | Live state + **verbatim next step** |
+| Lifecycle | Immutable spec + separate PROGRESS doc | Single file, overwritten each checkpoint |
+| Trigger | Before delegating a task | Checkpoint during a long session |
+
+### Key behaviors
+
+- **Manual creation**: Run `/handoff:continue [slug]` when *you* decide to prepare for continuation — before `/clear`, before a large fan-out, at a phase boundary
+- **Single file**: `~/.claude/handoff/continue/<slug>-CONTINUATION.md` — overwritten on each checkpoint, not archived
+- **PROGRESS docs linked, not duplicated**: delegated handoff sessions' findings live in their PROGRESS docs; the continuation records verified paths + orchestrator-side status only
+- **Quality gate**: no continuation doc written until all critical items pass (verified paths, executable next action, no invented references)
+
+### Resume command
+
+After `/clear`, paste:
+```
+Read ~/.claude/handoff/continue/<slug>-CONTINUATION.md and resume.
+```
+
+### PreCompact hook
+
+A PreCompact hook ships with this plugin that blocks **auto-compaction** (not explicit
+`/compact`) and reminds you to run `/handoff:continue` instead. This converts a silent,
+lossy event into a visible decision point.
+
+**Trade-off**: the hook fires for every session where the handoff plugin is enabled —
+auto-compaction is blocked globally until you checkpoint or explicitly `/compact`. This
+matches the intent of the skill; `/compact` is always your one-word override.
+
+**Setup**: run `install.sh` (requires `jq`). The hook is registered in
+`~/.claude/settings.json` with `"matcher": "auto"`.
+
+**Manual setup** (if jq is unavailable):
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/satoris-claude-config/plugins/handoff/hooks/precompact-checkpoint-reminder.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## `handoff` — Task Handoff Skill
 
 Creates comprehensive handoff documents that enable a fresh Claude Code session to implement tasks without needing conversation history.
 

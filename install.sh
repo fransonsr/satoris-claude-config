@@ -69,6 +69,45 @@ if [[ -f "$REPO_DIR/keybindings.json" ]]; then
   create_symlink "$REPO_DIR/keybindings.json" "$CLAUDE_DIR/keybindings.json" "keybindings.json"
 fi
 
+# Register the handoff:continue PreCompact hook in ~/.claude/settings.json
+# This hook blocks AUTO-compaction and reminds the user to run /handoff:continue first.
+# Explicit /compact is always the user's one-word override.
+HOOK_SCRIPT="$REPO_DIR/plugins/handoff/hooks/precompact-checkpoint-reminder.sh"
+SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+
+if [[ -f "$HOOK_SCRIPT" ]]; then
+  chmod +x "$HOOK_SCRIPT"
+
+  if command -v jq &>/dev/null; then
+    # Create settings.json if it doesn't exist
+    if [[ ! -f "$SETTINGS_FILE" ]]; then
+      echo '{}' > "$SETTINGS_FILE"
+    fi
+
+    # Check if the hook is already registered (avoid duplicates)
+    ALREADY_REGISTERED=$(jq -r '
+      .hooks.PreCompact[]?.hooks[]?.command // ""
+    ' "$SETTINGS_FILE" 2>/dev/null | grep -F "$HOOK_SCRIPT" || true)
+
+    if [[ -z "$ALREADY_REGISTERED" ]]; then
+      TMP=$(mktemp)
+      jq --arg cmd "$HOOK_SCRIPT" '
+        .hooks.PreCompact = ((.hooks.PreCompact // []) + [{
+          "matcher": "auto",
+          "hooks": [{"type": "command", "command": $cmd}]
+        }])
+      ' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+      echo "  ✅ PreCompact hook (auto-compaction checkpoint reminder)"
+    else
+      echo "  ✓ PreCompact hook (already registered)"
+    fi
+  else
+    echo "  ⚠️  PreCompact hook: jq not found — add manually to ~/.claude/settings.json"
+    echo "     Command: $HOOK_SCRIPT"
+    echo "     See plugins/handoff/README.md for the full JSON snippet"
+  fi
+fi
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ Installation complete!"
@@ -79,6 +118,7 @@ echo ""
 echo "To verify:"
 echo "  ls -la ~/.claude/CLAUDE.md"
 echo "  ls -la ~/.claude/plugins/marketplaces/satoris-claude-config"
+echo "  cat ~/.claude/settings.json | jq '.hooks'   # PreCompact hook"
 echo ""
 echo "To update after making changes:"
 echo "  cd $REPO_DIR"

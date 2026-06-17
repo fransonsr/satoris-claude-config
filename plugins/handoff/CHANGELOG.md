@@ -1,9 +1,43 @@
 # Changelog
 
-All notable changes to the Handoff skill will be documented in this file.
+All notable changes to the Handoff plugin will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.4.0] - 2026-06-17
+
+### Added
+
+- **`handoff:continue` skill** — in-session continuation prompts for `/clear`-based context refresh
+  - Produces a self-contained continuation document at `~/.claude/handoff/continue/<slug>-CONTINUATION.md`
+  - Optimized for **orchestration sessions** where compaction is most damaging (agent results flood context; coordinator pivot reasoning is exactly what gets summarized away)
+  - Works for any long or complex session (general-purpose, orchestration-emphasized)
+  - **Manual invocation discipline**: `/handoff:continue [slug]` — run before a large fan-out, at phase boundaries, or before ending a resumable session
+  - **Soft suggestions**: skill instructs Claude to proactively suggest checkpoints at natural boundaries
+  - Captures: plan phase state, direct subagent findings, decisions/pivots, dead ends, open questions, verbatim next action
+  - PROGRESS docs for delegated handoffs are **linked (verified path), never duplicated**; the PROGRESS doc remains the single source of truth for delegated sessions
+  - Quality gate mirrors the `handoff` skill: no doc written until all Critical items pass
+
+- **CONTINUATION-template.md** — template for continuation documents
+  - YAML frontmatter: slug, session-kind, timestamps, working-dir, branch, budget-directive, workflow-run-id, active-handoffs with verified handoff + progress doc paths
+  - Sections: Re-Entry Instruction, Mission, Plan State (✅/🔄/⬜), In-Conversation Findings (distilled direct agent results), Established Facts (anti-re-derivation), Decisions & Pivots, Dead Ends (anti-retry), Open Questions/Blockers, Next Action (verbatim executable), Working State
+  - All sections include filled examples following the IMPLEMENTATION-PROGRESS-template style
+
+- **PreCompact hook** (`hooks/precompact-checkpoint-reminder.sh` + `hooks/hooks.json`)
+  - Blocks **auto-compaction** (not explicit `/compact`) with a reminder to run `/handoff:continue` then `/clear`
+  - Converts silent lossy auto-compaction into a visible decision point
+  - Registered via `install.sh` into `~/.claude/settings.json` with `"matcher": "auto"`
+  - Explicit `/compact` is always the one-word override
+  - **Note**: hooks are shell commands; they cannot invoke agentic skills directly — the hook blocks and reminds, you run the skill
+
+- **`install.sh` PreCompact hook registration** — install.sh now registers the hook in `~/.claude/settings.json` (requires `jq`; prints a manual-install message if jq is absent)
+
+### Changed
+
+- Plugin now bundles **two skills**: `handoff` (task specification) and `continue` (in-session continuation)
+- Plugin `description` updated to reflect both skills
+- README updated with `continue` documentation and the handoff-vs-continue comparison table
 
 ## [2.3.0] - 2026-06-11
 
