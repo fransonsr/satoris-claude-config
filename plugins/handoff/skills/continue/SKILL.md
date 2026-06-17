@@ -1,6 +1,6 @@
 ---
 name: continue
-description: Build a dense, self-contained continuation prompt to resume the current session after /clear — avoiding lossy compaction. Optimized for orchestration sessions. Captures live plan state, agent findings, decisions/pivots, dead ends, and the verbatim next action.
+description: "ONLY invoke when the user explicitly requests a session checkpoint or says '/handoff:continue'. Builds a self-contained continuation doc to resume after /clear — capturing plan state, agent findings, decisions/pivots, dead ends, and the verbatim next action. Do NOT trigger on conversational use of 'continue' or 'proceed'."
 argument-hint: "[session-slug]"
 ---
 
@@ -75,11 +75,6 @@ boundaries — without waiting to be asked:
 
 **You always decide** whether to actually run the skill. The suggestion is the nudge;
 `/handoff:continue` is the action.
-
-A **PreCompact hook** ships with this plugin that blocks *automatic* compaction and
-surfaces the same reminder (see plugin README for setup). This converts a silent,
-lossy event into a visible decision point. Explicit `/compact` is always your
-one-word override.
 
 ---
 
@@ -211,9 +206,6 @@ session managing multiple handoffs uses a single continuation doc.
 - **Orchestration discipline** — per the established pattern, orchestration sessions
   hand off *execution* work at round 1. `continue` is for the orchestrator's own context
   across clears, not for delegating implementation.
-- **PreCompact hook** — ships with this plugin; blocks auto-compaction with a
-  checkpoint reminder. See the plugin README for setup. Explicit `/compact` is always
-  your override.
 
 ---
 

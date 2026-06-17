@@ -48,38 +48,6 @@ After `/clear`, paste:
 Read ~/.claude/handoff/continue/<slug>-CONTINUATION.md and resume.
 ```
 
-### PreCompact hook
-
-A PreCompact hook ships with this plugin that blocks **auto-compaction** (not explicit
-`/compact`) and reminds you to run `/handoff:continue` instead. This converts a silent,
-lossy event into a visible decision point.
-
-**Trade-off**: the hook fires for every session where the handoff plugin is enabled —
-auto-compaction is blocked globally until you checkpoint or explicitly `/compact`. This
-matches the intent of the skill; `/compact` is always your one-word override.
-
-**Setup**: run `install.sh` (requires `jq`). The hook is registered in
-`~/.claude/settings.json` with `"matcher": "auto"`.
-
-**Manual setup** (if jq is unavailable):
-```json
-{
-  "hooks": {
-    "PreCompact": [
-      {
-        "matcher": "auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/satoris-claude-config/plugins/handoff/hooks/precompact-checkpoint-reminder.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
 ---
 
 ## `handoff` — Task Handoff Skill

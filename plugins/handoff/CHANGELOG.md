@@ -24,15 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Sections: Re-Entry Instruction, Mission, Plan State (✅/🔄/⬜), In-Conversation Findings (distilled direct agent results), Established Facts (anti-re-derivation), Decisions & Pivots, Dead Ends (anti-retry), Open Questions/Blockers, Next Action (verbatim executable), Working State
   - All sections include filled examples following the IMPLEMENTATION-PROGRESS-template style
 
-- **PreCompact hook** (`hooks/precompact-checkpoint-reminder.sh` + `hooks/hooks.json`)
-  - Blocks **auto-compaction** (not explicit `/compact`) with a reminder to run `/handoff:continue` then `/clear`
-  - Converts silent lossy auto-compaction into a visible decision point
-  - Registered via `install.sh` into `~/.claude/settings.json` with `"matcher": "auto"`
-  - Explicit `/compact` is always the one-word override
-  - **Note**: hooks are shell commands; they cannot invoke agentic skills directly — the hook blocks and reminds, you run the skill
-
-- **`install.sh` PreCompact hook registration** — install.sh now registers the hook in `~/.claude/settings.json` (requires `jq`; prints a manual-install message if jq is absent)
-
 ### Changed
 
 - Plugin now bundles **two skills**: `handoff` (task specification) and `continue` (in-session continuation)
