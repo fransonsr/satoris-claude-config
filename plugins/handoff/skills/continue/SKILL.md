@@ -160,6 +160,10 @@ paths exist before writing.
 - [ ] Mission is 1–2 sentences, north-star framing (not a task list)
 - [ ] Plan State uses status markers (✅ done / 🔄 in-flight / ⬜ pending)
 - [ ] Decisions & Pivots record the *why*, not just the decision
+- [ ] **No skill instruction content** — no methodology, workflow steps, or quality gates
+      from any skill (`address-pr-issues`, `xp-pair`, `golden-pr`, etc.). Capture work
+      *state* only. Skill process is always re-loaded via explicit invocation in the new
+      session.
 
 If any Critical item fails: fix it before writing. Do not write a continuation doc
 with known gaps.
