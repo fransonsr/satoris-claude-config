@@ -60,6 +60,24 @@ PreCompact hook as a safety net against lossy auto-compaction.
 
 ---
 
+## Task State
+
+{Open or in-progress tasks from the TaskTool. Run TaskList before writing this section.
+Tasks do NOT survive /clear — capture everything here so the resumed session can
+recreate or continue tracking them.
+
+Format: ID · Title · Status · Notes. Example:}
+
+| ID | Title | Status | Notes |
+|---|---|---|---|
+| 1 | Implement FooClass | in-progress | Method X done; method Y next |
+| 2 | Write tests for FooClass | pending | Blocked on task 1 |
+| 3 | Update changelog | pending | |
+
+*(or: none — TaskList confirmed empty)*
+
+---
+
 ## In-Conversation Findings
 
 {Distilled findings from Explore/Plan/general agents spawned DIRECTLY in this session.

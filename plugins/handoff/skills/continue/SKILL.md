@@ -108,6 +108,9 @@ paths exist before writing.
 
 1. **Gather live state** from the current conversation:
    - Active plan phase and status (per phase)
+   - **TaskTool tasks**: call `TaskList` to retrieve all tasks; capture ID, title, status,
+     and description for each open/in-progress task so the resumed session can continue
+     tracking them (tasks do not survive `/clear`)
    - Direct subagent calls made this session and their distilled findings
    - Key decisions made and pivots taken (with the *why*)
    - Approaches that failed — dead ends — and why they were rejected
@@ -146,6 +149,8 @@ paths exist before writing.
 - [ ] **Next Action is concrete and executable** — names a specific phase, agent prompt,
       command, or args; not "continue the work"
 - [ ] **Established Facts carry citations** — file:line or commit hash; no unverified claims
+- [ ] **Task State populated** — `TaskList` run; all open/in-progress tasks captured
+      (or explicitly "none — TaskList confirmed empty")
 - [ ] **In-Conversation Findings populated** — or explicitly "none yet" (not omitted)
 - [ ] **Dead Ends populated** — or explicitly "none yet" (not omitted)
 - [ ] **Active handoff paths verified** — for each `active-handoffs` entry:
@@ -238,4 +243,5 @@ A good continuation document enables a fresh session to:
 - ✅ Not re-derive already-established facts
 - ✅ Not retry approaches already rejected
 - ✅ Know the exact state of all delegated handoffs (via verified PROGRESS paths)
+- ✅ Recreate or continue all TaskTool tasks without loss
 - ✅ Execute the verbatim next action without interpretation
