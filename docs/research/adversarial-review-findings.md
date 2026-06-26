@@ -606,3 +606,107 @@ Applying this assessment to `~/.claude/copilot-review-patterns.md`:
 - **Documentation Accuracy**: Add "changelog coverage" — for any commit fixing a previous commit's
   artifact (e.g., fixing a CHANGELOG entry from an earlier commit in the same PR), check that the
   fix is reflected back in the changelog.
+
+---
+
+## Architecture Recommendations (Full-Dataset Analysis)
+
+These recommendations are derived from the complete 6-round Copilot dataset (15 findings) and
+supersede the preliminary P0–P6 list above where they overlap. They address three specific
+failure modes that account for most of the post-PR Copilot rounds.
+
+### Failure mode 1: cascade misses within a class (→ parallel agents + P1 cascade sweep)
+
+The single-agent sequential design finds one instance of a root cause per round because the
+reviewer exhausts its context moving through all 7 classes. R5-1 (`git status` returncode not
+checked) and R6-1 (safety-bypassing branch allowance) are both the same failure mode as bugs
+the adversarial review DID find — they were missed because the reviewer swept the subprocess
+block once and moved on.
+
+**Fix: one agent per class, each running in parallel, each with the cascade sweep instruction.**
+
+```
+Round N:
+  ┌─ Agent: State Machine / Control Flow  ─────────┐
+  ├─ Agent: Operator Observability ────────────────┤
+  ├─ Agent: Defensive Guards ──────────────────────┤  all parallel
+  ├─ Agent: Documentation Accuracy ────────────────┤  (scopes differ — see below)
+  ├─ Agent: Infrastructure / Environment ──────────┤
+  ├─ Agent: Provenance / Identity ─────────────────┤
+  └─ Agent: Test Integrity ────────────────────────┘
+                    ↓
+  Synthesizer: dedup by (file, line), rank by severity
+                    ↓
+  Fix agent: applies full merged list, runs tests
+```
+
+Each class agent carries this instruction:
+
+> When you find a bug, state its specific failure mode in one sentence (e.g., "subprocess
+> returncode used before checking"). Then scan *every other callsite* of the same kind in the
+> diff — every subprocess call, every JSON read, every branch exit — for the same failure mode
+> before reporting the finding. Report all instances as a cluster.
+
+The synthesizer deduplicates by `(file, line_range)` — two agents may flag the same line from
+different angles (e.g., a UnicodeDecodeError issue is both Defensive Guards and Operator
+Observability). When a finding appears under two classes, keep the one with the more specific
+"how to fix."
+
+Wall-clock improvement: current bottleneck is ~40 min for one sequential Opus pass. With 7
+parallel agents the bottleneck is the slowest single-class sweep — estimated 12–15 min. Total
+tokens roughly similar (7 × smaller context vs 1 × full context), but Sonnet-grade agents are
+sufficient for most classes; reserve Opus for State Machine and Operator Observability.
+
+### Failure mode 2: documentation scope too narrow (→ immediate documentation files)
+
+All 5 Documentation Accuracy findings were missed because the adversarial review scope was
+"changed Python files." SKILL.md (R1-2, R5-2), CHANGELOG.md (R2-5), and ADF examples in
+SKILL.md (R1-3, R1-4) are not Python files.
+
+**Fix: the Documentation Accuracy agent reads "immediate documentation files" in addition to
+the Python diff.** Defined as:
+
+1. **Any documentation file in `git diff --name-only`** matching `*.md`, `*.rst`, `*.adoc`,
+   `CHANGELOG*`, or `README*`. These are changed in the PR itself — always relevant.
+2. **README.md and CHANGELOG.md adjacent to changed source files** — specifically, in the
+   same directory or immediate parent directory of any changed source file. At most 2–3 files.
+
+This scope is deterministic (computed from `git diff --name-only` + one `find` pass),
+repo-agnostic (works for a library with no SKILL.md just as well as for a plugin with one),
+and bounded (does not read the whole repo's documentation, only what travels with the changed
+code).
+
+For a **library repo**: changed `src/main/java/com/example/Foo.java` → the agent also reads
+`README.md` and `CHANGELOG.md` in the repo root or the package directory, plus any `.md` file
+changed in the PR. No SKILL.md needed — the same three heuristics (spec-code coherence,
+changelog coverage, external-format rendering) apply to whatever documentation is present.
+
+For a **plugin repo**: changed `fleet_runner.py` → the agent also reads `SKILL.md` (changed
+in the PR diff), `CHANGELOG.md` (also in the diff), and any other `.md` changed in the PR.
+
+The ADF rendering heuristic stays in the Documentation Accuracy agent's prompt as domain
+knowledge — it fires only when the code generates Jira/Confluence content.
+
+### Failure mode 3: error-message precision (→ sharpen Operator Observability heuristic)
+
+R2-2, R2-3, R4-1, R4-2 — four of the five Operator Observability misses — are the same type:
+a message names a specific value when the code handles a general range. "Check out master" is
+not false, but it's wrong for `main`-default repos. The adversarial review was prompting for
+*false* messages and missed *too-specific* ones.
+
+The heuristic is already added to `copilot-review-patterns.md` (How to find #5). The prompt
+passed to the Operator Observability class agent needs to include it explicitly.
+
+### Estimated improvement
+
+| Design | Copilot rounds expected |
+|--------|------------------------|
+| Current (sequential, Python-only scope) | 6 |
+| + Cascade sweep (P1) only | ~4 |
+| + Parallel agents + cascade sweep | ~3 |
+| + Parallel + cascade + immediate docs scope | ~2 |
+| + All above + sharpened Observability heuristic | ~1–2 |
+
+The "immediate documentation files" scope change alone would have caught R1-2, R1-3, R1-4,
+R2-5, and R5-2 — all five Documentation Accuracy findings — in the first round. That's three
+fewer Copilot rounds on its own.
