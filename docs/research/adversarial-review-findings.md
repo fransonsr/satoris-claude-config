@@ -712,3 +712,154 @@ passed to the Operator Observability class agent needs to include it explicitly.
 The "immediate documentation files" scope change alone would have caught R1-2, R1-3, R1-4,
 R2-5, and R5-2 — all five Documentation Accuracy findings — in the first round. That's three
 fewer Copilot rounds on its own.
+
+---
+
+## Rounds 7–11 Update: Extended Copilot Review
+
+PR #101 ran for 11 rounds of Copilot review (the six-round comparison above covered Rounds 1–6
+and 15 findings). This section covers Rounds 7–11: 15 more findings, the adversarial review
+smoke test run post-PR, and the emergence of Semantic Correctness as a new pattern class.
+
+### Rounds 7–11 Findings
+
+| Round | Finding | Pattern Class |
+|-------|---------|--------------|
+| R7-1 | Reused-worktree branch regex: date anchor too loose — accepted malformed date segments | State Machine / Control Flow |
+| R7-2 | SKILL.md date format example wrong | Documentation Accuracy |
+| R8-1 | Block reason emitted wrong message for unexpected branch vs. wrong state | Operator Observability |
+| R8-2 | Jira placeholder syntax: `browse/jiraTicket` instead of `{jiraTicket}` | Documentation Accuracy |
+| R9-1 | Origin/main probe: bare ref assumed present without `git rev-parse --verify` guard | Infrastructure |
+| R9-2 | Branch error message: "check out master" for repos whose default may be `main` | Operator Observability |
+| R9-3 | FIELD_NAMING warning missing on a conversion path already guarded elsewhere | Defensive Guards |
+| R9-4 | Step 0.5 SKILL.md wording | Documentation Accuracy |
+| Autofix | Test comment incorrectly described `ahead_count` default | Documentation Accuracy |
+| R10-1 | Reused-worktree regex: `.+` too permissive — accepted any prefix, not just Jira keys | Semantic Correctness |
+| R10-2 | `ahead_count > 0` falls through to "Synced OK" without checking divergence (SYNC-16) | Semantic Correctness |
+| R11-1 | Embedded `\n` in blockedReason from AR-1 fix — collapsed to `"; "` | Operator Observability |
+| R11-2/3 | R10's regex requires uppercase but `_branch_name()` passed raw ticket (writer/validator mismatch) | Semantic Correctness |
+| R11-4 | CHANGELOG placeholder `browse/{jiraTicket}` missing braces | Documentation Accuracy |
+
+(R9-2 is the same "too-specific message for a general range" finding as R2-2/R2-3 — confirmed
+recurring shape for Operator Observability.)
+
+### Fix-Induced Cascades (New Cascade Shape)
+
+Rounds 1–6 showed *intra-round* cascades: missing returncode check on one subprocess call →
+the same check missing on a different call in the next round. Rounds 7–11 show a different
+shape: a Round-N fix creates a new inconsistency that Round N+1 catches.
+
+- **R10-1 → R11-2/3**: Tightening the reused-worktree regex to `[A-Z][A-Z0-9]*-\d+` made the
+  validator require uppercase — but `_branch_name()` was still passing the ticket raw. A
+  lowercase ticket now created a branch the validator would reject on reuse.
+- **AR-1 → R11-1**: The dirty-tree blockedReason was expanded to embed `git status --porcelain`
+  output for operator clarity — but the output can contain newlines, breaking the single-line
+  convention.
+
+These are not swept by the cascade rule (P1), which looks for the *same root cause* in adjacent
+code. Fix-induced cascades are caused by the fix itself. The review-pause mode (returning
+findings to the main session before applying fixes) is the architectural response: the main
+session reviews whether a proposed fix creates a new inconsistency elsewhere before it ships.
+
+### Adversarial Review Smoke Test
+
+After PR #101 was submitted, the adversarial-review skill was run in smoke-test mode — one
+round, seven parallel agents — against the already heavily-reviewed PR-2 diff. Three genuine
+bugs were found:
+
+| Finding | Class | Outcome |
+|---------|-------|---------|
+| AR-1: Dirty-tree blockedReason misleading for untracked files; remediation should include `git clean -fd` | Operator Observability | Fixed; triggered R11-1 (embedded newlines) |
+| AR-2: Non-existent `ANALYZING` state in `run_step_sync_repos` docstring | Documentation Accuracy | Fixed |
+| AR-3: `--fleet-json "$FLEET_JSON"` in Step 0.5 snippet (parameter unused by sync-repos) | Documentation Accuracy | Fixed |
+
+**What this confirms**: The adversarial review has genuine signal on a diff that has already
+absorbed 10 Copilot rounds. AR-1 is the "too-specific message for a general condition" finding
+that Copilot hadn't surfaced — likely because Copilot evaluated the code in isolation rather
+than the operational scenario. The architecture executed correctly: seven parallel agents,
+SKILL.md in scope, cascade sweep active, git guardrails in place, no incidents.
+
+### The Semantic Correctness Class: Why It's Distinct
+
+R10-1 and R10-2 don't fit cleanly into any of the seven pre-existing classes:
+
+- Not **State Machine**: R10-2 is a wrong exit path, but what makes it wrong is a gap in the
+  *stated scope* ("handles the ahead case") not a classic state-machine error (wrong variable,
+  bypassed guard, non-idempotent step).
+- Not **Defensive Guards**: R10-1 is a missing guard on *format*, not on presence or type.
+
+The common thread across R10-1, R10-2, and R11-2/3 is: **"does this actually do what it
+claims?"** — a gap between the implied specification and what the implementation actually
+enforces.
+
+When this was initially proposed as a sharpening of existing classes, the user pushed back:
+Documentation Accuracy has no mechanical heuristic either — it requires reading the doc and
+the code side by side. Semantic Correctness works the same way: the reviewer reads the
+specification claim (regex comment, function name, docstring, validation gate) and asks whether
+the implementation enforces exactly that domain, or something broader (or narrower). That is a
+distinct question from "is the state machine wired correctly?" or "is the null check present?"
+
+**Three canonical examples now in the pattern file**:
+- *Regex too permissive*: R10-1 (`.+` accepted any prefix; `[A-Z][A-Z0-9]*-\d+` required)
+- *Silent fall-through on unsafe state*: R10-2 (ahead_count > 0 without divergence check)
+- *Writer/validator agreement*: R11-2/3 (ticket passed raw; validator required uppercase-only)
+
+All three are judgment calls — no mechanical grep finds them. This puts Semantic Correctness
+in the same tier as Documentation Accuracy: effective only when the reviewer brings design
+intent to the reading, not just pattern recognition.
+
+### Updated Coverage Summary (Rounds 1–11)
+
+| Pattern Class | R1–R6 | R7–R11 | Total | Adversarial (pre-PR) |
+|---|---|---|---|---|
+| State Machine / Control Flow | 5 | 1 | 6 | Partial (2) |
+| Operator Observability | 5 | 3 | 8 | Partial (1) |
+| Documentation Accuracy | 5 | 5 | 10 | None |
+| Defensive Guards | 0 | 1 | 1 | Yes (several) |
+| Infrastructure / Environment | 0 | 1 | 1 | Yes (several) |
+| Semantic Correctness | 0 | 4 | 4 | None (class didn't exist pre-PR) |
+| Test Integrity | 0 | 0 | 0 | — |
+| Provenance / Identity | 0 | 0 | 0 | — |
+| **Total** | **15** | **15** | **30** | — |
+
+Rounds 7–11 are dominated by Documentation Accuracy (5) and Semantic Correctness (4). Both are
+classes where the pre-PR adversarial review was blind: Documentation Accuracy because the scope
+was Python-only (SKILL.md unread); Semantic Correctness because the class didn't exist yet.
+Both gaps are now addressed:
+
+- Documentation Accuracy → "immediate documentation files" scope change (Architecture
+  Recommendations, Failure mode 2) would read SKILL.md and CHANGELOG.md in the diff
+- Semantic Correctness → class 8 added to the pattern file; parallel per-class agents will run
+  it on future pre-PR reviews
+
+### Updated Efficiency Verdict
+
+The full 11-round picture revises the initial estimate upward:
+
+| Phase | Findings |
+|-------|---------|
+| Pre-PR adversarial review (5 rounds) | 16 bugs found and fixed |
+| Post-PR Copilot (11 rounds) | 30 findings, all valid, all fixed |
+
+30 post-PR Copilot findings is more than the "6–8 rounds avoided" conservative estimate from
+the Round 6 assessment. The adversarial review absorbed the control-flow and defensive-guards
+clusters (its strengths) but left Documentation Accuracy and Semantic Correctness intact for
+Copilot. PR-1 (no pre-PR review) had 21 Copilot rounds; PR-2 had 11. The adversarial review
+reduced post-PR load by roughly half — consistent with absorbing its strong classes while
+leaving its weak ones.
+
+**Revised projection with all three architecture improvements applied**:
+
+| Improvement | Expected post-PR Copilot rounds |
+|-------------|--------------------------------|
+| Baseline (current, Python-only scope) | ~11 (observed) |
+| + Immediate docs scope | ~8 (Documentation Accuracy drops from 10 to ~3) |
+| + Parallel agents + cascade sweep | ~6 |
+| + Semantic Correctness class | ~5 |
+| + Review-pause mode (catches fix-induced cascades) | ~3–4 |
+
+The single highest-leverage change remains the documentation scope fix — it alone would have
+caught all five Documentation Accuracy findings in the pre-PR review round, saving 3 Copilot
+rounds on this PR. The review-pause mode would have caught the two fix-induced cascades (R11-1,
+R11-2/3) before they reached Copilot, saving 2 more rounds. Combined: a PR that took 11
+Copilot rounds would have taken 4.
