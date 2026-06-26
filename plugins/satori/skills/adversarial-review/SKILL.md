@@ -1,0 +1,259 @@
+---
+name: adversarial-review
+description: >
+  Multi-round parallel adversarial pattern review against copilot-review-patterns.md.
+  One agent per pattern class, cascade-sweep within each class, human review-pause between
+  rounds, git-guardrailed fixes. Invoked by /pre-pr-audit (3 rounds) and /address-pr-issues
+  (1 round), or standalone. Use before opening a PR or before pushing a fix round on code changes.
+---
+
+# Adversarial Pattern Review
+
+Run a multi-round, parallel-agent sweep of your changed code against the known Copilot issue
+pattern classes. Each round spawns one reviewer per class, deduplicates findings, pauses for
+human disposition, applies approved fixes under strict git guardrails, then re-evaluates.
+
+## When to Use
+
+- Directly: `Skill(adversarial-review)` or `/adversarial-review` — standalone sweep before opening a PR
+- Called by `/pre-pr-audit` Step 4.7 with `--rounds 3`
+- Called by `/address-pr-issues` Step 3.5 with `--rounds 1`
+
+## Inputs (all optional, with defaults)
+
+| Arg | Default | Description |
+|-----|---------|-------------|
+| `--rounds N` | `3` | Maximum review rounds |
+| `--base-branch BRANCH` | auto-detect | Compare against this branch (`@{u}` → `main` → `master`) |
+| `--intent-brief "..."` | _(prompt user)_ | ~200 words: problem statement, design decisions, what was deferred |
+
+If `--intent-brief` is not supplied by a caller, ask the user to provide it before proceeding.
+The Intent Brief is the single most important input: without it, fix agents cannot distinguish
+"intentional design decision" from "bug to fix."
+
+---
+
+## Setup (run once before the round loop)
+
+### 1. Resolve the pattern file
+
+```bash
+# Prefer the living user-global copy; fall back to the bundled snapshot
+PATTERNS_FILE=~/.claude/copilot-review-patterns.md
+if [ ! -f "$PATTERNS_FILE" ]; then
+  PATTERNS_FILE=~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md
+fi
+```
+
+### 2. Enumerate pattern classes dynamically
+
+```bash
+# DO NOT hardcode a number — classes grow as new issues are encountered
+PATTERN_CLASSES=$(grep "^### [0-9]" "$PATTERNS_FILE" | sed 's/^### [0-9]*\. //')
+```
+
+### 3. Resolve the base branch
+
+```bash
+BASE_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | cut -d/ -f2-)
+if [ -z "$BASE_BRANCH" ]; then
+  if git show-ref --verify --quiet refs/heads/main; then
+    BASE_BRANCH=main
+  elif git show-ref --verify --quiet refs/heads/master; then
+    BASE_BRANCH=master
+  else
+    echo "Cannot detect base branch — supply --base-branch"
+    exit 1
+  fi
+fi
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+```
+
+### 4. Extract all artifacts ONCE (fixed for the entire run)
+
+Agents must NOT re-run `git diff` mid-loop on their own. All agents in all rounds receive
+these same snapshots.
+
+```bash
+# The DIFF orients agents (what changed, where); they read FULL file contents for cascade sweeps
+DIFF=$(git diff origin/$BASE_BRANCH...$CURRENT_BRANCH)
+
+# Language-agnostic source files changed in this PR
+CHANGED_SOURCE_FILES=$(git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+  | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" || true)
+
+# Documentation scope:
+#   (1) any doc file changed directly in the PR
+#   (2) README/CHANGELOG adjacent to any changed source file (up one directory)
+CHANGED_DOC_FILES_DIRECT=$(git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+  | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)" || true)
+CHANGED_DOC_FILES_ADJACENT=$(echo "$CHANGED_SOURCE_FILES" | xargs -I{} dirname {} 2>/dev/null \
+  | sort -u \
+  | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \( -name "README*" -o -name "CHANGELOG*" \) 2>/dev/null' \
+  | sort -u || true)
+CHANGED_DOC_FILES=$(printf '%s\n%s\n' "$CHANGED_DOC_FILES_DIRECT" "$CHANGED_DOC_FILES_ADJACENT" \
+  | sort -u | grep -v '^$' || true)
+```
+
+**Scope note (explain to agents):** `DIFF` is the orientation artifact — it shows *what
+changed* and *where*. Review agents must read the **full file contents** of `CHANGED_SOURCE_FILES`
+(not just the diff) so the cascade sweep can find every callsite of a failure mode across the
+file, not just the lines that changed.
+
+---
+
+## Per-Round Loop
+
+Repeat up to `--rounds` times. After each round, re-extract the diff (Phase E) before deciding
+whether to continue.
+
+### Phase A — Parallel Review (one agent per class)
+
+Spawn one review agent for **each entry in `PATTERN_CLASSES`**. Run them concurrently.
+
+**Every review agent prompt MUST include:**
+
+1. The relevant pattern class section (cut from `$PATTERNS_FILE`)
+2. The full `DIFF`
+3. The full contents of all files in `CHANGED_SOURCE_FILES` (read them; don't send paths)
+4. The Intent Brief
+5. For the **Documentation Accuracy** class only: also include the full contents of all files in `CHANGED_DOC_FILES`
+
+**Model selection:**
+- **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
+- **Sonnet**: all other classes
+
+**Cascade sweep rule — embed this verbatim in every review agent prompt:**
+
+> When you find a bug, state its specific failure mode in one sentence (e.g., "subprocess
+> returncode used before checking stdout"). Then scan *every other callsite of the same kind*
+> in the entire changed source — every subprocess call, every JSON read, every branch exit —
+> for the same failure mode before reporting. Report all instances together as a cluster.
+> Do NOT hold back and expect later rounds to catch siblings. A missed sibling is a miss.
+
+**Output schema per agent (JSON):**
+
+```json
+{
+  "findings": [
+    {
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "file": "path/to/file.py:lineNumber",
+      "pattern_class": "State Machine / Control Flow Logic",
+      "description": "...",
+      "recommendation": "...",
+      "cascade_siblings": ["path/to/file.py:otherLine"]
+    }
+  ],
+  "is_clean": true
+}
+```
+
+Return `"is_clean": true` (with an empty `findings` array) if the class is fully clear.
+
+### Phase B — Synthesize
+
+Collect all agent outputs. Deduplicate findings by `(file, line_range)`:
+- When two agents flag the same location, keep the **more specific** recommendation
+- Record **both** `pattern_class` values in the merged finding (a finding can belong to two classes)
+- Sort remaining findings: CRITICAL → HIGH → MEDIUM → LOW
+
+### Phase C — Review-Pause (human decision)
+
+Present the synthesized findings to the calling session. For each finding, the user classifies it:
+
+| Disposition | Action |
+|-------------|--------|
+| **Fix** | Proceed to Phase D |
+| **Contradicts design** | Override — no fix; do not flag as "missed" |
+| **Accepted risk** | Record as a known limitation; include in Phase E summary and PR description. Do NOT silently drop — the absence of a finding in the summary is a claim that it was addressed |
+| **False positive** | Skip; note the reason in the round summary |
+
+### Phase D — Apply Fixes
+
+For each approved finding, apply the fix. The fix agent receives:
+- The approved finding + its recommendation
+- The Intent Brief
+- These **git guardrails** (embed verbatim in every fix agent prompt):
+
+> **PROHIBITED**: `git reset` (any form), `git rebase`, `git commit`, `git stash`,
+> `git checkout -- <file>`, `git restore`.
+>
+> **PERMITTED**: Edit/Write (file edits only); Bash commands only for running tests, reading
+> files, or grep/find; `git diff` and `git status` (read-only).
+>
+> Do NOT create new test classes. Add tests to the **existing** test class for the changed file.
+
+Run the test suite after applying all fixes for this round. If tests fail, report the failures
+before proceeding — do not continue to the next round with a red test suite.
+
+### Phase E — Re-extract Diff; Check Termination
+
+Re-run the `DIFF=` extraction command from Setup Step 4 against the (now-modified) working tree.
+
+**Terminate the loop when:**
+- All agents returned `"is_clean": true` and the synthesizer finds no new findings, OR
+- The round limit (`--rounds`) has been reached
+
+**If not clean at the round limit**, signal:
+- The PR may be too large — consider splitting it
+- Or a new failure mode has appeared that doesn't fit any existing class — prompt the user to add a classification to `~/.claude/copilot-review-patterns.md` and refresh the bundled `references/` copy
+
+---
+
+## Pattern-File Update Hook
+
+If a finding doesn't fit any existing class:
+1. Draft a new classification entry (description, "How to find" steps, before/after example)
+2. Prompt the user to add it to `~/.claude/copilot-review-patterns.md`
+3. After the user confirms, refresh the bundled copy:
+   ```bash
+   cp ~/.claude/copilot-review-patterns.md \
+     ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md
+   ```
+
+---
+
+## Summary Output
+
+Return to the calling session (or present to the user if run standalone):
+
+```markdown
+## Adversarial Review Summary — <N> round(s)
+
+**Pattern file**: [global | bundled] (~/.claude/copilot-review-patterns.md or references/)
+**Pattern classes swept**: <list from PATTERN_CLASSES>
+**Rounds completed**: <N> / <max>
+
+### Per-Round Breakdown
+| Round | Found | Fixed | Known Limitations | False Positives |
+|-------|-------|-------|-------------------|-----------------|
+
+### By Pattern Class
+| Class | Findings | Fixed |
+|-------|----------|-------|
+...
+
+### Known Limitations (for PR Description)
+<List of findings classified as "accepted risk" — these MUST appear in the PR description.>
+
+### Outcome
+✅ All classes clean — safe to open PR
+⚠️  N findings remain after N rounds — see Known Limitations above
+❌  Test failures after fix application — do not push until resolved
+```
+
+---
+
+## Notes
+
+- **Language-agnostic**: The source file glob covers all common languages. The pattern-class
+  heuristics are implementation-language-independent; they describe code logic patterns.
+- **Model cost**: Opus agents for the two highest-ROI classes (State Machine, Operator
+  Observability) are deliberate. Sonnet handles the rest. Budget ~5-10 agents per round.
+- **Cascade sweep is mandatory on first find**: The sweep rule is not optional — it prevents
+  the "sibling miss" failure mode where a bug class is fixed in the reported instance but its
+  identical siblings in the same diff survive.
+- **Known limitations are public commitments**: Accepted-risk findings in the PR description
+  are explicit design acknowledgments, not silent omissions. An operator reading the PR can
+  understand what was left in and why.

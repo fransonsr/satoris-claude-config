@@ -25,7 +25,7 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 1. **Identify changed files** (git diff against base branch)
 2. **Load project patterns** (from CLAUDE.md if present)
 3. **Run pattern-based checks** (fast, structural analysis)
-4. **Run Copilot simulator** (MANDATORY - semantic analysis via adversarial agent)
+4. **Adversarial pattern review** (MANDATORY — invokes /adversarial-review, parallel per-class agents)
 5. **Report findings** with severity and recommendations
 6. **Offer to fix** issues automatically
 7. **Validate fixes** (tests + optional SonarQube)
@@ -98,7 +98,7 @@ Use the Workflow tool to spawn these agents simultaneously. Pass each agent the 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
 - **Maven Plugin Checks** (skip if no `@Mojo` annotation or `maven-plugin` packaging detected) — checks in Step 4.6 below
-- **Copilot Simulator** — simulation described in Step 4.7 below
+- **Adversarial Pattern Review** — delegates to /adversarial-review (see Step 4.7); returns per-round findings for review-pause in Step 5
 
 Each agent returns findings as a list:
 ```json
@@ -116,7 +116,7 @@ The detailed check instructions for each agent follow below.
 Use the bundled pattern checker script:
 
 ```bash
-python3 ~/.claude/skills/pre-pr-audit/scripts/pattern_checker.py \
+python3 ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/pre-pr-audit/scripts/pattern_checker.py \
   --changed-files "$CHANGED_JAVA_FILES" \
   --base-branch "$BASE_BRANCH" \
   --project-patterns "$PROJECT_PATTERNS"
@@ -608,70 +608,49 @@ grep "getLog().debug(" $CHANGED_FILES > /tmp/maven_debug_calls.txt
 Found N Maven-specific issues (see above for details).
 ```
 
-## Step 4.7: Run Copilot Simulator (MANDATORY)
+## Step 4.7: Adversarial Pattern Review (MANDATORY)
 
-**This is the core value of pre-pr-audit** - predicting semantic issues that pattern checks can't catch.
+**This is the core value of pre-pr-audit** — a parallel, multi-round sweep across all known Copilot issue pattern classes, with human review-pause between rounds and git-guardrailed fixes.
 
-Spawn an adversarial agent to simulate GitHub Copilot's review:
+### Before invoking, construct an Intent Brief (~200 words)
+
+The Intent Brief is the single most important input to the adversarial review. It tells the review and fix agents what you intended — so they can distinguish "correct design decision" from "bug to fix." Compose it from this session's context:
 
 ```
-Agent(
-  description="Simulate Copilot code review",
-  prompt="You are simulating GitHub Copilot's code review to predict issues BEFORE creating the PR.
-
-Analyze these changed files and predict what Copilot will flag:
-
-{git diff output or changed file contents}
-
-**Focus on Copilot's common concerns**:
-- Scope bugs (methods processing wrong types/scopes - e.g., visitVariable processing params as fields)
-- Type safety (null handling, cross-class false positives, unvalidated casts)
-- Missing checks (deduplication, validation, edge case handling)
-- Incomplete logic (only checks one level instead of full chain, missing branches)
-- Visibility/access control (package-private across packages, protected visibility)
-- Resource cleanup (missing finally blocks, unclosed resources)
-- Inclusive/exclusive boundary mismatch: when end positions, lengths, or offsets are read from one API and passed to another positional API, are inclusive/exclusive conventions explicitly reconciled (e.g., subtract 1 when converting exclusive end to inclusive position)?
-- Measurement scope: is the code measuring the boundary of the correct construct? When a child node is matched (e.g., a method call in a fluent chain, an argument in an expression), should the boundary measurement use the enclosing statement or expression instead?
-
-**Output format** - For each HIGH confidence prediction (>80% Copilot would flag):
-
-## Issue: {brief description}
-**File**: {path}:{line}
-**Likelihood**: {0-100}%
-**Copilot would say**: \"{simulate Copilot's comment style}\"
-**Fix**: {specific suggestion}
-
-**Important**:
-- Only output HIGH confidence issues (>80% likelihood)
-- Skip theoretical edge cases unless they're likely to be flagged
-- Focus on REAL bugs Copilot catches, not academic concerns
-- Be specific about file locations and line numbers
-"
-)
+Intent Brief:
+- Problem being solved: <what this PR does and why>
+- Key design decisions: <choices made and the trade-offs accepted>
+- What was deferred: <known gaps intentionally left for a future PR>
+- Any accepted risks: <known edge cases deliberately not handled here>
 ```
 
-**Present agent findings to user**:
+### Invoke the peer skill
+
 ```
-Copilot Simulator Results:
-- Found {N} high-confidence predictions
-
-High Confidence (>80% Copilot will flag):
-1. LoggerFieldVisitor.java:63 - visitVariable processes all variable types
-2. LoggerCallVisitor.java:164 - cross-class type resolution defeats isolation
-[... list all high-confidence issues]
-
-These are semantic issues that pattern matching cannot catch.
-Should we fix all {N} issues before creating the PR?
+Skill(adversarial-review, args="--rounds 3 --base-branch <BASE_BRANCH> --intent-brief \"<intent-brief text>\"")
 ```
 
-## Step 5: Present Findings Interactively
+The `/adversarial-review` skill handles the full protocol:
+- One review agent per pattern class (parallel, dynamic enumeration from the pattern file)
+- Cascade sweep within each class (every callsite, not just changed lines)
+- Synthesizer deduplication by (file, line_range) across classes
+- Per-round review-pause (Step 5 below receives findings from each round)
+- Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/restore)
+- Up to 3 rounds, terminating when all classes are clean
 
-For each issue found, present:
+The skill returns a summary containing: per-round breakdown, findings by class, known-limitations list (accepted-risk items) for the PR description, and any termination signal (PR too large / new unclassified bug class).
+
+## Step 5: Present Findings Interactively (Per-Round Review-Pause)
+
+This step is the **review-pause** between each adversarial-review round. For findings from Step 4.7, the `/adversarial-review` skill returns them here and waits for disposition before applying any fix.
+
+For each issue found (pattern-check findings and adversarial-review findings), present:
 
 ```markdown
 ## Issue #1: Resource Leak (CRITICAL)
 
 **File**: `FullExportJob.java:159`
+**Pattern class**: Infrastructure / Environment Handling  ← for adversarial-review findings
 **Pattern**: `.broadcast()` without `.destroy()`
 
 **Code**:
@@ -689,13 +668,25 @@ For each issue found, present:
 
 Would you like me to:
 1. Fix this issue automatically
-2. Skip this issue
-3. Show me the proposed fix first
+2. Skip — this contradicts a design decision (no fix; not counted as a miss)
+3. Accept as known limitation — include in PR description
+4. Mark as false positive — skip with reason
+5. Show me the proposed fix first
 ```
 
-Wait for user input before proceeding to next issue.
+**Accepted-risk items MUST be recorded in the adversarial-review summary** and surfaced in the PR description (Step 8). Silently dropping them is not acceptable — the absence of a finding in the summary is a claim that it was addressed.
+
+Wait for user input before proceeding to the next issue.
 
 ## Step 6: Auto-Fix Issues (When Approved)
+
+**For adversarial-review findings (Step 4.7)**: fixes are applied by the `/adversarial-review`
+skill's own fix agents under strict git guardrails (PROHIBITED: git reset, rebase, commit,
+stash, restore; PERMITTED: Edit/Write, read-only bash, git diff/status). The Intent Brief is
+forwarded to every fix agent. Do not apply adversarial-review findings manually — return the
+disposition to the skill so it can apply them under the correct guardrails.
+
+**For pattern-check findings (Steps 4, 4.5, 4.6)**: apply the fix patterns below.
 
 When user approves a fix, apply the appropriate fix pattern:
 
@@ -842,6 +833,16 @@ After all checks complete:
 - CLI binding: I
 - Resolution scope: J
 - Maven API usage: K
+
+**Adversarial Pattern Review** (Step 4.7):
+- Rounds completed: R / 3
+- Findings: N found, M fixed, K accepted-risk, J false-positives
+- By class: [State Machine: N1, Operator Observability: N2, ...]
+- Clean: ✅ all classes / ⚠️ N findings remain
+
+**Known Limitations** (for PR description):
+> _(List findings classified as "accepted risk" — must appear verbatim in the PR description
+> so reviewers understand what was deliberately left in and why.)_
 
 **SonarQube**: Quality Gate {PASSED|FAILED}
 - New issues: N

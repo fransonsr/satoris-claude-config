@@ -1,0 +1,20 @@
+{
+  "name": "satori",
+  "version": "1.0.0",
+  "description": "Satori's development workflow: XP pairing, task handoff/continuation, pre-PR audit, PR-issue remediation, and multi-round adversarial pattern review.",
+  "author": {
+    "name": "Satori Franson",
+    "email": "fransonsr@familysearch.org"
+  },
+  "keywords": [
+    "development",
+    "code-quality",
+    "pr",
+    "tdd",
+    "code-review",
+    "pair-programming",
+    "handoff",
+    "orchestration",
+    "adversarial-review"
+  ]
+}

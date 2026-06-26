@@ -93,8 +93,8 @@ Format: agent role → distilled finding → impact on the plan. Example:}
 - Found: `install.sh:65` symlinks the whole repo as a marketplace. Any
   `plugins/<name>/skills/<skill-name>/SKILL.md` auto-surfaces as `name:skill-name`.
   No marketplace.json change needed for a new skill in an existing plugin.
-- Impact: Second skill lives at `plugins/handoff/skills/continue/SKILL.md` and
-  auto-discovers as `handoff:continue` at zero registration cost.
+- Impact: Second skill lives at `plugins/satori/skills/continue/SKILL.md` and
+  auto-discovers as `satori:continue` at zero registration cost.
 
 **Explore (PreCompact hook mechanics via claude-code-guide)**:
 - Asked: Can a PreCompact hook invoke a skill, or only inject text / block?
@@ -117,10 +117,10 @@ Format: agent role → distilled finding → impact on the plan. Example:}
   `~/.claude/plugins/marketplaces/satoris-claude-config`. Any
   `plugins/<x>/skills/<y>/SKILL.md` surfaces as `x:y` — no registration step.
 - **Quality-gate pattern**: lines 183–202 of
-  `plugins/handoff/skills/handoff/SKILL.md` — reuse for continue's gate.
+  `plugins/satori/skills/handoff/SKILL.md` — reuse for continue's gate.
 - **PreCompact stdin JSON shape**: `{"session_id":"...","transcript_path":"...","cwd":"...","hook_event_name":"PreCompact","trigger":"auto|manual"}`.
 - **Block response format**: `{"decision":"block","reason":"..."}` on stdout + exit 0.
-- **Memory boundary warning** (verbatim-ish reuse): `plugins/handoff/skills/handoff/SKILL.md:289–291`.
+- **Memory boundary warning** (verbatim-ish reuse): `plugins/satori/skills/handoff/SKILL.md:289–291`.
 
 *(or: none yet)*
 
@@ -196,9 +196,9 @@ progress. Example:}
 this document. Name the exact command, phase, agent prompt, or file to work on.
 Example:}
 
-Create `plugins/handoff/templates/CONTINUATION-template.md` using the section
+Create `plugins/satori/skills/handoff/templates/CONTINUATION-template.md` using the section
 structure defined in the approved plan at `~/.claude/plans/distributed-petting-mountain.md`.
-Model the style after `plugins/handoff/templates/IMPLEMENTATION-PROGRESS-template.md` —
+Model the style after `plugins/satori/skills/handoff/templates/IMPLEMENTATION-PROGRESS-template.md` —
 frontmatter + sectioned body with inline filled examples.
 
 ---
@@ -209,8 +209,8 @@ frontmatter + sectioned body with inline filled examples.
 Example:}
 
 **Files created/modified this session** (not yet committed):
-- `plugins/handoff/skills/continue/SKILL.md` — created
-- `plugins/handoff/templates/CONTINUATION-template.md` — created (in-flight)
+- `plugins/satori/skills/continue/SKILL.md` — created
+- `plugins/satori/skills/handoff/templates/CONTINUATION-template.md` — created (in-flight)
 
 **Uncommitted changes**: Run `git diff --stat` on resume to confirm current state
 

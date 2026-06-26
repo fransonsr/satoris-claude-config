@@ -18,8 +18,9 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 
 **Solution**: Adversarial review agent challenges completeness BEFORE implementing
 - **Step 2 (NEW)**: Assess if issues involve cascading edge cases
-- **Step 3.5 (NEW)**: Conditionally spawn adversarial reviewer agent
-- Agent probes: "What else can be null? empty? malformed?"
+- **Step 3.5 (NEW)**: Conditionally delegate to `/adversarial-review` (one round) — parallel
+  per-class agents sweep all 7 known Copilot issue pattern classes, cascade-sweep within each
+  class, then pause for human disposition before applying git-guardrailed fixes
 - Forces comprehensive analysis and testing upfront
 - **Result**: 5 rounds → 1-2 rounds (80% reduction)
 
@@ -34,11 +35,35 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 - Obvious bugs with clear solutions
 - Low complexity, no edge case risk
 
+## ⚠️ CRITICAL: Use Automation Scripts First
+
+**Token Efficiency**: Scripts save 80-85% tokens (25k-37.5k per 15-round PR)
+
+**ALWAYS use scripts for repetitive operations** - they are in the skill's `scripts/` directory:
+
+| Operation | Script Command | Token Savings |
+|-----------|----------------|---------------|
+| Initialize state | `./scripts/init-pr-state.sh <pr_number>` | ~5k tokens |
+| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` | ~3k tokens |
+| Resolve threads | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` | ~2k tokens |
+| Check quality gate | `./scripts/check-sonar-quality-gate.sh <pr_number>` | ~3k tokens |
+| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number>` | ~2k tokens |
+
+**🚨 Red flag**: If you're typing `gh api graphql -f query=...` or building JSON manually, you should be using a script instead.
+
+**Only use manual commands for**:
+- One-off custom operations not covered by scripts
+- Debugging script failures
+- Understanding what scripts do internally (read the code)
+
+**Why this matters**: A 15-round PR using manual commands consumes 40k-50k tokens. The same PR using scripts consumes 8k-12k tokens. Scripts make the workflow sustainable and efficient.
+
 ## Workflow Overview
 
 1. **Fetch Issues**: Read Copilot PR comments and SonarQube analysis
 2. **Assess Complexity**: Determine if adversarial review agent needed (NEW)
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
+3.5. **Sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
 4. **Plan**: Create implementation plan using TDD principles
 5. **Execute**: Fix issues using xp-pair for complex changes
 6. **Validate**: Run local sonar-scanner to catch new issues before committing
@@ -100,13 +125,18 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 
 ## Prerequisites
 
+- **CRITICAL**: All scripts must be run from within the target git repository directory (scripts use `git remote get-url origin` to determine owner/repo)
 - GitHub CLI (`gh`) authenticated
 - SonarQube token in `SONAR_TOKEN` environment variable
 - `sonar-scanner` installed locally
 - `sonar-project.properties` configured (created if missing)
-- Automation scripts in `~/.claude/skills/address-pr-issues/scripts/` (bundled with skill)
+- Automation scripts (bundled with plugin - see Script Path Setup below)
 
 **Important**: Always use `gh pr view --json <fields>` instead of `gh pr view` alone to avoid GitHub Projects (classic) deprecation warnings. The `--json` flag queries only the modern GraphQL API.
+
+## Note on Script Paths
+
+Scripts are bundled with this skill in the `scripts/` subdirectory. In the examples below, `./scripts/` refers to scripts relative to this skill's installation directory. Claude Code agents will automatically resolve these paths when executing the skill.
 
 ## Step 1: Gather PR Information
 
@@ -122,13 +152,38 @@ gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url
 
 ### Initialize State Management (AUTOMATED)
 
-**Use script** (recommended - saves tokens):
+⚠️ **USE SCRIPT** (saves ~5k tokens):
 ```bash
-SKILL_DIR="$HOME/.claude/skills/address-pr-issues"
-$SKILL_DIR/scripts/init-pr-state.sh $PR_NUMBER
+./scripts/init-pr-state.sh $PR_NUMBER
 ```
 
-**Manual approach** (for debugging or customization):
+> **Pagination note**: The init script fetches at most 100 threads. If the PR has
+> approached or exceeded 100 review comments, there may be additional threads on page 2
+> that the script does not see — it will falsely report "0 unresolved" while threads
+> remain open. The script will warn you if `hasNextPage` is true. If you see that warning,
+> fetch page 2 manually:
+>
+> ```bash
+> # Step 1: Check whether page 2 exists
+> gh api graphql -f query='
+> query($owner:String!, $repo:String!, $pr:Int!) {
+>   repository(owner:$owner, name:$repo) {
+>     pullRequest(number:$pr) {
+>       reviewThreads(first:100) {
+>         pageInfo { hasNextPage endCursor }
+>       }
+>     }
+>   }
+> }' -F owner=OWNER -F repo=REPO -F pr=NUMBER \
+>   | jq '.data.repository.pullRequest.reviewThreads.pageInfo'
+> ```
+>
+> If `hasNextPage` is true, re-run the unresolved-thread query with
+> `-F cursor='<endCursor>'` and `reviewThreads(first:100, after:$cursor)` to fetch the
+> next page, then merge the results into `threads.json`.
+
+<details>
+<summary>Manual approach (for reference only - don't use unless script fails)</summary>
 ```bash
 # Setup workspace directory for this PR
 WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
@@ -150,7 +205,7 @@ echo $ROUND > $ROUND_FILE
 
 # Cache thread metadata for reuse (uses lib/github-api.sh functions)
 THREADS_FILE="$WORKSPACE_DIR/threads.json"
-source "$SKILL_DIR/scripts/lib/github-api.sh"
+source "./scripts/lib/github-api.sh"
 fetch_pr_threads "$PR_NUMBER" "$THREADS_FILE"
 
 COPILOT_COUNT=$(jq -s 'map(select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]")) | length' "$THREADS_FILE")
@@ -193,6 +248,8 @@ cat > "$CHECKLIST_FILE" <<EOF
 EOF
 ```
 
+</details>
+
 **State Files Created**:
 - `$WORKSPACE_DIR/round.txt` - Current round number (auto-incremented)
 - `$WORKSPACE_DIR/threads.json` - Cached thread metadata (avoids re-fetching)
@@ -208,13 +265,14 @@ EOF
 
 ### Query Cached Threads (AUTOMATED)
 
-**Use script** (recommended):
+⚠️ **USE SCRIPT** (saves ~3k tokens):
 ```bash
 # Display unresolved threads with summary
-$SKILL_DIR/scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
+./scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
 ```
 
-**Manual jq queries** (for custom filtering):
+<details>
+<summary>Manual jq queries (for reference only - use for custom filtering if needed)</summary>
 ```bash
 # Get unresolved Copilot threads
 jq -r 'select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]") | select(.isResolved == false)' "$THREADS_FILE" | jq -s .
@@ -226,6 +284,8 @@ UNRESOLVED=$(jq 'select(.isResolved == false)' "$THREADS_FILE" | jq -s length)
 
 echo "Thread Status: $RESOLVED/$TOTAL resolved, $UNRESOLVED unresolved"
 ```
+
+</details>
 
 ## Step 2: Assess Complexity & Edge Case Risk (NEW)
 
@@ -265,30 +325,104 @@ Before implementing fixes, ask:
 4. **What combinations exist?** (null + empty, valid + invalid, etc.)
 5. **Are there similar patterns elsewhere?** (same bug in other methods?)
 
-### Decision: Use Adversarial Agent?
+### Parallel Issue Triage (Workflow)
 
-**YES - Spawn reviewer agent**:
-```
-Issues involve: Privacy filtering + null checks + conservative cleanup
-→ High risk of cascading edge cases
-→ Spawn adversarial reviewer to challenge completeness BEFORE implementing
+After fetching threads, triage all issues in parallel — one agent per issue. This offloads assessment from the implementation session's context; only the structured results return.
+
+Use the Workflow tool, spawning one agent per issue. Each agent receives the thread body, file path, line number, and the relevant code section (read from disk).
+
+Each agent returns:
+```json
+{
+  "issue_id": "thread_id",
+  "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+  "complexity_indicators": ["null handling", "collections", "type resolution"],
+  "proposed_fix": "brief description of the fix",
+  "cascading_risk": true,
+  "notes": "any context about related bugs or edge cases"
+}
 ```
 
-**NO - Proceed directly**:
+Use the merged triage results to drive Step 3 categorization and the Step 3.5 adversarial review decision.
+
+### Step 3.5: Adversarial Review Gate (MANDATORY CHECK)
+
+**⚠️ STOP: Do not skip this step without completing the checklist.**
+
+Before deciding whether to use adversarial review, answer these questions:
+
+#### Complexity Indicators (check all that apply)
+
+**Code Characteristics:**
+- [ ] Multiple execution paths (if/else, loops, recursion)
+- [ ] String manipulation or parsing
+- [ ] Collections (iteration, filtering, mapping, grouping)
+- [ ] Inheritance or type resolution
+- [ ] Null handling or defensive checks
+- [ ] Cross-class or cross-module interactions
+- [ ] Error handling or exception propagation
+
+**Edge Case Enumeration:**
+Can you enumerate ALL edge cases right now? (Requires at least 3 specific cases)
+- Happy path: _________________
+- Edge case 1: _________________
+- Edge case 2: _________________
+- Edge case 3: _________________
+
+**Confidence Check:**
+Would you bet that Copilot review finds zero logic issues (not style) in your implementation?
+- [ ] Yes - high confidence
+- [ ] No - uncertain
+
+#### Decision Rules
+
+**MUST spawn adversarial reviewer if:**
+- 2 or more complexity indicators checked
+- Cannot enumerate at least 3 specific edge cases
+- Not confident Copilot finds zero issues
+
+**MAY skip adversarial review ONLY if ALL of these are true:**
+- 0-1 complexity indicators
+- Can enumerate 3+ edge cases
+- Confident in implementation
+- Changes are one of:
+  - Pure style/formatting (whitespace, imports, comments)
+  - Simple constants or configuration
+  - Documentation-only
+  - Renaming via IDE refactoring
+
+#### When Skipping (Rare)
+
+If you decide to skip, document your reasoning:
+
 ```
-Issues are: Simple style fixes, obvious bugs with clear solutions
-→ Low complexity, no edge case risk
-→ Fix directly without agent overhead
+Skipping adversarial review because:
+- Complexity indicators: [X checked]
+- Edge cases enumerated: [list]
+- Change type: [specific reason]
 ```
+
+**Show this reasoning to the user** so they can override if needed.
+
+#### Things That SEEM Simple But AREN'T
+
+These patterns consistently hide edge cases - always use adversarial review:
+- Prefix/suffix stripping (What about: nested? qualified? super.?)
+- Name matching (What about: collisions? shadowing? packages? imports?)
+- Type resolution (What about: wildcards? fully-qualified? ambiguous?)
+- Null checks (What about: empty? combinations? parent fields?)
+- String splitting (What about: delimiters in data? edge counts? escaping?)
+- HashMap/Set operations (What about: iteration order? duplicates? collisions?)
 
 ### Fetch SonarQube Issues (AUTOMATED)
 
-**Use script** (recommended - checks quality gate + fetches blocking issues):
+⚠️ **USE SCRIPT** (saves ~3k tokens - checks quality gate + fetches blocking issues):
 ```bash
-$SKILL_DIR/scripts/check-sonar-quality-gate.sh $PR_NUMBER
+./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
 
-**Manual API calls** (for custom queries):
+<details>
+<summary>Manual API calls (for reference only - use for custom queries if needed)</summary>
 ```bash
 # Ensure sonar-project.properties exists
 if [ ! -f "sonar-project.properties" ]; then
@@ -297,7 +431,7 @@ if [ ! -f "sonar-project.properties" ]; then
 fi
 
 # Use library function (DRY)
-source "$SKILL_DIR/scripts/lib/sonar-api.sh"
+source "./scripts/lib/sonar-api.sh"
 get_quality_gate_status "$PR_NUMBER" > quality-gate.json
 format_quality_gate_status quality-gate.json
 
@@ -314,6 +448,8 @@ curl -s -u "$SONAR_TOKEN:" \
 - `get_quality_gate_status` - Quality gate for PR
 - `get_pr_issues` - Issues by severity
 - `wait_for_analysis` - Poll for analysis completion
+
+</details>
 
 ## Step 3: Categorize and Prioritize Issues
 
@@ -364,75 +500,42 @@ I found the following issues that need your input:
 Should I address these? (yes/no/selective)
 ```
 
-## Step 3.5: Spawn Adversarial Reviewer (Conditional)
+## Step 3.5: Adversarial Review (Delegated to /adversarial-review)
 
-**If Step 2 assessment indicates high complexity**, spawn reviewer agent BEFORE implementing fixes.
+**If the Step 3.5 gate above indicates adversarial review is warranted**, delegate to the
+`/adversarial-review` skill BEFORE implementing fixes. The gate decides *whether* to run;
+this step describes *how*.
 
-### Adversarial Review Agent Pattern
+### Construct the Intent Brief (~200 words)
 
-**Agent Role**: Challenge completeness, probe edge cases, demand comprehensive tests
+Before invoking, compose the Intent Brief from the PR context — what the PR does, the key
+design decisions already made, what was deferred, and any accepted risks. This is the most
+important input: without it, fix agents cannot distinguish "intentional design choice" from
+"bug to fix."
 
-**Agent Prompt Template**:
+### Invoke with rounds=1
+
+This step runs on the diff of an already-open PR's fix round — a single sweep is the right
+cost/coverage trade-off:
+
 ```
-You are an adversarial code reviewer. Your job is to challenge the proposed fixes for completeness BEFORE implementation.
-
-Context: We're fixing [describe issues - e.g., "null handling bugs in privacy-critical persona filtering"]
-
-Code Section: [file paths and line numbers]
-
-Proposed Fixes: [brief summary of intended changes]
-
-Your Task:
-1. **Challenge Missing Edge Cases**
-   - What can be null that isn't being checked?
-   - What can be empty that isn't being validated?
-   - What combinations are missing? (null + empty, valid + invalid)
-   
-2. **Probe Related Bugs**
-   - If fixing null persona refs, what about null resource URIs?
-   - If checking persona IDs, what about relationship IDs?
-   - Are similar patterns buggy elsewhere in this file?
-
-3. **Demand Comprehensive Tests**
-   - List ALL scenarios that must be tested (not just reported issues)
-   - Include: null, empty, malformed, duplicates, combinations
-   - Require: happy path + edge cases + error paths
-
-4. **Question Design**
-   - Is this a proper fix or a patch?
-   - Should logic be extracted/simplified?
-   - Is conservative approach applied consistently?
-
-Output Format:
-## Edge Cases to Test
-- [scenario 1]
-- [scenario 2]
-...
-
-## Related Bugs to Check
-- [potential bug 1]
-- [potential bug 2]
-...
-
-## Design Questions
-- [question 1]
-- [question 2]
-...
-
-Be thorough and skeptical. Force comprehensive analysis BEFORE coding.
+Skill(adversarial-review, args="--rounds 1 --base-branch <base-branch> --intent-brief \"<intent-brief text>\"")
 ```
 
-### When to Skip Adversarial Review
+The `/adversarial-review` skill runs one round of parallel per-class agents, returns findings
+for review-pause (Step 3's categorize-and-prioritize loop serves as the disposition point),
+applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, commit, stash,
+restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
 
-**Skip agent if**:
-- Simple style fixes (comments, formatting, imports)
-- Obvious bugs with clear, isolated fixes
-- No edge case risk (CRUD operations, straightforward logic)
-- Time-sensitive hotfix (fix now, comprehensive tests later)
+Use the returned findings to drive the implementation step (Step 4) and the
+commit-and-push step (Step 7).
 
-### Example: Adversarial Review in Action
+### When to Skip (Rare — the gate decides)
 
-**Without Agent** (5 rounds):
+The Step 3.5 gate above lists the conditions. When skipping, document the reasoning (gate
+checklist result) so the user can override. The examples below show the value of the agent:
+
+**Without adversarial review** (5 rounds):
 ```
 Round 1: Fix substring matching bug
 Round 2: Fix null persona refs (Copilot found)
@@ -441,22 +544,139 @@ Round 4: Fix size mismatch logic (Copilot found)
 Round 5: Fix null resource URIs (Copilot found)
 ```
 
-**With Agent** (1 round):
-```
-Agent: "You're fixing substring matching - what else can go wrong?
-        - Null persona refs? Add test.
-        - Null resource URIs? Add test.
-        - Empty persona IDs? Add test.
-        - Duplicate IDs in Set? Add test.
-        
-        Show me size mismatch logic - can it handle duplicates?
-        No? Fix that too."
+**With adversarial review** (1 round):
+- Parallel agents sweep all 7 pattern classes in one shot
+- Cascade sweep finds null persona refs AND resource URIs AND empty IDs in the first pass
+- Approved fixes applied in one commit
+- Copilot finds only style issues in the next round
 
-[Implement ALL fixes + tests in one commit]
-→ Copilot finds only style issues in next round
+**Result**: ~80% reduction in rounds, better code quality, faster delivery
+
+## Step 3.7: Similar-Pattern Sweep (Mandatory)
+
+**Always run this step** — even if the sweep finds nothing, the cost is a grep; the payoff when it hits is eliminating an entire issue class in one commit instead of being surprised next round.
+
+### What to Do
+
+For each confirmed issue class from Step 3:
+
+1. **Abstract the pattern** — identify the class of issue, not just the literal string.
+   - Too literal: `"except json.JSONDecodeError"`
+   - Right level: `"single-exception catch missing OSError"`
+
+2. **Run a two-tier grep**:
+
+   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only.
+   ```bash
+   git diff --name-only | xargs grep -n "<pattern>"
+   ```
+
+   **Tier 3b — File-scoped grep** (structural absence): when the issue involves a property
+   that *all members of a set* should share (e.g., all `run_step_*` functions, all
+   `cmd_*` functions, all JSON-read sites), grep the *full changed file*, not just diff
+   lines. The sibling that's missing the property is often not in the diff.
+   ```bash
+   grep -n "<sibling-class-pattern>" <changed-file>
+   # Then check each hit for the missing property
+   ```
+
+3. **Evaluate hits** — for each result not already in the fix list:
+   - Is this the same anti-pattern, or superficially similar?
+   - Would fixing it belong in this commit's logical scope?
+   - If yes: add to fix list at the same severity as the original finding.
+
+4. **On "nothing found" for structural issues** — a zero result on a diff-scoped grep
+   does not mean the issue class is absent from the file. For absence-of-pattern issues
+   (missing preflight checks, fallback paths, guard conditions), enumerate the set:
+   "What other functions/call-sites of this class exist in the file?" Check each for the
+   property. Report any gaps at the same severity as the original finding.
+
+5. **Merge into the working fix list** — de-duplicate and carry forward into Step 3.8's decision summary.
+
+### Output for Step 3.8
+
+For each issue class swept, report one of:
+- **Hits found**: "Found the same pattern in N additional location(s) — fixing all of them eliminates this issue class rather than surfacing it again next round"
+- **Nothing found (textual)**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Gap found (structural)**: "Diff-scoped grep found nothing, but file-scoped check found N sibling(s) also missing this property — adding to fix list"
+
+### Examples
+
+```
+Issue flagged: fleet_state.py _load_fleet_state catches JSONDecodeError but not OSError
+
+Sweep pattern: single-exception catch missing companion error type
+Tier 3a grep: git diff --name-only | xargs grep -n "except json\."
+
+  fleet_state.py:88 — already in fix list (the original finding)
+
+Result: No additional hits — only one catch site in the changed files.
+
+---
+
+Issue flagged: fleet_runner.py ignores return code from cmd_set_merged
+
+Sweep pattern: return code from state-mutation command calls not captured or checked
+Tier 3a grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
+
+  fleet_runner.py:719 — already in fix list
+  fleet_runner.py:831 — NOT in fix list: rc = cmd_advance(...) assigned but never checked
+
+Adding fleet_runner.py:831 to fix list (same severity: medium).
+→ Fixing both sites in one commit; issue class fully addressed.
+
+---
+
+Issue flagged: run_step_analyze missing shutil.which("mvn") preflight
+
+Sweep pattern: run_step_* functions that call mvn lack preflight check
+Tier 3a grep: git diff --name-only | xargs grep -n "shutil.which"
+  → Nothing found in diff
+
+Tier 3b structural check: grep full file for all run_step_* functions
+  grep -n "^def run_step_" fleet_runner.py
+  → run_step_discover (no mvn — no gap), run_step_analyze (no preflight ← GAP),
+    run_step_tier1 (has preflight), run_step_verify (has preflight)
+
+Adding run_step_analyze preflight to fix list (same severity: high).
+→ Issue class fully addressed in one commit.
 ```
 
-**Result**: 80% reduction in rounds, better code quality, faster delivery
+### Key Principles
+
+- **Sweep is mandatory, not conditional.** Single-file typo fixes are a no-op — fast and safe to run anyway.
+- **Scope is the PR's changed files**, not the full repo. False positives from unrelated code are noise.
+- **When the issue is structural** (a property that all members of a function/call-site class should share), extend the grep to the *full changed file*, not just the diff. The sibling that's missing the property is likely not in the diff.
+- **"Nothing found" on a structural issue triggers a set-difference check**, not a clean pass. Enumerate the siblings; the absence is the finding.
+- **If the sweep surfaces a new instance that, when fixed, would introduce a Sonar finding**, that Sonar finding belongs in this commit too. The sweep never creates new rounds — it widens the current one.
+
+## Step 3.8: Show Decision Summary to User
+
+Before implementing, present your process decisions to the user:
+
+```
+📋 **Implementation Approach**
+
+**Complexity Assessment:**
+- Risk factors: [count] 
+  - [list checked items]
+- Edge cases identified: [count]
+  - [list enumerated cases]
+
+**Process Decisions:**
+- Test approach: [Test-First | Test-After]
+  - Reason: [why this choice]
+- Adversarial review: [Yes | Skipped]
+  - Reason: [why this choice]
+- XP Pair: [Yes | No]
+  - Reason: [why this choice]
+
+**If skipping recommended process steps, I need your approval.**
+
+Proceed? (yes/no/use more process)
+```
+
+This makes decisions visible and gives user a chance to correct before work starts.
 
 ## Step 4: Create Implementation Plan
 
@@ -760,42 +980,43 @@ echo ""
 
 ### Resolve Fixed Issues (AUTOMATED)
 
-**Use bulk script** (recommended - resolve multiple threads at once):
+⚠️ **USE BULK SCRIPT** (saves ~2k tokens - resolve multiple threads at once):
 ```bash
 # Resolve all threads in a specific file
-$SKILL_DIR/scripts/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --filter-path 'FullExportJobIntegrationTest.java' \
   --message 'Fixed integration test setup'
 
 # Resolve specific threads
-$SKILL_DIR/scripts/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --threads 'THREAD_ID_1,THREAD_ID_2,THREAD_ID_3' \
   --message 'Fixed null handling'
 
 # Resolve all unresolved threads (use carefully!)
-$SKILL_DIR/scripts/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --all-unresolved \
   --message 'Addressed all review feedback'
 ```
 
-**Use single-thread script** (when different messages needed):
+⚠️ **USE SINGLE-THREAD SCRIPT** (when different messages needed for each thread):
 ```bash
 # Resolve thread with optional message (tries threaded reply, falls back to direct resolution)
-$SKILL_DIR/scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
 
 # Multiple threads with different messages (loop)
 for thread_id in "$THREAD_ID_1" "$THREAD_ID_2" "$THREAD_ID_3"; do
-  $SKILL_DIR/scripts/resolve-thread.sh $PR_NUMBER "$thread_id" "Fixed specific issue"
+  ./scripts/resolve-thread.sh $PR_NUMBER "$thread_id" "Fixed specific issue"
 done
 ```
 
-**Manual approach** (for customization):
+<details>
+<summary>Manual approach (for reference only - use when scripts don't meet your needs)</summary>
 
 #### Option A: Threaded Reply + Resolve (Preferred)
 
 ```bash
 # Use library function (handles capability detection)
-source "$SKILL_DIR/scripts/lib/github-api.sh"
+source "./scripts/lib/github-api.sh"
 
 if try_threaded_reply "$COMMENT_ID" "✅ Fixed: Added null check"; then
   echo "Reply added"
@@ -828,6 +1049,8 @@ gh api graphql -f query='
 - ❌ Top-level comments alone are NOT sufficient - threads must be resolved
 - ✅ Script automatically detects threaded reply capability and adapts
 - ✅ Resolve threads even if you can't add threaded replies
+
+</details>
 
 ### Document Won't-Fix Decisions
 
@@ -921,6 +1144,7 @@ gh api graphql -f query='
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         reviewThreads(first: 100) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             id
             isResolved
@@ -1013,16 +1237,17 @@ fi
 
 ### Commit with Structured Message (AUTOMATED)
 
-**Use script** (recommended - auto-generates message with round tracking):
+⚠️ **USE SCRIPT** (saves ~2k tokens - auto-generates message with round tracking):
 ```bash
 # Stage changes first
 git add <files>
 
 # Generate commit and update fix tracking
-$SKILL_DIR/scripts/commit-pr-fixes.sh $PR_NUMBER
+./scripts/commit-pr-fixes.sh $PR_NUMBER
 ```
 
-**Manual approach** (for customization):
+<details>
+<summary>Manual approach (for reference only - use for heavy customization)</summary>
 ```bash
 # Collect resolved thread IDs from cache
 RESOLVED_THREADS=$(jq -r 'select(.isResolved == true) | .threadId' "$THREADS_FILE" | tr '\n' ', ' | sed 's/,$//')
@@ -1066,6 +1291,8 @@ git push origin $(git branch --show-current)
 - **Test Coverage**: Auto-counted from test output
 - **Resolves**: Auto-generated from resolved threads in cache
 
+</details>
+
 ## Step 8: Monitor for New Copilot Comments
 
 **IMPORTANT**: After pushing, Copilot may analyze the new commit and add MORE comments.
@@ -1094,6 +1321,7 @@ gh api graphql -f query='
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $pr) {
         reviewThreads(first: 100) {
+          pageInfo { hasNextPage endCursor }
           nodes {
             id
             isResolved
@@ -1329,27 +1557,7 @@ git push
 
 ### Anticipate Further Issues
 
-When making changes, think ahead:
-- Will this introduce new SonarQube warnings?
-- Does Copilot flag similar patterns elsewhere?
-- Should I apply this fix consistently across the file?
-
-**Run local scans** to catch issues before CI/CD:
-```bash
-# After each significant change
-sonar-scanner -Dsonar.analysis.mode=preview
-
-# Review console output for new issues
-```
-
-### Batch Related Issues
-
-Group similar issues in one commit:
-- All null checks together
-- All resource leaks together
-- All style fixes together
-
-**Rationale**: Easier to review, clearer git history
+See **Step 3.7 — Similar-Pattern Sweep**: mandatory grep of all PR-touched files for each confirmed issue class before any fix is implemented. This handles the "batch related issues" concern automatically.
 
 ### Lessons from Real-World Usage
 

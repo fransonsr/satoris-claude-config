@@ -306,8 +306,8 @@ git remote -v  # Should show origin
 **Permission denied executing script**
 ```bash
 # Make scripts executable
-chmod +x ~/.claude/skills/address-pr-issues/scripts/*.sh
-chmod +x ~/.claude/skills/address-pr-issues/scripts/lib/*.sh
+chmod +x ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/address-pr-issues/scripts/*.sh
+chmod +x ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/address-pr-issues/scripts/lib/*.sh
 ```
 
 ## Technical Notes

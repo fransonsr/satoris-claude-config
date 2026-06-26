@@ -111,7 +111,7 @@ fi
 Use the bundled pattern checker script:
 
 ```bash
-python3 ~/.claude/skills/pre-pr-audit/scripts/pattern_checker.py \
+python3 ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/pre-pr-audit/scripts/pattern_checker.py \
   --changed-files "$CHANGED_JAVA_FILES" \
   --base-branch "$BASE_BRANCH" \
   --project-patterns "$PROJECT_PATTERNS"

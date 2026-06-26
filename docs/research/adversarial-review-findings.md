@@ -5,9 +5,11 @@
 fleet runner). The reviewer swept against the 7 pattern classes in
 `~/.claude/copilot-review-patterns.md`. Found 16 real bugs, all fixed, 135 tests passing.
 
+**Status**: Implemented as the `satori/adversarial-review` skill (v1.0.0, 2026-06-26).
+The architecture recommendations in this document are incorporated into the skill design.
+
 This document captures what worked, what failed, how to improve it, and what a mature skill
-should look like. It is the basis for a future `adversarial-review` skill — not the finished
-article.
+should look like. It is the research record behind the `adversarial-review` skill.
 
 ---
 

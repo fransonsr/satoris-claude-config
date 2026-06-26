@@ -5,12 +5,14 @@ Private repository for Claude Code settings, skills, and workflows.
 ## Contents
 
 - **CLAUDE.md** - Global coding standards and development principles
-- **skills/** - Custom Claude Code skills
-  - `address-pr-issues/` - PR workflow automation (GitHub Copilot + SonarQube)
-  - `pre-pr-audit/` - Proactive code quality checks
-  - `xp-pair/` - XP pair programming workflow
-  - `handoff/` - Task handoff documentation
-- **keybindings.json** - Custom keyboard shortcuts (if any)
+- **plugins/satori/** - The `satori` plugin — all development workflow skills as peers:
+  - `xp-pair` — XP pair programming (navigator + driver workflow)
+  - `handoff` — Create comprehensive handoff documents for task continuity
+  - `continue` — Resume from a handoff document in a fresh session
+  - `pre-pr-audit` — Proactive code quality audit before creating a PR
+  - `address-pr-issues` — Systematically address GitHub Copilot and SonarQube PR issues
+  - `adversarial-review` — Multi-round parallel adversarial pattern review (invoked by pre-pr-audit and address-pr-issues, or standalone)
+- **keybindings.json** - Custom keyboard shortcuts
 
 ## Installation
 
@@ -39,7 +41,7 @@ git pull
 
 ```bash
 cd ~/github/satoris-claude-config
-git add skills/address-pr-issues/
+git add plugins/satori/skills/address-pr-issues/
 git commit -m "feat(address-pr-issues): Add bulk thread resolution"
 git push
 ```
@@ -57,28 +59,56 @@ git push
 
 ```
 satoris-claude-config/
-├── README.md                     # This file
-├── .gitignore                    # Excludes sensitive data
-├── install.sh                    # Symlink installation script
-├── CLAUDE.md                     # Global user instructions
-└── skills/
-    ├── address-pr-issues/        # PR workflow automation
-    │   ├── SKILL.md
-    │   ├── CHANGELOG.md
-    │   ├── README.md
-    │   └── scripts/
-    │       ├── lib/
-    │       │   ├── github-api.sh
-    │       │   └── sonar-api.sh
-    │       ├── init-pr-state.sh
-    │       ├── fetch-pr-threads.sh
-    │       ├── check-sonar-quality-gate.sh
-    │       ├── resolve-thread.sh
-    │       ├── resolve-threads-bulk.sh
-    │       └── commit-pr-fixes.sh
-    ├── pre-pr-audit/
-    ├── xp-pair/
-    └── handoff/
+├── README.md                        # This file
+├── .gitignore                       # Excludes sensitive data
+├── install.sh                       # Symlink installation script
+├── CLAUDE.md                        # Global user instructions
+└── plugins/
+    └── satori/
+        ├── .claude-plugin/
+        │   └── plugin.json
+        └── skills/
+            ├── xp-pair/             # XP pair programming
+            │   ├── SKILL.md
+            │   ├── README.md
+            │   ├── VALUE_PROPOSITION
+            │   └── examples/
+            ├── handoff/             # Task handoff documents
+            │   ├── SKILL.md
+            │   ├── README.md
+            │   ├── VALUE_PROPOSITION
+            │   ├── CHANGELOG.md
+            │   └── templates/
+            ├── continue/            # Resume from handoff
+            │   └── SKILL.md
+            ├── pre-pr-audit/        # Pre-PR code quality audit
+            │   ├── SKILL.md
+            │   ├── README.md
+            │   ├── VALUE_PROPOSITION
+            │   ├── evals/
+            │   └── scripts/
+            │       └── pattern_checker.py
+            ├── address-pr-issues/   # PR issue remediation
+            │   ├── SKILL.md
+            │   ├── README.md
+            │   ├── VALUE_PROPOSITION
+            │   ├── CHANGELOG.md
+            │   ├── QUICK_START.md
+            │   ├── examples/
+            │   └── scripts/
+            │       ├── lib/
+            │       │   ├── github-api.sh
+            │       │   └── sonar-api.sh
+            │       ├── init-pr-state.sh
+            │       ├── fetch-pr-threads.sh
+            │       ├── check-sonar-quality-gate.sh
+            │       ├── resolve-thread.sh
+            │       ├── resolve-threads-bulk.sh
+            │       └── commit-pr-fixes.sh
+            └── adversarial-review/  # Multi-round adversarial pattern review
+                ├── SKILL.md
+                └── references/
+                    └── copilot-review-patterns.md
 ```
 
 ## What's NOT Included
@@ -116,7 +146,7 @@ This repository IS your backup. If you lose your laptop:
 See git log for full history of skill evolution:
 
 ```bash
-git log --oneline skills/address-pr-issues/
+git log --oneline plugins/satori/skills/address-pr-issues/
 ```
 
 ## License
@@ -125,5 +155,5 @@ Private repository - not for public distribution.
 
 ---
 
-**Last Updated**: 2026-04-27  
+**Last Updated**: 2026-06-26
 **Maintained By**: Satori (fransonsr)

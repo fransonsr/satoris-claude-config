@@ -9,39 +9,12 @@
   },
   "plugins": [
     {
-      "name": "xp-pair",
-      "description": "XP pair programming with navigator and driver",
+      "name": "satori",
+      "description": "Satori's full development workflow as peer skills: xp-pair, handoff, continue, pre-pr-audit, address-pr-issues, adversarial-review",
       "author": {
         "name": "Satori Franson"
       },
-      "source": "./plugins/xp-pair",
-      "category": "development"
-    },
-    {
-      "name": "handoff",
-      "description": "Create comprehensive handoff documents for tasks",
-      "author": {
-        "name": "Satori Franson"
-      },
-      "source": "./plugins/handoff",
-      "category": "productivity"
-    },
-    {
-      "name": "pre-pr-audit",
-      "description": "Proactive code quality audit before creating pull requests",
-      "author": {
-        "name": "Satori Franson"
-      },
-      "source": "./plugins/pre-pr-audit",
-      "category": "development"
-    },
-    {
-      "name": "address-pr-issues",
-      "description": "Systematically address GitHub Copilot and SonarQube PR issues",
-      "author": {
-        "name": "Satori Franson"
-      },
-      "source": "./plugins/address-pr-issues",
+      "source": "./plugins/satori",
       "category": "development"
     }
   ]
