@@ -335,6 +335,86 @@ def _repo_slug(repo_name):
 
 ---
 
+### 8. Semantic Correctness / Logical Completeness
+
+**Copilot count**: ~4 threads
+
+**Description**: Code or documentation that claims to handle a condition but covers only a
+subset of the intended domain, or where two parts of the same codebase make assumptions about
+each other that are internally inconsistent. No mechanical heuristic enumerates these — the
+reviewer reads with fresh eyes and asks "does this actually do what it says?"
+
+Common forms:
+- A validator accepts a broader input set than the validation is meant to enforce (e.g., a
+  regex using `.+` standing in for a specific structured format like `PROJECT-NNN`)
+- A conditional fall-through claims to represent "safe" or "OK" but silently omits a case
+  that should be blocked (e.g., detecting "ahead" but not "diverged")
+- Two parts of the same codebase make different assumptions about the same value (e.g., one
+  writes it in mixed case, the other validates it as uppercase-only)
+- Two sections of a document (SKILL.md, a spec, a README) give contradictory instructions
+  about the same thing — Documentation Accuracy covers doc/code drift; this class covers
+  doc/doc inconsistency within a single file
+
+**How to find** (judgment-based, not heuristic-based):
+1. For every validation gate, guard condition, or regex: state in one sentence what the
+   *intended* input domain is. Then read the actual code. Does it accept exactly that domain,
+   or something broader?
+2. For every conditional fall-through path (code that reaches "success" without any condition
+   matching): ask "is this a known-safe default, or an unexamined case?"
+3. For every value that flows through more than one system boundary (e.g., written by one
+   function, validated by another): ask "do both sides agree on the format/casing/encoding?"
+4. For every multi-section document: read two sections that describe related behavior and ask
+   "do they agree? Could a reader follow both and end up with contradictory actions?"
+
+**Example — regex too permissive** (Round 10, fleet_runner.py):
+```python
+# BEFORE (bug): .+ accepts any non-empty prefix, not just Jira keys like LOGGING-42
+slug_in_branch = bool(
+    re.fullmatch(rf"logging-migration/{_slug}-{_date}", branch_name)
+    or re.fullmatch(rf"logging-migration/.+-{_slug}-{_date}", branch_name)
+)
+
+# AFTER (fix): constrain prefix to actual Jira key format
+_jira_key = r"[A-Z][A-Z0-9]*-\d+"
+slug_in_branch = bool(
+    re.fullmatch(rf"logging-migration/{_slug}-{_date}", branch_name)
+    or re.fullmatch(rf"logging-migration/{_jira_key}-{_slug}-{_date}", branch_name)
+)
+```
+
+**Example — silent fall-through on unsafe state** (Round 10, fleet_runner.py):
+```python
+# BEFORE (bug): ahead_count > 0 falls through as "Synced OK" — doesn't detect
+# the case where origin also has commits not in local (diverged, not just ahead)
+elif ahead_count == "0":
+    # ... fast-forward ...
+# else: ahead_count > 0 — fall through to Synced OK
+
+# AFTER (fix): explicitly detect divergence before declaring Synced OK
+else:
+    behind = subprocess.run(["git", "rev-list", "--count", f"HEAD..{remote_ref}"], ...)
+    if behind.returncode == 0 and int(behind.stdout.strip()) > 0:
+        reason = f"repo is diverged from {remote_ref} ..."
+        _log(f"  BLOCKED: {reason}")
+        # ... block ...
+    # else: ahead only — no divergence, Synced OK
+```
+
+**Example — writer/validator case mismatch** (Round 11, fleet_runner.py):
+```python
+# BEFORE (bug): R10 added [A-Z][A-Z0-9]*-\d+ validator, but _branch_name()
+# interpolated jira_ticket raw — lowercase input → branch the validator rejects
+def _branch_name(repo_name, jira_ticket=None, today=None):
+    if jira_ticket:
+        return f"logging-migration/{jira_ticket}-{slug}-{today}"
+
+# AFTER (fix): normalize at the write site so validator and writer agree
+    if jira_ticket:
+        return f"logging-migration/{jira_ticket.strip().upper()}-{slug}-{today}"
+```
+
+---
+
 ### 7. Test Integrity
 **Copilot count**: ~2 threads
 
@@ -392,15 +472,21 @@ opportunity to improve it.
 - Extend existing: same detection strategy applies, the new issue is just another instance
   of the pattern; add it as an additional example if it clarifies a nuance
 
-**Copilot count summary** (last updated: 2026-06-26, through PR #101 Round 6):
+**Copilot count summary** (last updated: 2026-06-26, through PR #101 Round 11):
+
+Rounds 7–11 additions: R7 (+1 State Machine, +1 Doc Accuracy), R8 (+1 Op Observability, +1 Doc
+Accuracy), R9 (+1 Infrastructure, +1 Op Observability, +1 Defensive Guards, +1 Doc Accuracy),
+Copilot Autofix (+1 Doc Accuracy), R10 (+2 Semantic Correctness), R11 (+1 Op Observability,
++2 Semantic Correctness, +1 Doc Accuracy).
 
 | Classification | Count |
 |---|---|
-| State Machine / Control Flow Logic | ~14 |
-| Operator Observability / Error Message Accuracy | ~12 |
-| Defensive Guards (null / type / encoding) | ~7 |
-| Documentation Accuracy | ~8 |
-| Infrastructure / Environment Handling | ~4 |
+| State Machine / Control Flow Logic | ~15 |
+| Operator Observability / Error Message Accuracy | ~15 |
+| Documentation Accuracy | ~13 |
+| Defensive Guards (null / type / encoding) | ~8 |
+| Infrastructure / Environment Handling | ~5 |
+| Semantic Correctness / Logical Completeness | ~4 |
 | Provenance / Identity Discrimination | ~3 |
 | Test Integrity | ~2 |
-| **Total** | **~50** |
+| **Total** | **~65** |

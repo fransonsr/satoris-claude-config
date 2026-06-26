@@ -359,24 +359,27 @@ mvn clean compile test -pl <module>
 
 ### PR Review Issue Patterns
 
-`~/.claude/copilot-review-patterns.md` — Seven recurring issue classes (~50 threads total,
+`~/.claude/copilot-review-patterns.md` — Eight recurring issue classes (~65 threads total,
 with LLM-followable detection heuristics and examples) derived from Copilot PR review findings
 across projects. Bundled snapshot: `plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md`.
 
-1. **State Machine / Control Flow** (~14): wrong-branch variable reuse, safety-bypassing
+1. **State Machine / Control Flow** (~15): wrong-branch variable reuse, safety-bypassing
    fallbacks, non-idempotent multi-step operations, warn-only leaving no forward path
-2. **Operator Observability** (~12): error messages asserting the wrong root cause, rejection
+2. **Operator Observability** (~15): error messages asserting the wrong root cause, rejection
    messages omitting the values driving the decision, messages naming a specific value when the
    code handles a more general range (e.g., "check out master" for repos using `main`)
-3. **Defensive Guards** (~7): null JSON values bypassing `.get()` defaults, missing
-   `UnicodeDecodeError`, `isinstance` weaker than needed
-4. **Documentation Accuracy** (~8): docstrings that don't match the implementation,
+3. **Documentation Accuracy** (~13): docstrings that don't match the implementation,
    spec-code coherence (SKILL.md vs implementation), changelog coverage gaps,
    ADF/external-format rendering (Markdown syntax in Jira ADF text nodes)
-5. **Infrastructure / Environment** (~4): tilde paths unexpanded, bare git refs failing in
+4. **Defensive Guards** (~8): null JSON values bypassing `.get()` defaults, missing
+   `UnicodeDecodeError`, `isinstance` weaker than needed
+5. **Infrastructure / Environment** (~5): tilde paths unexpanded, bare git refs failing in
    minimal clones
-6. **Provenance / Identity Discrimination** (~3): two write sites sharing one marker string
-7. **Test Integrity** (~2): tests asserting the bug, substring mock dispatch
+6. **Semantic Correctness / Logical Completeness** (~4): code claiming to handle a condition
+   but covering only a subset (regex too permissive, silent fall-through on unsafe state,
+   writer/validator disagreeing on format); doc/doc inconsistency within a single file
+7. **Provenance / Identity Discrimination** (~3): two write sites sharing one marker string
+8. **Test Integrity** (~2): tests asserting the bug, substring mock dispatch
 
 **When to use**: Run `/satori:adversarial-review` (invoked automatically by `/satori:pre-pr-audit` at
 rounds=3 and `/satori:address-pr-issues` at rounds=1) for a parallel sweep across all classes before
