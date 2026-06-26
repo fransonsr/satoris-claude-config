@@ -357,6 +357,32 @@ mvn clean compile test -pl <module>
 - [ ] Are error cases tested?
 - [ ] Is the code self-documenting?
 
+### PR Review Issue Patterns
+
+`~/.claude/copilot-review-patterns.md` — Seven recurring issue classes (with LLM-followable
+detection heuristics and examples) derived from Copilot PR review findings across projects:
+
+1. **State Machine / Control Flow** (~9): wrong-branch variable reuse, safety-bypassing
+   fallbacks, non-idempotent multi-step operations, warn-only leaving no forward path
+2. **Operator Observability** (~7): error messages asserting the wrong root cause, rejection
+   messages omitting the values driving the decision
+3. **Defensive Guards** (~6): null JSON values bypassing `.get()` defaults, missing
+   `UnicodeDecodeError`, `isinstance` weaker than needed
+4. **Infrastructure / Environment** (~3): tilde paths unexpanded, bare git refs failing in
+   minimal clones
+5. **Provenance / Identity Discrimination** (~3): two write sites sharing one marker string
+6. **Documentation Accuracy** (~3): docstrings that don't match the implementation
+7. **Test Integrity** (~2): tests asserting the bug, substring mock dispatch
+
+**When to use**: Run these sweeps before opening a PR as a proactive checklist.
+
+**When to update**: After every Copilot (or other automated reviewer) PR review round,
+regardless of project — increment the count for the matching class, sharpen heuristics when
+the issue reveals a new angle, and **add a new classification** when the pattern doesn't fit
+any existing class. This is a living document that grows across all PRs and projects.
+Full descriptions, heuristics, examples, and the update protocol live in
+`~/.claude/copilot-review-patterns.md`; keep this summary in sync.
+
 ## Decision Override Protocol
 
 ### When I Think Something is "Straightforward"
