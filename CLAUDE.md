@@ -45,7 +45,7 @@ Agent(model="opus", ...)    # reserve for hard reasoning; omit to inherit
 - Handoff documents location: `~/.claude/handoff/`
 - When starting work on a task, check for handoff documents first
 - Naming convention: `<task-id>-<slug>.md` (e.g., `task-4.16.2-collection-indices-writer.md`)
-- Use `/handoff` skill to create handoff documents for complex tasks
+- Use `/satori:handoff` skill to create handoff documents for complex tasks
 - Handoff documents contain: executive summary, technical specs, implementation plan, acceptance criteria, testing strategy, reference materials
 
 ## Development Tools
@@ -378,8 +378,8 @@ across projects. Bundled snapshot: `plugins/satori/skills/adversarial-review/ref
 6. **Provenance / Identity Discrimination** (~3): two write sites sharing one marker string
 7. **Test Integrity** (~2): tests asserting the bug, substring mock dispatch
 
-**When to use**: Run `/adversarial-review` (invoked automatically by `/pre-pr-audit` at
-rounds=3 and `/address-pr-issues` at rounds=1) for a parallel sweep across all classes before
+**When to use**: Run `/satori:adversarial-review` (invoked automatically by `/satori:pre-pr-audit` at
+rounds=3 and `/satori:address-pr-issues` at rounds=1) for a parallel sweep across all classes before
 opening a PR or pushing a fix round.
 
 **When to update**: After every Copilot (or other automated reviewer) PR review round,
@@ -413,7 +413,7 @@ cp ~/.claude/copilot-review-patterns.md \
 
 ### Protocol When Tempted to Skip Process
 
-1. **Re-read the complexity assessment questions** from address-pr-issues skill
+1. **Re-read the complexity assessment questions** from the `satori:address-pr-issues` skill
 2. **Complete the checklist** - don't skip it
 3. **Show my reasoning to user**: 
    ```
@@ -436,8 +436,8 @@ cp ~/.claude/copilot-review-patterns.md \
 **When in doubt:**
 - Use test-first (not test-after)
 - Spawn adversarial reviewer (not skip)
-- Use xp-pair (not solo)
-- Run pre-pr-audit (before every PR)
+- Use `/satori:xp-pair` (not solo)
+- Run `/satori:pre-pr-audit` (before every PR)
 
 Prefer false positives (extra process) over false negatives (missed bugs).
 
