@@ -907,6 +907,34 @@ git diff HEAD -- <changed files>
 grep -n "<pattern from fix>" <changed file> | grep -v "<already fixed>"
 ```
 
+### Example
+
+```
+Fix applied: added stdout fallback to git fetch failure path in run_step_sync_repos.
+Pattern introduced: when stderr is empty, fall back to stdout then "(no output)".
+
+Tier A (git diff HEAD):
+  +        if not fetch_detail:
+  +            fetch_detail = (
+  +                "; ".join(...stdout...) or "(no output)"
+  +            )
+
+Tier B (structural check — enumerate all peer callsites in the same function):
+  grep -n "returncode != 0" fleet_runner.py
+  → Lines 502, 529, 559, 630, 684, 719 — all subprocess failure paths in run_step_sync_repos
+
+  Check each for the new pattern:
+  → Line 502 (fetch):   ✅ just fixed
+  → Line 529 (sym_ref): uses conditional suffix — different shape, gap not present
+  → Line 559 (status):  ❌ missing stdout fallback — add to fix list
+  → Line 630 (ahead):   ❌ missing — add
+  → Line 684 (ff-only): ❌ missing — add
+  → Line 719 (behind):  ❌ missing — add
+
+Result: 4 additional fix sites found. Fix all in this commit; class fully addressed.
+Without this sweep, each site would have surfaced as a separate Copilot round.
+```
+
 Report any new findings immediately — **add them to this round's fix list** rather than
 deferring to the next round. The goal is to exit each round fully clean on the fix's own
 footprint, not to create a chain of follow-up rounds.
@@ -1406,32 +1434,55 @@ NEW_THREADS=$(jq -s '.[0] - .[1]' "$THREADS_FILE" "${THREADS_FILE}.before-round-
 **Decision tree**:
 ```
 New Copilot comments after commit?
-├─ Critical/High → Fix immediately (Step 4 again)
+├─ Same class as a prior round's fix → Sweep gap (see "Pattern Class Recurrence" below)
+├─ Critical/High (new class) → Fix immediately (Step 4 again)
 ├─ Medium → User decides: fix now or later
-└─ Low → Document and defer to future PR/ticket
+└─ Low / all won't-fix → Converging (see "Convergence Criterion" below)
 ```
 
-### Example: Post-Commit Iteration
+**Note**: After any fix round, repeat Step 6 (resolve new conversations) before pushing again.
 
-```bash
-# Pushed commit fixing 5 issues
-git push origin feature/my-branch
+### Pattern Class Recurrence
 
-# Wait 30 minutes, CI/CD completes
-# Copilot adds 2 NEW comments:
-#   1. "Consider using early returns" (MEDIUM)
-#   2. "Add unit test for edge case" (LOW)
+When Copilot finds more instances of a pattern class already fixed this PR, the cause is a
+sweep that was too narrow — not a new concern requiring adversarial review.
 
-# Decision: Fix #1 now (improves readability), defer #2 (already have tests)
-[Implement early returns...]
-mvn test && sonar-scanner
-git commit -m "refactor: Use early returns per Copilot suggestion"
-git push
-```
+**How to recognize it**: The new thread describes the same structural gap (missing fallback,
+missing guard, missing validation) at a different callsite, and a prior commit message shows
+you already fixed that gap elsewhere.
 
-**Pro tip**: Limit to **2-3 post-commit iterations** maximum. Diminishing returns after that.
+**Response** (do NOT re-run adversarial review — the class is already known):
 
-**Note**: After post-commit fixes, repeat Step 6 (resolve new conversations) before pushing again.
+1. **Identify the class** from the prior round's commit message or fix notes.
+2. **Widen the grep scope** — scope expands with each recurrence:
+   - First encounter → PR's changed files only
+   - Recurrence → full file containing the changed code
+   - Second recurrence → full function family across all files in the PR
+3. **Enumerate ALL peer callsites** of the same type (e.g., every `returncode != 0` block,
+   every `run_step_*` function, every JSON-read site) and check each against the missing property.
+4. **Fix all remaining instances in one commit.** Use a message like
+   `sweep: exhaust [class name]` rather than `fix: Round N` — this is gap-closing, not a new
+   round of findings.
+5. **Run Step 4.5 post-fix sweep** to confirm exhaustion before pushing.
+6. **State the outcome**: "Pattern class exhausted — N total sites fixed across M rounds."
+
+**Example**: Copilot flags `git rev-list` failure path missing stdout fallback (Round 3),
+after you already fixed `git fetch` in Round 1. Widen from PR-changed-files to full file.
+Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class is closed.
+
+### Convergence Criterion
+
+Stop iterating when a round produces only issues you are choosing not to fix. Signs that
+the PR has converged:
+
+- Every new thread is style-only, doc-wording, or a design choice you disagree with.
+- No new bug classes have appeared since the last two rounds.
+- Your Step 3.5 gate would rate every new thread as "skip adversarial review."
+- The thread severity trend is declining (Critical/High → Medium → Low → doc-only).
+
+When converged: document won't-fix rationale on each remaining thread, resolve all threads,
+and present the PR to the user as ready for merge review. Do not keep iterating hoping
+Copilot will eventually stop — the convergence criterion ends the loop, not a round cap.
 
 ## SonarQube Issue Resolution
 
