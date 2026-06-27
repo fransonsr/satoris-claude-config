@@ -63,10 +63,10 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 1. **Fetch Issues**: Read Copilot PR comments and SonarQube analysis
 2. **Assess Complexity**: Determine if adversarial review agent needed (NEW)
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
-3.5. **Sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
-4. **Plan**: Create implementation plan using TDD principles
-5. **Execute**: Fix issues using xp-pair for complex changes
-6. **Validate**: Run local sonar-scanner to catch new issues before committing
+3.5. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
+4. **Plan & Execute**: Create implementation plan and fix issues using TDD / xp-pair for complex changes
+4.5. **Post-fix sweep**: Re-sweep fixes for cascading issues they may have introduced — add any hits to this round before committing
+5. **Validate**: Run local sonar-scanner to catch new issues before committing
 7. **Iterate**: Repeat steps 5-6 until no new blocking issues appear
 8. **Resolve Conversations**: Mark fixed GitHub threads as resolved with brief explanations
 9. **Commit & Push**: Commit changes and push to PR branch
@@ -874,6 +874,45 @@ if (persona1Id.isEmpty() || persona2Id.isEmpty()) {
   - High confidence in correctness
 
 **Rationale**: Separating concerns makes PR easier to review and reduces noise in critical commits
+
+## Step 4.5: Post-Fix Cascade Sweep (MANDATORY)
+
+After applying all fixes from this round but **before committing**, re-sweep the PR's changed
+files to check whether the fixes themselves introduced new cascading issues.
+
+**Why**: A fix that adds a null check, restructures a branch, or extracts a method can expose
+a sibling callsite that was previously unreachable, or can introduce the same defensive-guard
+or control-flow pattern in a new location without the matching safeguard.
+
+### What to Sweep
+
+For each fix applied this round, ask:
+- **New code paths introduced**: Did the fix add a branch, a helper method, or a fallback
+  that itself needs a null guard, a returncode check, or an error handler?
+- **Sibling callsites now exposed**: Did fixing one callsite reveal that a neighboring
+  callsite (not in the original diff) now has the same gap?
+- **Structural consistency**: If the fix adds a pattern (e.g., `isinstance` guard, `try/except
+  (OSError, UnicodeDecodeError)`), is that pattern now present at every peer callsite in the
+  same file?
+
+### How to Run
+
+Same two-tier grep as Step 3.7, but targeted at code **introduced or modified by the fixes**:
+
+```bash
+# Tier A — what changed since before the fixes (the fixes themselves)
+git diff HEAD -- <changed files>
+
+# Tier B — structural check: if the fix adds a pattern, enumerate all peer sites
+grep -n "<pattern from fix>" <changed file> | grep -v "<already fixed>"
+```
+
+Report any new findings immediately — **add them to this round's fix list** rather than
+deferring to the next round. The goal is to exit each round fully clean on the fix's own
+footprint, not to create a chain of follow-up rounds.
+
+If the post-fix sweep finds nothing, state it explicitly: "Post-fix sweep complete — no new
+cascading issues introduced by this round's fixes."
 
 ## Step 5: Validate Changes Locally
 
