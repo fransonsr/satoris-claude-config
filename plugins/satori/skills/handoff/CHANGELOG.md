@@ -5,6 +5,31 @@ All notable changes to the Handoff plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-06-28
+
+### Added
+
+- **SKILL.md Writing Disciplines** — conditional section generated in handoff documents when
+  any `key-files` are SKILL.md files
+  - Delegates three pre-write disciplines to the implementing session (orchestration session
+    does NOT execute them — keeps its context clean)
+  - **Discipline 1: Scope-term grep pre-flight** — identify and grep all old scope terms
+    before touching the file; mark each hit "update needed" or "no change needed" first
+  - **Discipline 2: Branch enumeration** — enumerate every decision branch explicitly before
+    writing any conditional prose; a branch with no documented path is a Copilot finding
+    waiting to happen
+  - **Discipline 3: Pre-commit operator read** — read modified sections linearly as a
+    first-time operator with no knowledge of intent; flag every step where guessing is
+    required; fix before committing
+  - Root cause addressed: three classes of PR #106's 22-thread Copilot sweep (stale-scope
+    text, missing conditional branches, operator executability gaps) all arose from
+    implementing correctly as the author but not as an operator
+
+### Changed
+
+- **Quality Gate Critical checklist** — added conditional: "If any `key-files` are SKILL.md
+  files: SKILL.md Writing Disciplines section is present" (enforces the new conditional)
+
 ## [2.4.0] - 2026-06-17
 
 ### Added

@@ -1,21 +1,26 @@
 # Copilot Review Issue Patterns
 
-**Purpose**: Classification of issue types that Copilot's PR review has found in this codebase.
-Use this as a checklist during pre-PR code review to proactively find and fix these issues.
+This document is a classification of **review lenses** used by adversarial-review agents and
+maintained by human reviewers. The adversarial-review skill reads it dynamically and spawns one
+parallel agent per class; there is no prioritization or weighting — all lenses run together.
 
-**How to use**: For each classification below, follow the "How to find" instructions as a sweep
-over the code being reviewed. Apply the heuristics even when the code looks correct — these are
-the patterns that *seem* fine on first read but are consistently wrong.
+**For agents**: Each class below is a lens — a distinct perspective through which you read the
+artifact under review. Apply your assigned class's lens to that artifact. The "How to find" /
+"How to apply" section gives you what you need: pattern-based classes list specific heuristics to
+grep for or check; holistic classes give judgment questions to read against. Apply only your own
+class; the others run as separate agents.
 
-**Copilot count**: Number of Copilot review threads attributed to each class across all PRs.
-Use this to prioritize which sweeps to run first (highest count = highest ROI).
+**For maintainers**: After each review round (Copilot, adversarial-review, or other automated
+reviewer), use the Update Protocol at the bottom to refine existing classes and propose new ones.
+
+**Lens taxonomy**: Heuristic-based lenses have specific patterns to check; judgment-based lenses
+read the artifact holistically and flag what seems wrong (Classes 8 and 10 are judgment-based).
 
 ---
 
 ## Classifications
 
 ### 1. State Machine / Control Flow Logic
-**Copilot count**: ~9 threads
 
 **Description**: The code handles the happy path correctly but failure modes, partial runs,
 and retry scenarios produce wrong state transitions or bypass safety guards. Common forms:
@@ -91,7 +96,6 @@ else:
 ---
 
 ### 2. Defensive Guards (null / type / encoding)
-**Copilot count**: ~6 threads
 
 **Description**: Code fails to guard against None, unexpected types, or encoding errors in
 data read from external sources (files, subprocess output, JSON deserialization). Common forms:
@@ -153,7 +157,6 @@ if entry.get("estimatedCalls") == 0 and isinstance(inventory_generator, str) and
 ---
 
 ### 3. Operator Observability / Error Message Accuracy
-**Copilot count**: ~7 threads
 
 **Description**: Log messages, blockReasons, and exception messages assert a specific root
 cause that may not be correct. An operator reading the message gets a wrong diagnosis and
@@ -220,7 +223,6 @@ print(
 ---
 
 ### 4. Provenance / Identity Discrimination
-**Copilot count**: ~3 threads
 
 **Description**: A single string value (e.g., a `generator` field) is used to distinguish
 "trusted" from "untrusted" provenance, but two different code paths both write the same
@@ -253,7 +255,6 @@ if inventory_generator != "fleet-runner":  # rejects both stub AND legitimate no
 ---
 
 ### 5. Infrastructure / Environment Handling
-**Copilot count**: ~3 threads
 
 **Description**: Code assumes a "standard" environment that may not hold in deployment.
 Common forms:
@@ -296,7 +297,6 @@ result = subprocess.run(["git", "log", f"origin/{base}..HEAD", "--oneline"], ...
 ---
 
 ### 6. Documentation Accuracy
-**Copilot count**: ~3 threads
 
 **Description**: Docstrings, comments, or inline documentation describe behavior that doesn't
 match the implementation. Misleads future readers and can cause incorrect edits. Most common
@@ -336,8 +336,6 @@ def _repo_slug(repo_name):
 ---
 
 ### 8. Semantic Correctness / Logical Completeness
-
-**Copilot count**: ~4 threads
 
 **Description**: Code or documentation that claims to handle a condition but covers only a
 subset of the intended domain, or where two parts of the same codebase make assumptions about
@@ -416,7 +414,6 @@ def _branch_name(repo_name, jira_ticket=None, today=None):
 ---
 
 ### 7. Test Integrity
-**Copilot count**: ~2 threads
 
 **Description**: Tests assert the buggy behavior rather than the correct behavior, or use
 argument matching patterns that pass for the wrong reason. Common forms:
@@ -449,44 +446,244 @@ def test_is_no_conversion_repo_returns_false_for_none_generator(self):
 
 ---
 
+### 9. Skill Doc / Spec Completeness
+
+**Description**: A skill document (SKILL.md, instruction doc, or operator spec) is reviewed
+as an *operator specification* — executable, complete, and internally consistent. Issues arise
+when the document accurately described the original scope but was not fully updated when scope
+broadened, phases were renamed, or new decision branches were added. Unlike Documentation
+Accuracy (class 6, which covers code/doc drift and doc/doc inconsistency in prose files), this
+class covers gaps that appear specifically when reading a **step-by-step operator spec** as
+though you are about to follow it for the first time.
+
+*Provenance: empirical — derived from 22 Copilot threads on PR #106 (prose-only SKILL.md change).*
+
+Common forms:
+- **Stale scope language**: The PR broadens scope (e.g., adds a new call category), but step
+  headers, scope statements, idempotency notes, skip conditions, and report section labels
+  were updated inconsistently — some caught, others missed. Copilot finds them one at a time
+  across successive rounds.
+- **Rename cascade miss**: A phase or term is renamed (e.g., "LLM pass" → "LLM and semantic
+  pass"), but the sweep is incomplete: mid-step instructions, routing conditions, idempotency
+  notes, and report labels retain the old name.
+- **Operator executability gap**: A step says "evaluate each X call" without providing a
+  command to enumerate X; or a file reference is a bare filename when a fully-qualified path
+  is needed for an operator to proceed without additional research.
+- **Branch completeness gap**: A decision point documents the "found candidates" path but omits
+  the "no candidates found" exit; or a subsequent step applies to all action types when it
+  should be scoped to a subset (e.g., CONVERT/METRIC only, not DELETE/LEVEL_CHANGE).
+- **Term undefined at use**: A variable used as a routing signal (M, semantic review list,
+  needsLlmReview) is referenced in a later step without being anchored to where it was first
+  computed and named. The name used in Step 4 must match the label introduced in Step 3.
+
+**How to find**:
+
+1. **Scope-broadening sweep**: If this PR broadens the scope of a skill, grep the entire
+   SKILL.md for the old scope terms (e.g., `NEEDS_LLM_REVIEW`, `LLM pass`). For each hit:
+   is it still accurate after the broadening, or should it now include the new scope? Apply
+   in one pass — do not wait for Copilot to find them one at a time.
+
+2. **Rename cascade**: If a phase or pass was renamed, grep the entire SKILL.md for the old
+   name. Update every hit: step headers, mid-step instructions, skip conditions, idempotency
+   notes, and report section labels. A partial rename (some hits updated, others not) produces
+   one Copilot thread per missed hit.
+
+3. **Operator executability**: For every step that says "evaluate each X" or "review all Y",
+   ask: "can an operator enumerate X/Y from a shell command?" If not, add a `jq` or `grep`
+   snippet. For every file reference in the spec, verify it is a fully-qualified path (with
+   directory prefix) — bare filenames require the operator to know the directory.
+
+4. **Branch completeness**: For every conditional in a step ("if candidates found / if not"),
+   verify both branches have documented actions. Check: zero-result exit conditions ("if no
+   candidates, proceed to Step N"), action-type-specific restrictions ("for CONVERT and METRIC
+   only — skip for DELETE and LEVEL_CHANGE"), and routing across combined conditions (e.g.,
+   "semantic candidates present AND needsLlmReview=0 → skip to Step N").
+
+5. **Term definition at first use**: Find every variable name used as a routing signal in
+   later steps (e.g., "M from Step 3", "needsLlmReview", "semantic review list"). Trace back
+   to where each is first computed. Verify that step labels the variable with the name used
+   later. If Step 3 introduces M as "the count of NEEDS_LLM_REVIEW calls", later steps must
+   consistently call it M (not `needsLlmReview` the jq field name, or "the output of jq").
+
+**Root cause note**: These issues arise because SKILL.md specs are typically reviewed for
+*accuracy* (does the text match what was intended?) rather than for *executability and
+completeness* (can an operator follow these steps step-by-step without gaps?). The five
+heuristics above simulate what Copilot does when it reads the spec as an operator.
+
+**Example — stale scope language** (PR #106, Rounds 3–7, ~9 threads):
+```markdown
+# BEFORE (bug): "LLM pass" retained in idempotency section after scope broadened to
+# include semantic review of TRANSFORMED calls
+LLM pass: Only processes NEEDS_LLM_REVIEW calls from transform-report.json.
+
+# AFTER (fix): renamed to reflect combined scope
+LLM and semantic pass: Processes NEEDS_LLM_REVIEW calls AND TRANSFORMED calls flagged
+in Step 3.5 for semantic review.
+```
+
+**Example — operator executability gap** (PR #106, Rounds 6 and 9, ~2 threads):
+```markdown
+# BEFORE (bug): bare filename (no path); no jq to enumerate TRANSFORMED calls
+For each TRANSFORMED call in transform-report.json:
+
+# AFTER (fix): fully-qualified path + jq snippet for enumeration
+For each TRANSFORMED call in .claude/analyze-reports/transform-report.json:
+  jq '[.[] | select(.action == "TRANSFORMED") | {file, line}]' "$REPORT"
+```
+
+**Example — branch completeness gap** (PR #106, Rounds 8, 10, 11, ~4 threads):
+```markdown
+# BEFORE (bug): routing for needsLlmReview=0 with semantic candidates undocumented;
+# field-mapping steps in Step 7 applied to all action types
+
+# AFTER (fix):
+# - "If needsLlmReview (M from Step 3) is 0: skip Step 4 directly to Step 5."
+# - Steps 3–4 in Step 7: "(CONVERT and METRIC actions only — skip for DELETE and LEVEL_CHANGE)"
+```
+
+**Example — term undefined at use** (PR #106, Rounds 3 and 11, ~2 threads):
+```markdown
+# BEFORE (bug): Step 3.5 computed M implicitly; Step 4 referenced "needsLlmReview"
+# (the jq field) and Step 11 routing used "M" without tying them together
+
+# AFTER (fix): Step 3 labels the count as M; Step 4 intro says "needsLlmReview (M
+# from Step 3)"; Step 7 routing consistently uses "needsLlmReview (M from Step 3)"
+```
+
+---
+
+### 10. Spec Operator Walkthrough
+
+**Description**: A SKILL.md (or instruction doc / operator spec) is read *linearly, top to
+bottom, by someone who has never seen it and has no foreknowledge of what was intended* — an
+operator about to follow it for the first time. The reviewer flags every place they would get
+stuck, have to guess, or hit a branch with no documented path forward. This is a **judgment-based
+lens with no heuristics**, and that is the entire point: where Class 9 (Skill Doc / Spec
+Completeness) enumerates five *known* failure modes and greps for them, this class catches the
+novel and cascading gaps those heuristics did not anticipate — the confusion that only surfaces
+when you actually try to execute the document as written, in order, without skipping ahead.
+
+*Provenance: proactive — designed during adversarial-review architecture review before first observed occurrence.*
+
+**Domain context the reviewer needs** (safe to provide — this is *what the artifact is*, not a
+list of how it tends to fail):
+- A SKILL.md is an operator specification. It is meant to be *executed* — a person or agent reads
+  it step by step and performs each action it describes. "Following it" means doing exactly what
+  each step says, in the order written, using only information available at that point in the doc.
+- The reader has no access to the author's intent, the PR description, the surrounding code, or
+  any prior version. Their only input is the words on the page, read in sequence.
+- An operator "gets stuck" when a step cannot be performed without information that has not yet
+  appeared: an undefined term, a value referenced before it is computed, a decision with no
+  documented option for the situation at hand, or an instruction that assumes knowledge the
+  document never supplied.
+
+**Why this is a separate class, not a sixth heuristic in Class 9**: Giving one agent both Class 9's
+five failure-mode heuristics *and* this walk instruction contaminates the walk. The agent's
+attention is already shaped by "stale scope language, rename cascade, executability gap, branch
+gap, undefined term" — so it finds instances of *those* patterns rather than reading with genuinely
+fresh eyes. The adversarial-review architecture runs one agent per class in parallel, with no agent
+seeing another's findings, which naturally prevents this cross-contamination. So this walk runs as
+its own agent (Class 10), in parallel with the Class 9 heuristic agent. The two are **complementary,
+not overlapping**: Class 9 catches the failure modes we have already seen and named; Class 10
+catches what those named modes did not anticipate. Overlap between their findings is expected and
+fine — the synthesizer deduplicates by (file, line_range).
+
+**Boundary**: Provide the Class 10 agent the *domain context* above (what a SKILL.md is, what being
+an operator means) but **never** Class 9's failure-mode list. The known-failure-mode list is the
+contaminating part; the domain context is not.
+
+**How to apply** (judgment-based, not heuristic-based):
+
+1. Read only the sections of the spec that changed in this diff (and the minimal surrounding
+   context needed for them to make sense), from the top of the first changed section downward, in
+   document order. Do not jump ahead to resolve a question a later section might answer — if you
+   had to jump ahead, that itself is a finding.
+2. At each step, ask: *"Can I perform this action right now, using only what I have read so far?"*
+   If the answer is no, stop and record where and why.
+3. At each decision point or branch, ask: *"For the situation I am actually in, is there a
+   documented path? What do I do if the condition is false / the list is empty / none of the
+   options apply?"* If there is no path for a situation that can occur, record it.
+4. At each term, variable, label, or referenced artifact, ask: *"Has this been defined or produced
+   earlier in what I have read? Do I know what it means and where it came from?"* If a term is used
+   before it is introduced, record it.
+5. Record anything that would cause genuine confusion in execution: ambiguous instructions, two
+   readings of the same sentence, a step that silently assumes the output of a step that was
+   skipped, an ordering that requires a later result to perform an earlier action.
+
+Express findings as the operator's lived experience — *"At Step 4 I am told to 'process the
+flagged calls,' but nothing earlier told me how calls get flagged or where the flags are
+recorded, so I cannot proceed without guessing"* — not as a heuristic class name.
+
+**Relationship to other classes**:
+- **Class 9 (Skill Doc / Spec Completeness)**: complementary peer. Class 9 = known failure modes,
+  found by grep/enumeration. Class 10 = unanticipated gaps, found by reading as a naive operator.
+  Run both, in parallel, as separate agents. Do not merge.
+- **Class 6 (Documentation Accuracy)**: Class 6 checks whether the doc *matches the code/other
+  docs* (the reviewer cross-references an external source of truth). Class 10 reads the doc *in
+  isolation* and asks only whether it is internally followable; it needs no external referent.
+- **Class 8 (Semantic Correctness / Logical Completeness)**: same judgment-based spirit, different
+  target. Class 8 reads code/spec asking "does this do what it claims?"; Class 10 reads a spec
+  asking "could a first-time operator actually execute this, in order, without getting stuck?"
+
+**Example — gap a fresh-eyes walk catches that Class 9's heuristics miss**:
+
+Class 9's term-definition heuristic (Check 5) traces *named routing signals* ("M from Step 3",
+"needsLlmReview") back to their definitions. It is looking for a specific shape: a named variable
+reused across steps. Consider a spec that reads:
+
+```markdown
+## Step 5: Reconcile the field mappings
+
+Compare the proposed field names against the established conventions and resolve any conflicts
+before proceeding to Step 6.
+```
+
+Class 9's heuristics find nothing here: there is no old scope term, no renamed phase, no
+"evaluate each X" without a command, no missing if/else branch, and no *named* routing variable
+left undefined. But an operator walking the spec linearly stops cold: *"Which 'established
+conventions'? The document never told me they existed, never told me where they are recorded, and
+never told me how to tell that two names 'conflict.' I have read every prior step and I still do
+not know what file or list to open or what rule to apply. I cannot perform this step without
+guessing."* The gap is a silent dependency on context the document assumes but never supplied —
+exactly the kind of issue that only surfaces when a reader with no foreknowledge tries to *do*
+the step, and exactly what the heuristic enumeration was not built to detect.
+
+---
+
 ## Update Protocol
 
-This is a **living document** — it accumulates patterns across all projects and all PRs, not
-just the session in which a pattern was first observed. Every Copilot review round is an
-opportunity to improve it.
+This is a **living document** — its lenses accumulate across all projects and all PRs, not just
+the session in which a lens was first observed. Every review round is an opportunity to sharpen
+the existing lenses and discover gaps that warrant a new one.
 
-**After every Copilot (or other automated reviewer) PR review round**:
-1. For each thread addressed, identify which classification it belongs to and increment its count.
-2. If the issue reveals a sharper or more general heuristic for an existing class, update the
-   "How to find" steps for that class.
-3. If a thread introduces a pattern that does not fit any existing class, **add a new
-   classification** with: description, "How to find" steps, and at least one before/after
-   example. Place it in count order once the count is known, or at the bottom until then.
-4. Update the count summary table and the `last updated` date.
-5. If the CLAUDE.md summary (under "Code Review Checklist → PR Review Issue Patterns") has
-   drifted from the counts or class list here, sync it.
+**After every review round (Copilot, adversarial-review, or other automated reviewer)**:
 
-**When to add a new classification vs. extend an existing one**:
-- New class: the pattern requires a meaningfully different detection strategy ("how to find")
-  than any existing class
-- Extend existing: same detection strategy applies, the new issue is just another instance
-  of the pattern; add it as an additional example if it clarifies a nuance
+**Step 1 — Refine existing classes.** For each finding, identify which class's lens it belongs to.
+If the finding reveals a sharper angle, tighter boundary, or clearer heuristic for that class,
+update the class's "How to find" / "How to apply" section. Add a new before/after example if it
+illustrates a nuance not already captured.
 
-**Copilot count summary** (last updated: 2026-06-26, through PR #101 Round 11):
+**Step 2 — Propose new classes.** After reviewing all findings as a whole, ask: *"Did any finding
+surface a gap that no existing lens would have caught — a reading mode or perspective entirely
+absent from the current class list?"* If yes, draft a new class. The criterion for a new class
+vs. extending an existing one:
+- **New class**: the gap warrants a distinct agent with a different reading mode or perspective
+  (e.g., Class 10 reads holistically in document order; no existing class did that)
+- **Extend existing**: the finding is a new instance or sharper example of an existing lens; add
+  it as an additional example or refine the heuristic
 
-Rounds 7–11 additions: R7 (+1 State Machine, +1 Doc Accuracy), R8 (+1 Op Observability, +1 Doc
-Accuracy), R9 (+1 Infrastructure, +1 Op Observability, +1 Defensive Guards, +1 Doc Accuracy),
-Copilot Autofix (+1 Doc Accuracy), R10 (+2 Semantic Correctness), R11 (+1 Op Observability,
-+2 Semantic Correctness, +1 Doc Accuracy).
+**Step 3 — Sync CLAUDE.md.** If the class list here has changed (new class added, class renamed,
+or description materially changed), update the "PR Review Issue Patterns" summary in
+`~/.claude/CLAUDE.md`. The summary should list class names and one-line descriptions only — no
+counts, no thread totals.
 
-| Classification | Count |
-|---|---|
-| State Machine / Control Flow Logic | ~15 |
-| Operator Observability / Error Message Accuracy | ~15 |
-| Documentation Accuracy | ~13 |
-| Defensive Guards (null / type / encoding) | ~8 |
-| Infrastructure / Environment Handling | ~5 |
-| Semantic Correctness / Logical Completeness | ~4 |
-| Provenance / Identity Discrimination | ~3 |
-| Test Integrity | ~2 |
-| **Total** | **~65** |
+**When adding a new class**, include:
+- Name
+- Description
+- Lens type (heuristic-based or judgment-based)
+- "How to find" or "How to apply" section appropriate to the lens type
+- At least one concrete example
+- Provenance note
+- Relationship to the nearest adjacent class (to prevent overlap drift)
+
+*Last updated: 2026-06-28.*

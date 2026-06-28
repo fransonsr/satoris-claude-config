@@ -175,6 +175,37 @@ Set expectations for when the implementing session should stop and ask rather th
    - Follows comprehensive template for prose sections
    - Includes verified context with citations
    - Lists explicit unknowns for implementer to discover
+   - **If any `key-files` are SKILL.md files**, include a **SKILL.md Writing Disciplines** section
+     in the generated handoff document, immediately before the step-by-step implementation plan.
+     This delegates the pre-write disciplines to the implementing session — the orchestration
+     session does NOT execute them. Use this template:
+
+     ```markdown
+     ## SKILL.md Writing Disciplines
+
+     This handoff involves editing a SKILL.md file. Before writing any new content, the
+     implementing session must complete these disciplines in order:
+
+     **1. Scope-term grep pre-flight** (do this FIRST, before touching the file):
+     - Identify every term that describes the current scope (e.g., the call categories,
+       phase names, or step references that the change will broaden or rename)
+     - Grep the full SKILL.md for each old term and list all hits explicitly
+     - Mark each hit as "update needed" or "no change needed" before writing anything
+     - This sweep is a precondition of the edit, not a post-condition
+
+     **2. Branch enumeration** (do this before writing any conditional step):
+     - For every decision point the new content introduces, list all branches explicitly:
+       found / not-found, per-type distinctions, combined conditions (X=0 AND Y non-empty)
+     - Write the prose for each branch only after the full branch set is enumerated
+     - A branch with no documented path is a Copilot finding waiting to happen
+
+     **3. Pre-commit operator read** (do this before committing):
+     - Read the modified sections linearly, top to bottom, as an operator who has never
+       seen this document and has no knowledge of what was intended
+     - Flag every step where you cannot proceed without guessing
+     - Fix before committing — this is the cheapest moment to catch these gaps
+     ```
+
    - **Note**: The implementing agent should create a progress document on first session:
      - Location: `~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md`
      - Template: `~/.claude/plugins/*/handoff/templates/IMPLEMENTATION-PROGRESS-template.md`
@@ -190,6 +221,7 @@ Set expectations for when the implementing session should stop and ask rather th
    - [ ] Explicit unknowns listed — if a fact could not be verified, it is in "Explicit Unknowns"
    - [ ] Scope boundaries present (what to change AND what NOT to change)
    - [ ] Pause-and-ask conditions explicit
+   - [ ] If any `key-files` are SKILL.md files: SKILL.md Writing Disciplines section is present
 
    **Essential (REQUIRED)**:
    - [ ] YAML frontmatter complete and all paths verified

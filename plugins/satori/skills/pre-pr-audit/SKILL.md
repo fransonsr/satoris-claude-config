@@ -57,6 +57,8 @@ fi
 ```bash
 CHANGED_FILES=$(git diff --name-only $BASE_BRANCH...HEAD)
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
+CHANGED_SKILL_FILES=$(echo "$CHANGED_FILES" | grep "SKILL\.md$" || true)
+CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
 
 # If no Java files, check if there are other languages to analyze
 if [ -z "$CHANGED_JAVA_FILES" ]; then
@@ -98,6 +100,8 @@ Use the Workflow tool to spawn these agents simultaneously. Pass each agent the 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
 - **Maven Plugin Checks** (skip if no `@Mojo` annotation or `maven-plugin` packaging detected) — checks in Step 4.6 below
+- **Spec-Completeness Review** (skip if `CHANGED_SKILL_FILES` is empty) — checks described in Step 4.8 below; returns findings for review-pause in Step 5
+- **Whole-Document Coherence Walk** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.9 below; single pass, non-repeating; returns findings for review-pause in Step 5
 - **Adversarial Pattern Review** — delegates to /adversarial-review (see Step 4.7); returns per-round findings for review-pause in Step 5
 
 Each agent returns findings as a list:
@@ -640,6 +644,130 @@ The `/adversarial-review` skill handles the full protocol:
 
 The skill returns a summary containing: per-round breakdown, findings by class, known-limitations list (accepted-risk items) for the PR description, and any termination signal (PR too large / new unclassified bug class).
 
+## Step 4.8: Spec-Completeness Review (Conditional: SKILL.md files in diff)
+
+**Trigger**: Only run if `CHANGED_SKILL_FILES` is non-empty (at least one `SKILL.md` file changed).
+
+This step runs the **heuristic checks of Pattern #9 (Skill Doc / Spec Completeness)** from
+`copilot-review-patterns.md` — the five *known* failure modes (scope sweep, rename cascade,
+operator executability, branch completeness, term definition) that Copilot finds one at a time
+across many rounds. Running them proactively in one pass eliminates those rounds. These five
+checks treat the changed skill documents as *operator specifications* — executable, complete, and
+internally consistent.
+
+**Complementary lens handled elsewhere — do NOT duplicate here**: the holistic operator
+walkthrough (Pattern #10, "Spec Operator Walkthrough") is the judgment-based complement to these
+heuristics — a reviewer reads the changed spec linearly as a first-time operator and flags where
+they would get stuck, with *no* foreknowledge of the five failure modes above. It runs
+**automatically as a parallel class agent inside `/adversarial-review` (Step 4.7)** — no separate
+invocation is needed in Step 4.8. This separation is deliberate: priming one agent with Pattern
+#9's failure-mode list would contaminate the fresh-eyes walk (it would hunt for those five
+patterns instead of reading naively), and adversarial-review's per-class parallel agents never see
+each other's findings, which preserves the walk's independence. Overlap between Pattern #9 findings
+(here) and Pattern #10 findings (Step 4.7) is expected; the adversarial-review synthesizer
+deduplicates by (file, line_range).
+
+Spawn a review agent with the full content of each changed SKILL.md and these five Pattern #9
+checks:
+
+### Check 1: Scope-Broadening Sweep
+
+If the PR description or diff indicates a scope change (e.g., "now handles X in addition to Y"),
+grep the SKILL.md for the old scope terms. For each hit, ask: does this text still accurately
+describe the new scope, or does it need updating to include the new scope?
+
+Report every hit where the language is now too narrow. Apply in one pass.
+
+### Check 2: Rename Cascade
+
+If a phase, pass, or term was renamed anywhere in the diff, grep the full SKILL.md for the old
+name. Verify every hit was updated. Check: step headers, mid-step instructions, skip conditions,
+idempotency notes, routing conditions, and report section labels.
+
+Report every occurrence of the old name that was not updated.
+
+### Check 3: Operator Executability
+
+For every step that instructs the operator to "evaluate each X" or "review all Y":
+- Is there a `jq`, `grep`, or shell command that enumerates X/Y? If not, report the gap.
+- Is every file reference a fully-qualified path (with directory prefix)? If any file is
+  referenced by basename only, report it.
+
+### Check 4: Branch Completeness
+
+For every conditional or decision point in the spec ("if candidates found… / if not…"):
+- Does the "no candidates found" branch have a documented action (proceed to Step N, skip, etc.)?
+- For steps that apply to multiple action types, does the spec explicitly scope which types
+  are included and which are excluded?
+- For routing conditions that combine multiple signals (e.g., "X=0 AND Y non-empty"), are
+  all combinations documented?
+
+Report every decision point with a missing branch.
+
+### Check 5: Term Definition at First Use
+
+Find every variable or value name used as a routing signal in later steps (e.g., "M from Step 3",
+"semantic review list", "needsLlmReview"). Trace each back to where it is first computed.
+Verify:
+- The computation step labels the value with the same name used later.
+- When a later step uses a different name for the same value (e.g., a jq field name vs. a
+  step-local variable name), the spec explicitly ties them together.
+
+Report every routing reference that is not anchored to a definition earlier in the spec.
+
+### Output Format
+
+Return findings as:
+```json
+[{
+  "check": "scope_sweep|rename_cascade|operator_executability|branch_completeness|term_definition",
+  "severity": "HIGH|MEDIUM",
+  "location": "Step N, line description",
+  "description": "what is missing or stale",
+  "recommendation": "specific text to add or change"
+}]
+```
+
+## Step 4.9: Whole-Document Coherence Walk (Conditional: spec/doc files in diff)
+
+**Trigger**: Run when `CHANGED_SPEC_FILES` is non-empty (SKILL.md, README.md, CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, or DESIGN.md changed).
+
+**This step runs once, pre-PR. It does not repeat in the adversarial-review fix cycle.**
+
+The narrow-scope Pattern #10 agent in adversarial-review reads only the changed sections of a spec and fires on every fix round. This step is its complement: it reads the **entire document** as a first-time reader, once, before the PR opens. Its specific purpose is to catch integration breaks between changed and unchanged content — issues that only appear when the whole document is read in sequence and the changed sections must cohere with the sections around them.
+
+### Agent mandate
+
+Spawn a fresh-eyes agent with the full content of each changed spec file. The agent receives:
+- The complete document (not just the diff)
+- This mandate only: "Read this document from beginning to end as someone who has never seen it. You have no knowledge of what changed, what was intended, or what any prior version said. Flag every place the document fails to hang together as a whole — where a changed section creates confusion, contradiction, or a gap when read alongside the unchanged sections around it."
+
+Do **not** give the agent:
+- The git diff or any indication of which sections changed
+- The implementation session's intent or PR description
+- Pattern #9's or Pattern #10's failure-mode lists
+
+### What to look for
+
+The agent reads linearly and flags:
+
+1. **Integration breaks**: a changed section introduces a term, step, or behavior that contradicts or is inconsistent with an unchanged section elsewhere in the document
+2. **Orphaned references**: an unchanged section refers to something (a step, a variable, a file) that the changed section has renamed, removed, or restructured — leaving the reference dangling
+3. **Scope coherence**: the document's overall scope statement (often in the intro or a "When to use" section) no longer matches what the body of the document describes after the change
+4. **Narrative discontinuity**: reading the document in order, the changed section feels abrupt, assumes context the preceding sections don't provide, or leaves the reader without enough information to continue to the next section
+
+### Output format
+
+```json
+[{
+  "severity": "HIGH|MEDIUM|LOW",
+  "location": "section or step description",
+  "description": "what fails to cohere and why",
+  "changed_section": "the section that changed",
+  "affected_section": "the unchanged section affected by the integration break"
+}]
+```
+
 ## Step 5: Present Findings Interactively (Per-Round Review-Pause)
 
 This step is the **review-pause** between each adversarial-review round. For findings from Step 4.7, the `/adversarial-review` skill returns them here and waits for disposition before applying any fix.
@@ -833,6 +961,21 @@ After all checks complete:
 - CLI binding: I
 - Resolution scope: J
 - Maven API usage: K
+
+**Spec-Completeness Review** (Step 4.8, if SKILL.md files changed):
+- Scope-broadening sweep: N issues found
+- Rename cascade: N issues found
+- Operator executability: N issues found
+- Branch completeness: N issues found
+- Term definition: N issues found
+- Clean: ✅ all checks / ⚠️ N findings remain
+
+**Whole-Document Coherence Walk** (Step 4.9, if spec/doc files changed):
+- Integration breaks: N found
+- Orphaned references: N found
+- Scope coherence: N found
+- Narrative discontinuity: N found
+- Clean: ✅ document hangs together / ⚠️ N findings remain
 
 **Adversarial Pattern Review** (Step 4.7):
 - Rounds completed: R / 3
