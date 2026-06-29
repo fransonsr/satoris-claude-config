@@ -19,7 +19,7 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 **Solution**: Adversarial review agent challenges completeness BEFORE implementing
 - **Step 2 (NEW)**: Assess if issues involve cascading edge cases
 - **Step 3.5 (NEW)**: Conditionally delegate to `/adversarial-review` (one round) — parallel
-  per-class agents sweep all 7 known Copilot issue pattern classes, cascade-sweep within each
+  per-class agents sweep all known Copilot issue pattern classes, cascade-sweep within each
   class, then pause for human disposition before applying git-guardrailed fixes
 - Forces comprehensive analysis and testing upfront
 - **Result**: 5 rounds → 1-2 rounds (80% reduction)
@@ -545,7 +545,7 @@ Round 5: Fix null resource URIs (Copilot found)
 ```
 
 **With adversarial review** (1 round):
-- Parallel agents sweep all 7 pattern classes in one shot
+- Parallel agents sweep all known pattern classes in one shot
 - Cascade sweep finds null persona refs AND resource URIs AND empty IDs in the first pass
 - Approved fixes applied in one commit
 - Copilot finds only style issues in the next round

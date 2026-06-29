@@ -650,6 +650,83 @@ the step, and exactly what the heuristic enumeration was not built to detect.
 
 ---
 
+### 11. Cross-File Rule Consistency
+
+**Description**: When the same rule, procedure, value constraint, contract term, or worked
+example is stated in more than one file, every restatement is a latent divergence from its
+canonical source. When the canonical file is updated, restatements must be updated in cascade —
+and frequently aren't. This lens compares each restatement against the file that owns the rule by
+definition. It is exclusively **cross-file**: file A defines the rule, files B/C restate it, and
+they have drifted apart.
+
+*Lens type: heuristic-based.*
+
+*Provenance: empirical — PR #108 needed 8 Copilot rounds; 6 were cross-file restatement drift in
+the logging-migration `choose` skill (SCORING.md / FLEET-STATE-SCHEMA.md / EXAMPLE-PLAN.md diverged
+from choose/SKILL.md). The per-file logic/correctness lenses never compared a rule across files, so
+the drift survived local review.*
+
+**How to find**:
+
+1. **Build the restatement map.** For every rule, procedure, value constraint, contract term, or
+   worked example that appears in more than one touched file, identify the **canonical source** —
+   the file that owns the rule by definition (usually SKILL.md), not a file that copied it. A
+   multi-file skill typically has: SKILL.md (canonical procedures + contracts), references/*.md
+   (lookup tables / schemas re-stating those procedures), and consumer SKILL.md files (re-stating
+   contract terms they consume).
+
+2. **Classify each restatement: pointer or copy.** A *pointer* defers to the canonical source
+   ("see choose/SKILL.md Q7"). A *restatement* re-encodes the rule's content (prose, a table row, a
+   code block, an example). Only restatements can diverge; pointers cannot.
+
+3. **Diff each restatement against canonical** and assign severity:
+   - **HIGH** — logic/behavior diverges: an operator following the restatement would *do something
+     different* from canonical (e.g., the restatement collapses two distinct failure modes into one
+     branch, or omits a guard canonical enforces).
+   - **MEDIUM** — wording/scope diverges without (yet) changing behavior: a table that adds or drops
+     a column, an example missing an edge case, or imprecise phrasing of an otherwise-correct rule
+     ("stored as-is with cloudId: null" vs. "ticket keys stored without verification").
+   - **LOW** — DRY-only: the restatement currently matches verbatim, so nothing is wrong *today*,
+     but the duplication is a latent cascade risk. Flag for conversion to summary + pointer. (This
+     is the only non-divergence finding in this class.)
+
+4. **Cascade across all restatements.** When this PR changed a canonical file, sweep *every* file
+   that restates *any* changed rule before reporting — do not stop at the first diverged
+   restatement. A missed sibling restatement is a miss.
+
+**Example — HIGH (logic divergence)** (PR #108, logging-migration choose):
+```
+File: choose/references/SCORING.md:74–77
+Canonical: choose/SKILL.md → Q7=F implementation
+Issue: SCORING.md step 1 collapses two distinct failure modes — "MCP not installed" and
+  "atlassianUserInfo call fails" — into a single "if API call fails" branch. SKILL.md
+  distinguishes them with different interaction behaviors (no interaction vs. retry/skip prompt).
+Severity: HIGH — an operator following SCORING.md handles MCP-unavailable with a user prompt
+  instead of silently storing keys as-is with cloudId: null.
+```
+
+**Example — LOW (DRY-only, no current divergence)**:
+```
+File: migrate/SKILL.md:120–135
+Canonical: choose/SKILL.md → fleet-state.json contract
+Issue: migrate/SKILL.md reproduces the full fleet-state.json field table verbatim rather than
+  summarizing + pointing to choose/SKILL.md. It matches today, but any future edit to the contract
+  in choose/SKILL.md will silently diverge here.
+Severity: LOW — convert the duplicated table to a one-line summary + pointer to choose/SKILL.md.
+```
+
+**Relationship to adjacent classes**:
+- **Class 6 (Documentation Accuracy)**: doc-vs-code (and doc/doc within one file) against an
+  external source of truth. Class 11 is doc-vs-doc *across files*, where one doc is the declared
+  canonical owner of the rule.
+- **Class 8 (Semantic Correctness / Logical Completeness)**: two sections of *the same file*
+  contradicting each other. Class 11 is two *different files* disagreeing about a rule one owns.
+- **Class 9 (Skill Doc / Spec Completeness)**: a *single* SKILL.md's internal completeness after a
+  scope/rename change. Class 11 checks whether that SKILL.md's changes propagated to the *other*
+  files that restate its rules.
+
+---
+
 ## Update Protocol
 
 This is a **living document** — its lenses accumulate across all projects and all PRs, not just
@@ -686,4 +763,4 @@ counts, no thread totals.
 - Provenance note
 - Relationship to the nearest adjacent class (to prevent overlap drift)
 
-*Last updated: 2026-06-28.*
+*Last updated: 2026-06-29.*

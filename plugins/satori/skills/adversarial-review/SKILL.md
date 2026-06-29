@@ -69,43 +69,52 @@ fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 ```
 
-### 4. Extract all artifacts ONCE (fixed for the entire run)
+### 4. Pin the comparison refs (run once)
 
-Agents must NOT re-run `git diff` mid-loop on their own. All agents in all rounds receive
-these same snapshots.
+Record these values and pass them verbatim to every review agent. **Agents run their own diff
+and read the files their lens needs** — the orchestrator does not pre-read or paste file
+contents into agent prompts.
 
 ```bash
-# The DIFF orients agents (what changed, where); they read FULL file contents for cascade sweeps
-DIFF=$(git diff origin/$BASE_BRANCH...$CURRENT_BRANCH)
-
-# Language-agnostic source files changed in this PR
-CHANGED_SOURCE_FILES=$(git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
-  | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" || true)
-
-# Documentation scope:
-#   (1) any doc file changed directly in the PR
-#   (2) README/CHANGELOG adjacent to any changed source file (up one directory)
-CHANGED_DOC_FILES_DIRECT=$(git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
-  | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)" || true)
-CHANGED_DOC_FILES_ADJACENT=$(echo "$CHANGED_SOURCE_FILES" | xargs -I{} dirname {} 2>/dev/null \
-  | sort -u \
-  | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \( -name "README*" -o -name "CHANGELOG*" \) 2>/dev/null' \
-  | sort -u || true)
-CHANGED_DOC_FILES=$(printf '%s\n%s\n' "$CHANGED_DOC_FILES_DIRECT" "$CHANGED_DOC_FILES_ADJACENT" \
-  | sort -u | grep -v '^$' || true)
+# Pinned from Step 3 — fixed for all agents in all rounds
+BASE_BRANCH=<resolved in Step 3>
+CURRENT_BRANCH=<resolved in Step 3>
 ```
 
-**Scope note (explain to agents):** `DIFF` is the orientation artifact — it shows *what
-changed* and *where*. Review agents must read the **full file contents** of `CHANGED_SOURCE_FILES`
-(not just the diff) so the cascade sweep can find every callsite of a failure mode across the
-file, not just the lines that changed.
+Agents use these ref values with the following enumeration commands (embed these in every agent
+prompt alongside the refs):
+
+```bash
+# Orientation: run once at review start to see what changed and where
+git diff origin/$BASE_BRANCH...$CURRENT_BRANCH
+
+# List changed source files (read in full for cascade sweep)
+git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+  | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"
+
+# List changed doc files (for doc/spec lenses — see Phase A)
+#   (1) doc files changed directly in the PR
+git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+  | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)"
+#   (2) README/CHANGELOG adjacent to any changed source file (up one directory)
+git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+  | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" \
+  | xargs -I{} dirname {} 2>/dev/null | sort -u \
+  | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \( -name "README*" -o -name "CHANGELOG*" \) 2>/dev/null' \
+  | sort -u
+```
+
+Each agent runs the diff **once at the start of its review**, before applying its lens. An agent
+must not re-diff after Phase D fixes begin. Within a round the tree is frozen until Phase D, so
+every Phase A agent sees the same state — the same guarantee the orchestrator-extract model
+provided, without the orchestrator needing to hold file contents.
 
 ---
 
 ## Per-Round Loop
 
-Repeat up to `--rounds` times. After each round, re-extract the diff (Phase E) before deciding
-whether to continue.
+Repeat up to `--rounds` times. After each round, check the termination condition (Phase E) before
+deciding whether to continue.
 
 ### Phase A — Parallel Review (one agent per class)
 
@@ -114,10 +123,17 @@ Spawn one review agent for **each entry in `PATTERN_CLASSES`**. Run them concurr
 **Every review agent prompt MUST include:**
 
 1. The relevant pattern class section (cut from `$PATTERNS_FILE`)
-2. The full `DIFF`
-3. The full contents of all files in `CHANGED_SOURCE_FILES` (read them; don't send paths)
+2. The pinned `BASE_BRANCH`, `CURRENT_BRANCH`, and the enumeration commands from Setup Step 4
+3. Instruction to the agent: *run the diff once (orientation), enumerate changed files, and read
+   the **full contents** of the files your lens needs:*
+   - **Code lenses** (classes 1–5, 7): read the full contents of changed **source** files
+   - **Doc/spec lenses** (Documentation Accuracy #6, Semantic Correctness #8, Skill Doc / Spec
+     Completeness #9, Spec Operator Walkthrough #10, Cross-File Rule Consistency #11): read the
+     full contents of changed **doc** files; read source files only if the lens explicitly
+     requires cross-referencing code (e.g., class 6 doc-vs-code checks)
+   - **Class 11 (Cross-File Rule Consistency)**: read full contents of **both** changed source and
+     doc files — a rule can be restated across a doc and a code file
 4. The Intent Brief
-5. For the **Documentation Accuracy** class only: also include the full contents of all files in `CHANGED_DOC_FILES`
 
 **Model selection:**
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
@@ -187,9 +203,10 @@ For each approved finding, apply the fix. The fix agent receives:
 Run the test suite after applying all fixes for this round. If tests fail, report the failures
 before proceeding — do not continue to the next round with a red test suite.
 
-### Phase E — Re-extract Diff; Check Termination
+### Phase E — Check Termination
 
-Re-run the `DIFF=` extraction command from Setup Step 4 against the (now-modified) working tree.
+The next round's Phase A agents will self-diff the now-modified working tree when they start.
+No orchestrator re-extraction is needed.
 
 **Terminate the loop when:**
 - All agents returned `"is_clean": true` and the synthesizer finds no new findings, OR
