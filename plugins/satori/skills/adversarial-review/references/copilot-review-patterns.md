@@ -310,8 +310,9 @@ when implementation was changed but the adjacent comment was not updated.
    - State transition descriptions that no longer match the state machine
 2. For every `# trusted / distrusted` comment listing specific values: verify the list matches
    the code.
-3. **Spec-code coherence**: For any feature described in a SKILL.md or instruction doc alongside
-   its implementing code, verify the documented behavior matches the implementation. (e.g., "jira
+3. **Spec-code coherence**: For any feature described in a README, design doc, runbook, or
+   instruction doc (a Claude Code skill's SKILL.md is one instance of this) alongside its
+   implementing code, verify the documented behavior matches the implementation. (e.g., "jira
    ticket embedded in branch name" — is `_branch_name()` actually doing that?)
 4. **Changelog coverage**: If any commit in this PR fixes a doc/code artifact from an earlier
    commit in the same PR (e.g., correcting a CHANGELOG entry, fixing a SKILL.md line), verify
@@ -446,17 +447,23 @@ def test_is_no_conversion_repo_returns_false_for_none_generator(self):
 
 ---
 
-### 9. Skill Doc / Spec Completeness
+### 9. Operator Spec Completeness
 
-**Description**: A skill document (SKILL.md, instruction doc, or operator spec) is reviewed
-as an *operator specification* — executable, complete, and internally consistent. Issues arise
-when the document accurately described the original scope but was not fully updated when scope
-broadened, phases were renamed, or new decision branches were added. Unlike Documentation
+**Description**: A procedural document — a runbook, playbook, migration guide, onboarding doc,
+API integration guide, or a Claude Code skill's SKILL.md — is reviewed as an *operator
+specification*: executable, complete, and internally consistent. "Operator" here means anyone
+following the document's instructions step by step, not specifically an SRE or ops role. Issues
+arise when the document accurately described the original scope but was not fully updated when
+scope broadened, phases were renamed, or new decision branches were added. Unlike Documentation
 Accuracy (class 6, which covers code/doc drift and doc/doc inconsistency in prose files), this
 class covers gaps that appear specifically when reading a **step-by-step operator spec** as
 though you are about to follow it for the first time.
 
-*Provenance: empirical — derived from 22 Copilot threads on PR #106 (prose-only SKILL.md change).*
+*Provenance: empirical — derived from 22 Copilot threads on PR #106, a prose-only change to a
+Claude Code skill's SKILL.md. The five failure modes below are not specific to Claude Code
+skills — they generalize to any procedural document where a reader executes instructions in
+order: a deployment runbook, an incident-response playbook, a customer onboarding guide, an
+API migration doc. SKILL.md is simply the artifact type where this class was first observed.*
 
 Common forms:
 - **Stale scope language**: The PR broadens scope (e.g., adds a new call category), but step
@@ -478,12 +485,13 @@ Common forms:
 
 **How to find**:
 
-1. **Scope-broadening sweep**: If this PR broadens the scope of a skill, grep the entire
-   SKILL.md for the old scope terms (e.g., `NEEDS_LLM_REVIEW`, `LLM pass`). For each hit:
-   is it still accurate after the broadening, or should it now include the new scope? Apply
-   in one pass — do not wait for Copilot to find them one at a time.
+1. **Scope-broadening sweep**: If this PR broadens the scope of the document's subject (e.g., a
+   skill, a service, a migration procedure), grep the entire document for the old scope terms
+   (e.g., `NEEDS_LLM_REVIEW`, `LLM pass`). For each hit: is it still accurate after the
+   broadening, or should it now include the new scope? Apply in one pass — do not wait for
+   Copilot to find them one at a time.
 
-2. **Rename cascade**: If a phase or pass was renamed, grep the entire SKILL.md for the old
+2. **Rename cascade**: If a phase or pass was renamed, grep the entire document for the old
    name. Update every hit: step headers, mid-step instructions, skip conditions, idempotency
    notes, and report section labels. A partial rename (some hits updated, others not) produces
    one Copilot thread per missed hit.
@@ -505,7 +513,7 @@ Common forms:
    later. If Step 3 introduces M as "the count of NEEDS_LLM_REVIEW calls", later steps must
    consistently call it M (not `needsLlmReview` the jq field name, or "the output of jq").
 
-**Root cause note**: These issues arise because SKILL.md specs are typically reviewed for
+**Root cause note**: These issues arise because procedural specs are typically reviewed for
 *accuracy* (does the text match what was intended?) rather than for *executability and
 completeness* (can an operator follow these steps step-by-step without gaps?). The five
 heuristics above simulate what Copilot does when it reads the spec as an operator.
@@ -554,20 +562,23 @@ For each TRANSFORMED call in .claude/analyze-reports/transform-report.json:
 
 ### 10. Spec Operator Walkthrough
 
-**Description**: A SKILL.md (or instruction doc / operator spec) is read *linearly, top to
-bottom, by someone who has never seen it and has no foreknowledge of what was intended* — an
-operator about to follow it for the first time. The reviewer flags every place they would get
-stuck, have to guess, or hit a branch with no documented path forward. This is a **judgment-based
-lens with no heuristics**, and that is the entire point: where Class 9 (Skill Doc / Spec
-Completeness) enumerates five *known* failure modes and greps for them, this class catches the
-novel and cascading gaps those heuristics did not anticipate — the confusion that only surfaces
-when you actually try to execute the document as written, in order, without skipping ahead.
+**Description**: A procedural document — a runbook, playbook, migration guide, onboarding doc,
+API integration guide, or a Claude Code skill's SKILL.md — is read *linearly, top to bottom, by
+someone who has never seen it and has no foreknowledge of what was intended*: an operator about
+to follow it for the first time. The reviewer flags every place they would get stuck, have to
+guess, or hit a branch with no documented path forward. This is a **judgment-based lens with no
+heuristics**, and that is the entire point: where Class 9 (Operator Spec Completeness) enumerates
+five *known* failure modes and greps for them, this class catches the novel and cascading gaps
+those heuristics did not anticipate — the confusion that only surfaces when you actually try to
+execute the document as written, in order, without skipping ahead.
 
 *Provenance: proactive — designed during adversarial-review architecture review before first observed occurrence.*
 
 **Domain context the reviewer needs** (safe to provide — this is *what the artifact is*, not a
 list of how it tends to fail):
-- A SKILL.md is an operator specification. It is meant to be *executed* — a person or agent reads
+- A procedural document is an operator specification: a deployment runbook, an incident
+  playbook, an onboarding guide, an API integration doc, and a Claude Code skill's SKILL.md are
+  all instances of this artifact type. It is meant to be *executed* — a person or agent reads
   it step by step and performs each action it describes. "Following it" means doing exactly what
   each step says, in the order written, using only information available at that point in the doc.
 - The reader has no access to the author's intent, the PR description, the surrounding code, or
@@ -588,9 +599,9 @@ not overlapping**: Class 9 catches the failure modes we have already seen and na
 catches what those named modes did not anticipate. Overlap between their findings is expected and
 fine — the synthesizer deduplicates by (file, line_range).
 
-**Boundary**: Provide the Class 10 agent the *domain context* above (what a SKILL.md is, what being
-an operator means) but **never** Class 9's failure-mode list. The known-failure-mode list is the
-contaminating part; the domain context is not.
+**Boundary**: Provide the Class 10 agent the *domain context* above (what a procedural document
+is, what being an operator means) but **never** Class 9's failure-mode list. The known-failure-mode
+list is the contaminating part; the domain context is not.
 
 **How to apply** (judgment-based, not heuristic-based):
 
@@ -615,7 +626,7 @@ flagged calls,' but nothing earlier told me how calls get flagged or where the f
 recorded, so I cannot proceed without guessing"* — not as a heuristic class name.
 
 **Relationship to other classes**:
-- **Class 9 (Skill Doc / Spec Completeness)**: complementary peer. Class 9 = known failure modes,
+- **Class 9 (Operator Spec Completeness)**: complementary peer. Class 9 = known failure modes,
   found by grep/enumeration. Class 10 = unanticipated gaps, found by reading as a naive operator.
   Run both, in parallel, as separate agents. Do not merge.
 - **Class 6 (Documentation Accuracy)**: Class 6 checks whether the doc *matches the code/other
@@ -659,21 +670,44 @@ and frequently aren't. This lens compares each restatement against the file that
 definition. It is exclusively **cross-file**: file A defines the rule, files B/C restate it, and
 they have drifted apart.
 
+The canonical source is not always a doc. When a project ships an executable script, library
+function, config schema, or type definition that implements or defines something, and the
+project's own instructional text (a README, a design doc, a quick-start, a Claude Code skill's
+SKILL.md) re-derives that same thing inline — a full API call sequence, a polling loop, a query,
+a copy of a schema's fields — that inline block is a restatement of the canonical
+implementation, exactly as prone to drift as a doc-to-doc restatement. Treat the script/function/
+schema as the canonical source and the inline block as the restatement. This applies to any
+multi-file codebase, not just skills: a Java module's README restating a config default that
+lives in a properties file, or two services' READMEs both restating a shared API contract, are
+the same class of finding.
+
 *Lens type: heuristic-based.*
 
 *Provenance: empirical — PR #108 needed 8 Copilot rounds; 6 were cross-file restatement drift in
 the logging-migration `choose` skill (SCORING.md / FLEET-STATE-SCHEMA.md / EXAMPLE-PLAN.md diverged
 from choose/SKILL.md). The per-file logic/correctness lenses never compared a rule across files, so
-the drift survived local review.*
+the drift survived local review. Extended after `address-pr-issues/SKILL.md` was found to
+reproduce its own `fetch_pr_threads()` script logic inline in three separate places — one of which
+had already silently drifted (see doc-vs-script example below).*
 
 **How to find**:
 
 1. **Build the restatement map.** For every rule, procedure, value constraint, contract term, or
    worked example that appears in more than one touched file, identify the **canonical source** —
-   the file that owns the rule by definition (usually SKILL.md), not a file that copied it. A
-   multi-file skill typically has: SKILL.md (canonical procedures + contracts), references/*.md
-   (lookup tables / schemas re-stating those procedures), and consumer SKILL.md files (re-stating
-   contract terms they consume).
+   the file that owns the rule by definition (often a primary spec, README, or design doc; a
+   Claude Code skill's SKILL.md is one instance), not a file that copied it. A multi-file project
+   typically has: a primary spec/README (canonical procedures + contracts), reference docs
+   (lookup tables / schemas re-stating those procedures), and consumer docs (re-stating contract
+   terms they consume) — a multi-file Claude Code skill follows the same shape with SKILL.md as
+   the primary spec and `references/*.md` as the reference docs. **Also check
+   `scripts/`/`lib/`/`src/`**: if a script, library function, config schema, or type definition
+   exists that performs or defines the same thing an instructional block spells out step-by-step
+   (a GraphQL query, a REST call sequence, a retry/polling loop, a config contract), that
+   implementation is canonical and the inline block is a restatement — flag it even though "file
+   A defines the rule" here means "code A implements/defines the thing," not prose. A doc that
+   explicitly warns readers not to hand-write an operation (e.g. a "use scripts first" table)
+   while still containing that exact hand-written operation elsewhere in the same file is a
+   strong, self-contained signal.
 
 2. **Classify each restatement: pointer or copy.** A *pointer* defers to the canonical source
    ("see choose/SKILL.md Q7"). A *restatement* re-encodes the rule's content (prose, a table row, a
@@ -715,13 +749,30 @@ Issue: migrate/SKILL.md reproduces the full fleet-state.json field table verbati
 Severity: LOW — convert the duplicated table to a one-line summary + pointer to choose/SKILL.md.
 ```
 
+**Example — doc-vs-script, already diverged once (address-pr-issues)**:
+```
+File: address-pr-issues/SKILL.md — three separate inline `gh api graphql` blocks reproducing the
+  PR review-thread fetch query (a manual fallback in Step 1, "OLD METHOD" in Step 6, a re-fetch
+  in Step 8)
+Canonical: scripts/lib/github-api.sh → fetch_pr_threads()
+Issue: when a pagination bug was fixed in fetch_pr_threads() (added pageInfo{hasNextPage
+  endCursor} + a stderr warning when a PR exceeds 100 threads), the inline duplicates in SKILL.md
+  did not get the fix automatically — they had to be located and patched by hand in a follow-up
+  change (CHANGELOG.md v1.5.0). The duplication looked like a DRY-only nit until it produced a
+  real functional gap: rounds run against the stale inline copy silently under-counted threads.
+Severity: when the canonical side is executable, default to MEDIUM even with no divergence found
+  yet — a script fix doesn't force anyone to notice or re-sync inline copies (they still parse
+  and run), unlike a broken build. Fix: replace the inline block with a call to the script/
+  function, or a one-line pointer to it if the block is illustrative rather than operational.
+```
+
 **Relationship to adjacent classes**:
 - **Class 6 (Documentation Accuracy)**: doc-vs-code (and doc/doc within one file) against an
   external source of truth. Class 11 is doc-vs-doc *across files*, where one doc is the declared
   canonical owner of the rule.
 - **Class 8 (Semantic Correctness / Logical Completeness)**: two sections of *the same file*
   contradicting each other. Class 11 is two *different files* disagreeing about a rule one owns.
-- **Class 9 (Skill Doc / Spec Completeness)**: a *single* SKILL.md's internal completeness after a
+- **Class 9 (Operator Spec Completeness)**: a *single* SKILL.md's internal completeness after a
   scope/rename change. Class 11 checks whether that SKILL.md's changes propagated to the *other*
   files that restate its rules.
 
@@ -763,4 +814,4 @@ counts, no thread totals.
 - Provenance note
 - Relationship to the nearest adjacent class (to prevent overlap drift)
 
-*Last updated: 2026-06-29.*
+*Last updated: 2026-07-01.*

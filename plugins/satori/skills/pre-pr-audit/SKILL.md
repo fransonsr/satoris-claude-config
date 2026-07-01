@@ -57,7 +57,6 @@ fi
 ```bash
 CHANGED_FILES=$(git diff --name-only $BASE_BRANCH...HEAD)
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
-CHANGED_SKILL_FILES=$(echo "$CHANGED_FILES" | grep "SKILL\.md$" || true)
 CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
 
 # If no Java files, check if there are other languages to analyze
@@ -100,7 +99,7 @@ Use the Workflow tool to spawn these agents simultaneously. Pass each agent the 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
 - **Maven Plugin Checks** (skip if no `@Mojo` annotation or `maven-plugin` packaging detected) — checks in Step 4.6 below
-- **Spec-Completeness Review** (skip if `CHANGED_SKILL_FILES` is empty) — checks described in Step 4.8 below; returns findings for review-pause in Step 5
+- **Spec-Completeness Review** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.8 below; returns findings for review-pause in Step 5
 - **Whole-Document Coherence Walk** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.9 below; single pass, non-repeating; returns findings for review-pause in Step 5
 - **Adversarial Pattern Review** — delegates to /adversarial-review (see Step 4.7); returns per-round findings for review-pause in Step 5
 
@@ -644,16 +643,19 @@ The `/adversarial-review` skill handles the full protocol:
 
 The skill returns a summary containing: per-round breakdown, findings by class, known-limitations list (accepted-risk items) for the PR description, and any termination signal (PR too large / new unclassified bug class).
 
-## Step 4.8: Spec-Completeness Review (Conditional: SKILL.md files in diff)
+## Step 4.8: Spec-Completeness Review (Conditional: procedural spec/doc files in diff)
 
-**Trigger**: Only run if `CHANGED_SKILL_FILES` is non-empty (at least one `SKILL.md` file changed).
+**Trigger**: Only run if `CHANGED_SPEC_FILES` is non-empty (SKILL.md, README.md,
+CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, or DESIGN.md changed — same trigger as Step 4.9,
+since both target procedural/spec documents, not just Claude Code skill files).
 
-This step runs the **heuristic checks of Pattern #9 (Skill Doc / Spec Completeness)** from
+This step runs the **heuristic checks of Pattern #9 (Operator Spec Completeness)** from
 `copilot-review-patterns.md` — the five *known* failure modes (scope sweep, rename cascade,
 operator executability, branch completeness, term definition) that Copilot finds one at a time
 across many rounds. Running them proactively in one pass eliminates those rounds. These five
-checks treat the changed skill documents as *operator specifications* — executable, complete, and
-internally consistent.
+checks treat the changed documents as *operator specifications* — executable, complete, and
+internally consistent. This applies to any procedural document (a runbook, a migration guide,
+an onboarding doc, a SKILL.md), not just Claude Code skills.
 
 **Complementary lens handled elsewhere — do NOT duplicate here**: the holistic operator
 walkthrough (Pattern #10, "Spec Operator Walkthrough") is the judgment-based complement to these
@@ -667,20 +669,20 @@ each other's findings, which preserves the walk's independence. Overlap between 
 (here) and Pattern #10 findings (Step 4.7) is expected; the adversarial-review synthesizer
 deduplicates by (file, line_range).
 
-Spawn a review agent with the full content of each changed SKILL.md and these five Pattern #9
-checks:
+Spawn a review agent with the full content of each changed spec/doc file and these five Pattern
+#9 checks:
 
 ### Check 1: Scope-Broadening Sweep
 
 If the PR description or diff indicates a scope change (e.g., "now handles X in addition to Y"),
-grep the SKILL.md for the old scope terms. For each hit, ask: does this text still accurately
+grep the document for the old scope terms. For each hit, ask: does this text still accurately
 describe the new scope, or does it need updating to include the new scope?
 
 Report every hit where the language is now too narrow. Apply in one pass.
 
 ### Check 2: Rename Cascade
 
-If a phase, pass, or term was renamed anywhere in the diff, grep the full SKILL.md for the old
+If a phase, pass, or term was renamed anywhere in the diff, grep the full document for the old
 name. Verify every hit was updated. Check: step headers, mid-step instructions, skip conditions,
 idempotency notes, routing conditions, and report section labels.
 

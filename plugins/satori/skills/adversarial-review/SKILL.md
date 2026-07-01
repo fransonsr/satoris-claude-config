@@ -127,7 +127,7 @@ Spawn one review agent for **each entry in `PATTERN_CLASSES`**. Run them concurr
 3. Instruction to the agent: *run the diff once (orientation), enumerate changed files, and read
    the **full contents** of the files your lens needs:*
    - **Code lenses** (classes 1–5, 7): read the full contents of changed **source** files
-   - **Doc/spec lenses** (Documentation Accuracy #6, Semantic Correctness #8, Skill Doc / Spec
+   - **Doc/spec lenses** (Documentation Accuracy #6, Semantic Correctness #8, Operator Spec
      Completeness #9, Spec Operator Walkthrough #10, Cross-File Rule Consistency #11): read the
      full contents of changed **doc** files; read source files only if the lens explicitly
      requires cross-referencing code (e.g., class 6 doc-vs-code checks)
