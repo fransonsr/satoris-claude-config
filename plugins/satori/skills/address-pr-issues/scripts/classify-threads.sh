@@ -39,8 +39,16 @@ fi
 # 3. Empty/missing latest-comment text is NOT treated as complimentary — an unresolvable body
 #    (both lastCommentBody and bodyFull null/blank) must not silently auto-resolve.
 # 4. A stale-schema cache (written before lastCommentAuthor/lastCommentBody/isOutdated existed)
-#    is detected via `has()` and routed straight to `keep`, not silently classified on the
-#    FIRST comment's data as if it were the latest activity.
+#    is detected via `has()` on ALL THREE fields and routed straight to `keep`, not silently
+#    classified on the FIRST comment's data as if it were the latest activity. (Round 2 fix:
+#    the jq guard below previously checked only 2 of these 3 fields, disagreeing with this
+#    comment and the warning banner below it — a record missing only `isOutdated` slipped
+#    through un-guarded. Now all three are checked in both places.)
+# 5. A present-but-null `lastCommentAuthor` (GitHub returns `author: null` for deleted/
+#    suspended/anonymized accounts — a real API case, not hypothetical) is treated the same as
+#    "unknown," not silently swapped for the thread-opener's identity via `//` fallback — that
+#    fallback compared the wrong two people (last commenter vs. first commenter) and could
+#    misclassify a genuinely-reopened thread as already-resolved.
 # All of these err toward the safe side (more threads land in `keep`, not fewer) — and any
 # thread resolved via the silent bucket still surfaces in Step 6's accountability closeout
 # table, so a misclassification is visible, not silently lost.
@@ -61,20 +69,22 @@ def is_complimentary(text):
   ) | not;
 
 . as $t
-| ((($t | has("lastCommentAuthor")) and ($t | has("lastCommentBody"))) | not) as $staleSchema
-| ($t.lastCommentAuthor // $t.author) as $lastAuthor
+| ((($t | has("lastCommentAuthor")) and ($t | has("lastCommentBody")) and ($t | has("isOutdated"))) | not) as $staleSchema
+| ($t.lastCommentAuthor == null) as $lastAuthorUnknown
 | ($t.lastCommentBody // $t.bodyFull // "") as $lastText
 | is_complimentary($lastText) as $complimentary
 | if $staleSchema then
     $t + {bucket: "keep", labels: ["stale_cache_schema"]}
-  elif ($t.isResolved == true) and ($lastAuthor == $prAuthor or $complimentary) then
+  elif $lastAuthorUnknown then
+    $t + {bucket: "keep", labels: ["last_author_unknown"]}
+  elif ($t.isResolved == true) and ($t.lastCommentAuthor == $prAuthor or $complimentary) then
     $t + {bucket: "already_resolved", labels: []}
   elif ($t.isResolved == false) and $complimentary then
     $t + {bucket: "silent", labels: []}
   else
     $t + {bucket: "keep", labels: (
         (if ($t.isOutdated == true) and ($t.isResolved == false) then ["outdated"] else [] end)
-        + (if ($t.isResolved == true) and ($lastAuthor != $prAuthor) and ($complimentary | not) then ["resolved_new_activity"] else [] end)
+        + (if ($t.isResolved == true) and ($t.lastCommentAuthor != $prAuthor) and ($complimentary | not) then ["resolved_new_activity"] else [] end)
       )}
   end
 ' "$THREADS_FILE" > "${THREADS_FILE}.tmp" && mv "${THREADS_FILE}.tmp" "$THREADS_FILE"
@@ -82,8 +92,12 @@ def is_complimentary(text):
 SILENT=$(jq -s 'map(select(.bucket == "silent")) | length' "$THREADS_FILE")
 ALREADY_RESOLVED=$(jq -s 'map(select(.bucket == "already_resolved")) | length' "$THREADS_FILE")
 KEEP=$(jq -s 'map(select(.bucket == "keep")) | length' "$THREADS_FILE")
+DEGRADED=$(jq -s 'map(select(.labels == ["stale_cache_schema"] or .labels == ["last_author_unknown"])) | length' "$THREADS_FILE")
 
 echo "$SILENT silent threads identified (react + resolve pending), $ALREADY_RESOLVED already-resolved skipped — $KEEP substantive threads to triage."
+if [[ "$DEGRADED" -gt 0 ]]; then
+  echo "⚠️  $DEGRADED of the $KEEP 'substantive' threads were routed to keep only because their data was degraded (stale schema or unknown last-comment author), not because classification found real content — no content classification actually ran on them."
+fi
 echo ""
 echo "Silent thread IDs (react + resolve, no user prompt):"
 jq -r 'select(.bucket == "silent") | .threadId' "$THREADS_FILE"

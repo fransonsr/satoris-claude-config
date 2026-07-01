@@ -34,33 +34,50 @@
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 1.5. Filter trivial threads (auto)     │ ← classify-threads.sh: silent/
+│ 1.6. Filter trivial threads (auto)     │ ← classify-threads.sh: silent/
 │      LGTM-only threads react+resolve   │   already-resolved auto-handled
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 2. Fix issues (test + sonar-scanner)   │
+│ 2. Assess complexity                    │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 3. RESOLVE CONVERSATIONS ⚠️ CRITICAL    │ ← Do this BEFORE commit!
+│ 2.5. Adversarial review gate (MANDATORY)│ ← does this round warrant
+└────────────────┬────────────────────────┘   /adversarial-review first?
+                 │
+┌────────────────▼────────────────────────┐
+│ 3. Prioritize issues                    │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 3.5. Adversarial review (if gated in)  │ ← delegated /adversarial-review
+└────────────────┬────────────────────────┘   --rounds 1, before fixing
+                 │
+┌────────────────▼────────────────────────┐
+│ 4. Fix issues (test + sonar-scanner)   │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 5. RESOLVE CONVERSATIONS ⚠️ CRITICAL    │ ← Do this BEFORE commit!
 │    - Add comments explaining fixes     │
 │    - Mark threads as resolved via API  │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 4. Commit changes                       │
+│ 6. Commit changes                       │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 5. Push to GitHub                       │
+│ 7. Push to GitHub (protected-branch    │
+│    guard checked first)                 │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 6. Wait for CI/CD + new Copilot review │
+│ 8. Wait for CI/CD + new Copilot review │
 └────────────────┬────────────────────────┘
                  │
-                 └─→ New issues? Return to step 2
+                 └─→ New issues? Return to step 4
 ```
 
 **Why this order matters**: Reviewers see resolved conversations immediately, commit messages reference already-addressed issues.

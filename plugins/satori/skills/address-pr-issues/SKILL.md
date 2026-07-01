@@ -72,7 +72,9 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 1. **Fetch Issues**: Read Copilot PR comments, PR description (for intent/risk scope), and SonarQube analysis
 1.6. **Silent-thread pre-filter (NEW)**: Auto-handle purely-complimentary and already-resolved threads before triage
 2. **Assess Complexity**: Determine if adversarial review agent needed
+2.5. **Adversarial Review Gate (MANDATORY CHECK)**: Decide, per Step 2.5's criteria, whether this round's issues warrant delegating to `/adversarial-review` before fixes are planned
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
+3.5. **Adversarial Review (Delegated)**: When the Step 2.5 gate says yes, run `/adversarial-review --rounds 1` against this round's changes before proceeding to fixes
 3.7. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
 4. **Plan & Execute**: Create implementation plan and fix issues using TDD / xp-pair for complex changes
 4.5. **Post-fix sweep**: Re-sweep fixes for cascading issues they may have introduced — add any hits to this round before committing
@@ -1229,12 +1231,21 @@ rather than reimplementing its commit-message and `fixes.json` bookkeeping inlin
 
 ### Protected-Branch Guard (NEW — before push)
 
-**Before pushing**, verify the current branch does not track a protected branch:
+**Before pushing**, verify the current branch is not `master`/`main` directly by name — do NOT
+use `git config branch.<name>.merge` to infer this: it reads the branch's configured upstream
+merge ref, which is empty (and the command exits non-zero) on any branch that has no explicit
+tracking ref configured, e.g. one created with `git checkout -b` and never pushed with `-u`. On
+such a branch this check silently fails open, matching neither `refs/heads/master` nor
+`refs/heads/main`, and falls through to an unguarded push. Compare the branch name directly
+instead, which has no such gap:
 ```bash
-git config branch.$(git branch --show-current).merge
+CURRENT_BRANCH=$(git branch --show-current)
+if [[ "$CURRENT_BRANCH" == "master" || "$CURRENT_BRANCH" == "main" ]]; then
+  echo "🛑 STOP: current branch is '$CURRENT_BRANCH' — refusing to push directly to a protected branch." >&2
+  exit 1
+fi
 ```
-If that returns `refs/heads/master` or `refs/heads/main`, **STOP** — alert the user and ask how
-to proceed. Otherwise:
+Otherwise:
 ```bash
 git push
 ```
@@ -1250,27 +1261,33 @@ context compaction or a resumed session:
 DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0' "$FIXES_FILE")
 ```
 
-- **If `DIRECTIONAL_COUNT >= 1`**: at least one fix shifted what the PR does. Actively
-  re-request review — don't wait for Copilot to notice the push on its own:
-  ```bash
-  gh pr edit $PR_NUMBER --add-reviewer @copilot
-  ```
-  Use exact spelling `@copilot`; no REST fallback. If it fails (422 / user-not-found), tell the
-  user: "Copilot re-review couldn't be triggered via CLI — use the 'Re-request review' button
-  next to Copilot in the Reviewers panel."
-
-  **Track re-review count** in `$WORKSPACE_DIR/copilot_review_count.txt` — a plain integer file,
-  the same pattern as `round.txt`, so this survives a context compaction like every other
-  cross-round counter in this doc:
+- **If `DIRECTIONAL_COUNT >= 1`**: at least one fix shifted what the PR does — but check the
+  re-review count **first**, before re-requesting. Re-requesting unconditionally on every
+  directional round is exactly the "just keep fixing what Copilot flags" anti-pattern the
+  Convergence Criterion below warns against — the gate belongs here, at the point of the
+  action it gates, not several sections later where it's easy to skip in practice:
   ```bash
   COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
   # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
   [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
-  # After a successful re-request above, increment it
-  echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
   ```
-  See the numeric `/plan` escalation under Convergence Criterion below, which reads this file
-  before re-requesting a 3rd+ time.
+  - **If `$(cat "$COUNT_FILE") -ge 2`** (this re-request would be review #3 or beyond): **stop**
+    — do not re-request. Follow "Numeric /plan Escalation" under Convergence Criterion below:
+    draft an actual `/plan` prompt naming this PR's recurring themes and wait for the user.
+  - **Otherwise**, actively re-request review — don't wait for Copilot to notice the push on
+    its own:
+    ```bash
+    gh pr edit $PR_NUMBER --add-reviewer @copilot
+    ```
+    Use exact spelling `@copilot`; no REST fallback. If it fails (422 / user-not-found), tell
+    the user: "Copilot re-review couldn't be triggered via CLI — use the 'Re-request review'
+    button next to Copilot in the Reviewers panel."
+
+    Then increment the counter (same file, same pattern as `round.txt`, so it survives a
+    context compaction like every other cross-round counter in this doc):
+    ```bash
+    echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
+    ```
 
   `address-pr-issues` has no PR-description-generation tool, so unlike a fully automated
   refresh, surface a one-line manual nudge: "N directional fix(es) this round — consider
@@ -1368,14 +1385,15 @@ Copilot will eventually stop — the convergence criterion ends the loop, not a 
 
 ### Numeric /plan Escalation (NEW)
 
-In addition to the qualitative signs above, check `$WORKSPACE_DIR/copilot_review_count.txt`
-(tracked in Step 8) before re-requesting: `[[ $(cat "$COUNT_FILE") -ge 2 ]]` means this would be
-review #3 or beyond. **Stop before re-requesting** and recommend a `/plan` cycle instead. Draft
-the actual `/plan` prompt — not a placeholder —
-naming this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check
-gaps in the export module"), with thread IDs and affected scope where available. Present it to
-the user and wait for their response before continuing. This turns "just keep fixing what
-Copilot flags" into a deliberate checkpoint once a PR has clearly outgrown reactive rounds.
+In addition to the qualitative signs above, Step 8's re-request gate (see "Active Copilot
+Re-Request") checks `$WORKSPACE_DIR/copilot_review_count.txt` inline, at the point of the
+re-request decision itself, rather than deferring the check here: `-ge 2` means the pending
+re-request would be review #3 or beyond, and Step 8 stops before sending it. When that happens,
+recommend a `/plan` cycle instead: draft the actual `/plan` prompt — not a placeholder — naming
+this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check gaps in
+the export module"), with thread IDs and affected scope where available. Present it to the user
+and wait for their response before continuing. This turns "just keep fixing what Copilot flags"
+into a deliberate checkpoint once a PR has clearly outgrown reactive rounds.
 
 ## SonarQube Issue Resolution
 

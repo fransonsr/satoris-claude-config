@@ -116,13 +116,10 @@ reference / conditional language / word count).
 **Example**:
 ```bash
 ./classify-threads.sh 68 octocat
-# Output:
-# 2 silent threads handled, 1 already-resolved skipped — 4 substantive threads to triage.
-#
-# Silent thread IDs (react + resolve, no user prompt):
-# PRRT_kwDO...
-# PRRT_kwDO...
 ```
+Prints one summary line with the silent/already-resolved/substantive counts, followed by the
+list of silent thread IDs to react-and-resolve. Read the script itself for the exact wording —
+don't rely on a copy pasted here, it will drift.
 
 **Requires**: `threads.json` entries with `lastCommentAuthor`/`lastCommentBody`/`isOutdated` —
 present if cached via `init-pr-state.sh` (which calls the current `fetch_pr_threads()`). Re-run
