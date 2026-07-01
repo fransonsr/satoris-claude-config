@@ -34,6 +34,11 @@
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
+│ 1.5. Filter trivial threads (auto)     │ ← classify-threads.sh: silent/
+│      LGTM-only threads react+resolve   │   already-resolved auto-handled
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
 │ 2. Fix issues (test + sonar-scanner)   │
 └────────────────┬────────────────────────┘
                  │
@@ -64,48 +69,30 @@
 
 ## Essential Commands
 
-### Fetch Copilot Comments
+**Use the scripts in `scripts/` for all of these — see SKILL.md's "Use Automation Scripts
+First" table.** Don't hand-write `gh api graphql` or SonarQube `curl` calls; a script or
+`lib/` function already does it.
+
+### Fetch Copilot Comments + Cache Threads
 ```bash
-gh api graphql -f query='
-  query($owner: String!, $repo: String!, $pr: Int!) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
-          nodes {
-            id
-            isResolved
-            comments(first: 10) {
-              nodes {
-                author { login }
-                body
-                path
-                line
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-' -F owner='{owner}' -F repo='{repo}' -F pr=42
+./scripts/init-pr-state.sh 42
+./scripts/fetch-pr-threads.sh 42 --unresolved-only
 ```
+
+### Filter Trivial Threads (Step 1.6)
+```bash
+PR_AUTHOR=$(gh pr view 42 --json author -q .author.login)
+./scripts/classify-threads.sh 42 "$PR_AUTHOR"
+```
+Auto-resolves purely-complimentary threads ("LGTM", "👍") and skips already-resolved ones with
+no substantive activity — before you spend any triage effort on them. See SKILL.md Step 1.6.
 
 ### Fetch SonarQube Issues
-
-**Note**: Enterprise SonarQube instances with SSO may block Web API access. Use dashboard if API returns HTML.
-
 ```bash
-PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d= -f2)
-SONAR_HOST=$(grep "^sonar.host.url=" sonar-project.properties | cut -d= -f2)
-
-# Try API with Bearer token
-curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-  "$SONAR_HOST/api/issues/search?componentKeys=$PROJECT_KEY&pullRequest=42&resolved=false" \
-  | jq '.issues[] | {key, message, severity, type, component, line}'
-
-# If that returns HTML (SSO redirect), open dashboard manually:
-echo "$SONAR_HOST/dashboard?id=$PROJECT_KEY&pullRequest=42"
+./scripts/check-sonar-quality-gate.sh 42
 ```
+**Note**: Enterprise SonarQube instances with SSO may block Web API access — the script falls
+back to telling you to check the dashboard manually if the API returns HTML.
 
 ### Local Validation (Critical!)
 ```bash
@@ -115,28 +102,16 @@ mvn clean install -DskipTests && sonar-scanner
 
 ### Resolve GitHub Thread
 ```bash
-# IMPORTANT: Reply to specific review comment (threaded), not top-level PR comment!
+# IMPORTANT: this replies threaded + resolves — never use `gh pr comment` (top-level, doesn't resolve)
+./scripts/resolve-thread.sh 42 "$THREAD_ID" "Fixed in $(git rev-parse --short HEAD)"
 
-# Add threaded reply
-gh api repos/{owner}/{repo}/pulls/comments/$COMMENT_ID/replies \
-  -f body="✅ Fixed in $(git rev-parse --short HEAD)"
-
-# Resolve thread
-gh api graphql -f query='
-  mutation($threadId: ID!) {
-    resolveReviewThread(input: {threadId: $threadId}) {
-      thread { id isResolved }
-    }
-  }
-' -f threadId="$THREAD_ID"
+# Or in bulk:
+./scripts/resolve-threads-bulk.sh 42 --threads 'THREAD_ID_1,THREAD_ID_2' --message 'Fixed'
 ```
 
-**Get Comment IDs**:
+**Look up a thread/comment ID** from the cache instead of re-fetching:
 ```bash
-gh api graphql -f query='...' | jq '.data.repository.pullRequest.reviewThreads.nodes[] | {
-  threadId: .id,
-  commentId: .comments.nodes[0].databaseId
-}'
+jq -r 'select(.path == "File.java" and .line == 42) | {threadId, commentId}' "$THREADS_FILE"
 ```
 
 ### Mark SonarQube Issue as Won't Fix
@@ -214,9 +189,10 @@ private static final String INVALID_FORMAT_MSG = "Invalid format";
 
 **Strategy**:
 1. Fix initial issues
-2. Push
-3. **Wait 30 min for CI/CD**
-4. Check for new Copilot comments
+2. Push (after the protected-branch guard passes)
+3. If any fix this round was **directional** (changed what the PR does), actively
+   re-request Copilot review — don't just wait for it (see SKILL.md Step 8)
+4. Wait for CI/CD, then check for new Copilot comments
 5. Fix only CRITICAL/HIGH, defer others
 
 ---

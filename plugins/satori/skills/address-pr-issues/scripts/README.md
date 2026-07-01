@@ -107,6 +107,27 @@ Display cached PR review threads (Copilot/GitHub Advanced Security).
 # Summary: 2/5 resolved, 3 unresolved
 ```
 
+#### `classify-threads.sh <pr_number> <pr_author>` (NEW)
+Deterministically bucket cached threads into `already_resolved` / `silent` / `keep` (SKILL.md
+Step 1.6), writing `bucket` and `labels` fields back into `threads.json`. No LLM judgment —
+a fixed heuristic on the most recent comment's text (question mark / trigger word / file-line
+reference / conditional language / word count).
+
+**Example**:
+```bash
+./classify-threads.sh 68 octocat
+# Output:
+# 2 silent threads handled, 1 already-resolved skipped — 4 substantive threads to triage.
+#
+# Silent thread IDs (react + resolve, no user prompt):
+# PRRT_kwDO...
+# PRRT_kwDO...
+```
+
+**Requires**: `threads.json` entries with `lastCommentAuthor`/`lastCommentBody`/`isOutdated` —
+present if cached via `init-pr-state.sh` (which calls the current `fetch_pr_threads()`). Re-run
+`init-pr-state.sh` if a cache predates this schema.
+
 #### `resolve-thread.sh <pr_number> <thread_id> [message]`
 Resolve a single GitHub review thread (with optional threaded reply if API available).
 
@@ -185,12 +206,14 @@ Check SonarQube quality gate status and fetch blocking issues if failed.
 
 ### Workflow Automation
 
-#### `commit-pr-fixes.sh <pr_number>`
-Generate structured commit message with round tracking.
+#### `commit-pr-fixes.sh <pr_number> [directional_count]`
+Generate structured commit message with round tracking. `directional_count` (default 0) is
+persisted into `fixes.json` so Step 8 can read back how many directional-classified fixes
+landed this round without depending on conversation memory.
 
 **Example**:
 ```bash
-./commit-pr-fixes.sh 68
+./commit-pr-fixes.sh 68 2
 # Output:
 # Commit message:
 # ---
@@ -202,6 +225,7 @@ Generate structured commit message with round tracking.
 # Create commit with this message? (y/n) y
 # ✅ Commit created
 # ✅ Fix tracking updated
+# ✅ Recorded 2 directional fix(es) — Step 8 should re-request Copilot review
 ```
 
 ## Library Functions
@@ -210,10 +234,13 @@ Located in `lib/`:
 
 ### `github-api.sh`
 - `get_repo_info()` - Extract owner/repo from git remote
-- `fetch_pr_threads()` - Fetch and cache PR threads
+- `fetch_pr_threads()` - Fetch and cache PR threads, including each thread's first *and* most
+  recent comment (`lastCommentAuthor`/`lastCommentBody`/`lastCommentId`) and `isOutdated` —
+  needed by `classify-threads.sh`
 - `resolve_thread()` - Resolve a review thread
 - `try_threaded_reply()` - Add threaded reply (if API available)
 - `add_pr_comment()` - Add top-level PR comment
+- `react_to_comment()` - React to a comment (default 👍) — used for silent-bucket threads
 - `test_threaded_reply_api()` - Test threaded reply capability
 
 ### `sonar-api.sh`
@@ -226,21 +253,22 @@ Located in `lib/`:
 
 ## Typical Workflow
 
+Matches SKILL.md's step order — **resolve threads before committing**, not after.
+
 ```bash
 # 1. Initialize state (run once per PR or round)
 ./init-pr-state.sh 68
 
-# 2. Check what needs fixing
+# 2. Filter out trivial threads, then check what's substantive
+PR_AUTHOR=$(gh pr view 68 --json author -q .author.login)
+./classify-threads.sh 68 "$PR_AUTHOR"
 ./fetch-pr-threads.sh 68 --unresolved-only
 ./check-sonar-quality-gate.sh 68
 
 # 3. Make fixes (in IDE/Claude)
 # ...
 
-# 4. Commit fixes
-./commit-pr-fixes.sh 68
-
-# 5. Resolve threads (BULK - much faster!)
+# 4. Resolve threads FIRST (BULK - much faster!)
 ./resolve-threads-bulk.sh 68 \
   --filter-path 'FullExportJobIntegrationTest.java' \
   --message 'Fixed integration test setup'
@@ -249,7 +277,11 @@ Located in `lib/`:
 ./resolve-thread.sh 68 PRRT_kwDO... "Fixed resource leak"
 ./resolve-thread.sh 68 PRRT_kwDO... "Added null check"
 
-# 6. Push and wait for Copilot review
+# 5. THEN commit — pass the directional-fix count from Step 2's classification
+./commit-pr-fixes.sh 68 2
+
+# 6. Push (after the protected-branch guard — see SKILL.md Step 7), then re-request Copilot
+# review if DIRECTIONAL_COUNT >= 1 (see SKILL.md Step 8) instead of just waiting
 git push
 
 # 7. Next round (if needed)

@@ -18,8 +18,9 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 
 **Solution**: Adversarial review agent challenges completeness BEFORE implementing
 - **Step 2 (NEW)**: Assess if issues involve cascading edge cases
-- **Step 3.5 (NEW)**: Conditionally spawn adversarial reviewer agent
-- Agent probes: "What else can be null? empty? malformed?"
+- **Step 3.5 (NEW)**: Conditionally delegate to `/adversarial-review` (one round) — parallel
+  per-class agents sweep all known Copilot issue pattern classes, cascade-sweep within each
+  class, then pause for human disposition before applying git-guardrailed fixes
 - Forces comprehensive analysis and testing upfront
 - **Result**: 5 rounds → 1-2 rounds (80% reduction)
 
@@ -34,26 +35,60 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 - Obvious bugs with clear solutions
 - Low complexity, no edge case risk
 
+## ⚠️ CRITICAL: Use Automation Scripts First
+
+**Token Efficiency**: Scripts save 80-85% tokens (25k-37.5k per 15-round PR)
+
+**ALWAYS use scripts for repetitive operations** - they are in the skill's `scripts/` directory:
+
+| Operation | Script / lib function | Token Savings |
+|-----------|----------------------|---------------|
+| Initialize state, cache threads | `./scripts/init-pr-state.sh <pr_number>` | ~5k tokens |
+| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` | ~3k tokens |
+| Classify silent/already-resolved/keep buckets | `./scripts/classify-threads.sh <pr_number> <pr_author>` | ~2k tokens |
+| Resolve one thread (+ optional reply) | `./scripts/resolve-thread.sh <pr_number> <thread_id> [message]` | ~1k tokens |
+| Resolve threads in bulk | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` | ~2k tokens |
+| React to a comment (👍) | `react_to_comment()` in `lib/github-api.sh` | ~1k tokens |
+| Check quality gate + blocking issues | `./scripts/check-sonar-quality-gate.sh <pr_number>` | ~3k tokens |
+| Poll Sonar analysis completion | `wait_for_analysis()` in `lib/sonar-api.sh` | ~1k tokens |
+| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number> [directional_count]` | ~2k tokens |
+
+**🚨 Hard rule**: If you are about to write `gh api graphql`, a `curl` to SonarQube, or a
+resolve/reply/fetch/react mutation by hand, **STOP**. A wrapper script or `lib/` function in the
+table above already does it. Read the function in `lib/github-api.sh` or `lib/sonar-api.sh`
+instead of re-deriving the query. The only inline API calls permitted anywhere in this skill are
+the documented one-offs called out explicitly where they appear (page-2 pagination fallback,
+SonarQube won't-fix transition, `sonar-scanner` itself) — everything else routes through a script.
+
+**Only use manual commands for**:
+- The specific one-off operations named above (not covered by any script)
+- Debugging script failures
+- Understanding what scripts do internally (read the code)
+
+**Why this matters**: A 15-round PR using manual commands consumes 40k-50k tokens. The same PR using scripts consumes 8k-12k tokens. Scripts make the workflow sustainable and efficient.
+
 ## Workflow Overview
 
-1. **Fetch Issues**: Read Copilot PR comments and SonarQube analysis
-2. **Assess Complexity**: Determine if adversarial review agent needed (NEW)
+1. **Fetch Issues**: Read Copilot PR comments, PR description (for intent/risk scope), and SonarQube analysis
+1.5. **Silent-thread pre-filter (NEW)**: Auto-handle purely-complimentary and already-resolved threads before triage
+2. **Assess Complexity**: Determine if adversarial review agent needed
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
-4. **Plan**: Create implementation plan using TDD principles
-5. **Execute**: Fix issues using xp-pair for complex changes
-6. **Validate**: Run local sonar-scanner to catch new issues before committing
-7. **Iterate**: Repeat steps 5-6 until no new blocking issues appear
-8. **Resolve Conversations**: Mark fixed GitHub threads as resolved with brief explanations
-9. **Commit & Push**: Commit changes and push to PR branch
-10. **Monitor**: Check for new Copilot comments triggered by the commit (wait ~5-10 min)
-11. **Repeat**: If new significant issues appear, return to step 5
+3.5. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
+4. **Plan & Execute**: Create implementation plan and fix issues using TDD / xp-pair for complex changes
+4.5. **Post-fix sweep**: Re-sweep fixes for cascading issues they may have introduced — add any hits to this round before committing
+5. **Validate**: Run local sonar-scanner to catch new issues before committing
+6. **Resolve Conversations**: Mark fixed GitHub threads as resolved, reconcile every thread's disposition (NEW)
+7. **Commit & Push**: Protected-branch check, then commit and push to PR branch
+8. **Monitor**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting)
+9. **Repeat**: If new significant issues appear, return to step 5; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
 
 **IMPORTANT**: This is an **iterative process**. Expect multiple rounds:
 - Fixing code often introduces new SonarQube issues (e.g., extracted methods should be static)
 - Copilot analysis happens **after each commit**, potentially adding new suggestions
 - Local `sonar-scanner` is CRITICAL to catch issues before CI/CD (saves 30+ min per iteration)
 - **Resolve conversations BEFORE pushing** to keep PR clean and show reviewers what's been addressed
-- **Adversarial review** (NEW): For complex bugs with edge cases, spawn reviewer agent to challenge completeness BEFORE implementing fixes (reduces rounds from 5+ to 1-2)
+- **Adversarial review**: For complex bugs with edge cases, spawn reviewer agent to challenge completeness BEFORE implementing fixes (reduces rounds from 5+ to 1-2)
+- **Directional vs. polish (NEW)**: not every fix warrants a fresh Copilot review — only fixes that shift what the PR does
 
 ## Key Features (2026-04-24 Update)
 
@@ -91,22 +126,29 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 **Wrapper Scripts**:
 - `init-pr-state.sh <pr_number>` - Initialize workflow state (run once per PR/round)
 - `fetch-pr-threads.sh <pr_number> [--unresolved-only]` - Display cached threads
+- `classify-threads.sh <pr_number> <pr_author>` - Bucket threads into silent/already-resolved/keep (NEW)
 - `check-sonar-quality-gate.sh <pr_number>` - Check quality gate + fetch issues
 - `resolve-thread.sh <pr_number> <thread_id> [message]` - Resolve single thread with reply
-- `resolve-threads-bulk.sh <pr_number> [options]` - Resolve multiple threads at once (NEW)
-- `commit-pr-fixes.sh <pr_number>` - Generate structured commit with round tracking
+- `resolve-threads-bulk.sh <pr_number> [options]` - Resolve multiple threads at once
+- `commit-pr-fixes.sh <pr_number> [directional_count]` - Generate structured commit with round tracking; records directional_count for Step 8 (NEW arg)
 
-**Hybrid Approach**: Use scripts for repetitive operations, inline commands for one-off tasks.
+**Hybrid Approach**: Use scripts for repetitive operations; inline commands are reserved for the
+specific one-off tasks named in the Hard Rule above — not a general escape hatch.
 
 ## Prerequisites
 
+- **CRITICAL**: All scripts must be run from within the target git repository directory (scripts use `git remote get-url origin` to determine owner/repo)
 - GitHub CLI (`gh`) authenticated
 - SonarQube token in `SONAR_TOKEN` environment variable
 - `sonar-scanner` installed locally
 - `sonar-project.properties` configured (created if missing)
-- Automation scripts in `~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/address-pr-issues/scripts/` (bundled with skill)
+- Automation scripts (bundled with plugin - see Script Path Setup below)
 
 **Important**: Always use `gh pr view --json <fields>` instead of `gh pr view` alone to avoid GitHub Projects (classic) deprecation warnings. The `--json` flag queries only the modern GraphQL API.
+
+## Note on Script Paths
+
+Scripts are bundled with this skill in the `scripts/` subdirectory. In the examples below, `./scripts/` refers to scripts relative to this skill's installation directory. Claude Code agents will automatically resolve these paths when executing the skill.
 
 ## Step 1: Gather PR Information
 
@@ -116,82 +158,62 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 # If no PR number provided, get current branch's PR
 PR_NUMBER="${args:-$(gh pr view --json number -q .number)}"
 
-# Get PR details
-gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url
+# Get PR details, including body (needed for intent/risk scope below) and author
+# (PR_AUTHOR — needed for Step 1.6's silent-thread classification)
+gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url,body,author
+PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)
 ```
+
+**Clean working tree**: before making any changes, check `git status --porcelain`. If it
+returns output, confirm with the user whether that's expected in-progress work before continuing
+— don't start fixing on top of uncommitted changes you didn't make.
+
+### Extract PR Intent and Risk Scope (NEW)
+
+From the fetched `body`, extract:
+- `PR_INTENT` — a 1-2 sentence summary of what the PR is supposed to do
+- `RISK_FILES` — file paths or function names listed under `## Risk Assessment` /
+  `## Review Hotspots` / `### High Priority Review Areas`, if present
+
+If the body is absent or has no such sections, treat `RISK_FILES` as empty and `PR_INTENT` as
+unknown — this is a normal case, not an error. `PR_INTENT` feeds two later steps: the Step 3.5
+adversarial-review Intent Brief, and the directional/polish classification in Step 2.
 
 ### Initialize State Management (AUTOMATED)
 
-**Use script** (recommended - saves tokens):
+⚠️ **USE SCRIPT** (saves ~5k tokens):
 ```bash
-SKILL_DIR="$HOME/.claude/skills/address-pr-issues"
-$SKILL_DIR/scripts/init-pr-state.sh $PR_NUMBER
+./scripts/init-pr-state.sh $PR_NUMBER
 ```
 
-**Manual approach** (for debugging or customization):
-```bash
-# Setup workspace directory for this PR
-WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
-mkdir -p "$WORKSPACE_DIR"
+> **Pagination note**: The init script fetches at most 100 threads. If the PR has
+> approached or exceeded 100 review comments, there may be additional threads on page 2
+> that the script does not see — it will falsely report "0 unresolved" while threads
+> remain open. The script will warn you if `hasNextPage` is true. If you see that warning,
+> fetch page 2 manually:
+>
+> ```bash
+> # Step 1: Check whether page 2 exists
+> gh api graphql -f query='
+> query($owner:String!, $repo:String!, $pr:Int!) {
+>   repository(owner:$owner, name:$repo) {
+>     pullRequest(number:$pr) {
+>       reviewThreads(first:100) {
+>         pageInfo { hasNextPage endCursor }
+>       }
+>     }
+>   }
+> }' -F owner=OWNER -F repo=REPO -F pr=NUMBER \
+>   | jq '.data.repository.pullRequest.reviewThreads.pageInfo'
+> ```
+>
+> If `hasNextPage` is true, re-run the unresolved-thread query with
+> `-F cursor='<endCursor>'` and `reviewThreads(first:100, after:$cursor)` to fetch the
+> next page, then merge the results into `threads.json`.
 
-# Register cleanup trap
-trap "rm -rf $WORKSPACE_DIR" EXIT
-
-# Initialize round tracking
-ROUND_FILE="$WORKSPACE_DIR/round.txt"
-if [ -f "$ROUND_FILE" ]; then
-  ROUND=$(($(cat $ROUND_FILE) + 1))
-  echo "📍 Continuing workflow - Round $ROUND"
-else
-  ROUND=1
-  echo "📍 Starting workflow - Round $ROUND"
-fi
-echo $ROUND > $ROUND_FILE
-
-# Cache thread metadata for reuse (uses lib/github-api.sh functions)
-THREADS_FILE="$WORKSPACE_DIR/threads.json"
-source "$SKILL_DIR/scripts/lib/github-api.sh"
-fetch_pr_threads "$PR_NUMBER" "$THREADS_FILE"
-
-COPILOT_COUNT=$(jq -s 'map(select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]")) | length' "$THREADS_FILE")
-echo "✅ Cached $COPILOT_COUNT Copilot threads"
-
-# Test API capabilities (threaded replies)
-API_CAPS_FILE="$WORKSPACE_DIR/api-capabilities.txt"
-CAPABILITY=$(test_threaded_reply_api "$THREADS_FILE")
-echo "$CAPABILITY" > "$API_CAPS_FILE"
-
-TEST_COMMENT_ID=$(jq -r '.[0].commentId // empty' "$THREADS_FILE")
-if [ -n "$TEST_COMMENT_ID" ]; then
-  if gh api repos/{owner}/{repo}/pulls/comments/$TEST_COMMENT_ID/replies \
-      -f body="test" 2>&1 | grep -q "404"; then
-    echo "threaded_replies_disabled" > "$API_CAPS_FILE"
-    echo "⚠️  Threaded replies API not available - will use direct thread resolution"
-  else
-    echo "threaded_replies_enabled" > "$API_CAPS_FILE"
-    # Delete test reply
-    gh api repos/{owner}/{repo}/pulls/comments/$TEST_COMMENT_ID/replies --method DELETE 2>/dev/null || true
-  fi
-fi
-
-# Initialize fix tracking
-FIXES_FILE="$WORKSPACE_DIR/fixes.json"
-if [ ! -f "$FIXES_FILE" ]; then
-  echo '{}' > "$FIXES_FILE"
-fi
-
-# Initialize checklist
-CHECKLIST_FILE="$WORKSPACE_DIR/checklist.json"
-cat > "$CHECKLIST_FILE" <<EOF
-{
-  "tests_passing": false,
-  "build_clean": false,
-  "sonar_reviewed": false,
-  "threads_resolved": false,
-  "commit_ready": false
-}
-EOF
-```
+**If the script fails**, don't hand-roll its logic — read what it does instead:
+`./scripts/init-pr-state.sh` itself, and the functions it calls in `scripts/lib/github-api.sh`
+(`fetch_pr_threads`, `test_threaded_reply_api`). Fix the script or its inputs, then re-run it.
 
 **State Files Created**:
 - `$WORKSPACE_DIR/round.txt` - Current round number (auto-incremented)
@@ -208,24 +230,59 @@ EOF
 
 ### Query Cached Threads (AUTOMATED)
 
-**Use script** (recommended):
+⚠️ **USE SCRIPT** (saves ~3k tokens):
 ```bash
 # Display unresolved threads with summary
-$SKILL_DIR/scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
+./scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
 ```
 
-**Manual jq queries** (for custom filtering):
+**For custom filtering** beyond what the script's flags support, query `$THREADS_FILE` directly
+with `jq` rather than adding a new script flag for a one-off — the cache is plain JSON.
+
+## Step 1.6: Silent-Thread Pre-Filter (NEW)
+
+Before any thread reaches the CRITICAL/HIGH/MEDIUM/LOW triage in Step 3, auto-handle threads
+that carry no substantive feedback — avoids spending triage effort, or a user prompt, on a 👍
+or "LGTM". This bucketing is a **deterministic classification, not an LLM judgment call** — run
+the script, don't apply the rule by hand per thread:
+
+⚠️ **USE SCRIPT**:
 ```bash
-# Get unresolved Copilot threads
-jq -r 'select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]") | select(.isResolved == false)' "$THREADS_FILE" | jq -s .
-
-# Count resolved vs unresolved
-TOTAL=$(jq -s length "$THREADS_FILE")
-RESOLVED=$(jq 'select(.isResolved == true)' "$THREADS_FILE" | jq -s length)
-UNRESOLVED=$(jq 'select(.isResolved == false)' "$THREADS_FILE" | jq -s length)
-
-echo "Thread Status: $RESOLVED/$TOTAL resolved, $UNRESOLVED unresolved"
+./scripts/classify-threads.sh $PR_NUMBER "$PR_AUTHOR"
 ```
+
+It writes `bucket` (`already_resolved | silent | keep`) and `labels` fields into each cached
+thread and prints the silent-thread IDs. See `classify-threads.sh` itself for the exact
+"purely complimentary" heuristic (question mark / trigger word / file-line reference /
+conditional language / word count) — it's the same rule described in `apply-feedback`'s
+triage agent, hardened with an expanded trigger vocabulary and a length guard since this runs
+with no human fallback (a false positive silently resolves a real comment).
+
+### Bucket 1 — Already Resolved (skip entirely, no action)
+
+`isResolved == true` AND (the most recent comment is from the PR author OR is purely
+complimentary). Take no action — re-resolving or re-reacting wastes API calls and clutters the
+PR timeline for no benefit.
+
+### Bucket 2 — Silent (auto-handle, no user prompt)
+
+`isResolved == false` AND the most recent comment is purely complimentary. For each thread ID
+the script prints: react 👍 via `react_to_comment()` (in `lib/github-api.sh`), then resolve via
+`./scripts/resolve-thread.sh $PR_NUMBER <thread_id>`.
+
+### Bucket 3 — Keep (flows into Step 3)
+
+Everything else: unresolved threads with substantive feedback, resolved threads with new
+non-complimentary activity from someone other than the PR author (`labels: ["resolved_new_activity"]`),
+and outdated unresolved threads (`labels: ["outdated"]`). Carry these labels into the Step 3
+presentation as `[resolved + new activity]` / `[outdated]` so nothing is silently missed.
+
+The script's own summary line (`N silent threads handled, M already-resolved skipped — K
+substantive threads to triage.`) is what to show the user before moving to Step 2.
+
+**If the script isn't available or a thread's cache predates it** (missing `lastCommentAuthor`/
+`isOutdated` fields — added when `fetch_pr_threads()` was extended for this step), re-run
+`./scripts/init-pr-state.sh $PR_NUMBER` first to refresh the cache with the current schema.
 
 ## Step 2: Assess Complexity & Edge Case Risk (NEW)
 
@@ -265,55 +322,120 @@ Before implementing fixes, ask:
 4. **What combinations exist?** (null + empty, valid + invalid, etc.)
 5. **Are there similar patterns elsewhere?** (same bug in other methods?)
 
-### Decision: Use Adversarial Agent?
+### Parallel Issue Triage (Workflow)
 
-**YES - Spawn reviewer agent**:
-```
-Issues involve: Privacy filtering + null checks + conservative cleanup
-→ High risk of cascading edge cases
-→ Spawn adversarial reviewer to challenge completeness BEFORE implementing
+After fetching threads, triage all issues in parallel — one agent per issue. This offloads assessment from the implementation session's context; only the structured results return.
+
+Use the Workflow tool, spawning one agent per issue. Each agent receives the thread body, file path, line number, the relevant code section (read from disk), and `PR_INTENT`/`RISK_FILES` from Step 1.
+
+Each agent returns:
+```json
+{
+  "issue_id": "thread_id",
+  "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+  "complexity_indicators": ["null handling", "collections", "type resolution"],
+  "proposed_fix": "brief description of the fix",
+  "cascading_risk": true,
+  "classification": "directional|polish",
+  "notes": "any context about related bugs or edge cases"
+}
 ```
 
-**NO - Proceed directly**:
+**`classification`** (NEW) is a separate axis from `severity` — it answers "does fixing this
+change what the PR does?", not "how bad is it":
+- **directional** — the fix shifts the PR's intent: someone reading the current PR description
+  would now be wrong about something that matters after this change. A BLOCKER-severity Sonar fix
+  can be polish; a LOW-severity Copilot suggestion can be directional. Judge by the nature of the
+  fix, not its severity label.
+- **polish** — the fix refines within the existing intent (wording, naming, minor guards,
+  formatting, tests) without changing what the PR does.
+- When ambiguous, classify as `polish` — the directional bar is high.
+
+Use the merged triage results to drive Step 3 categorization and the Step 3.5 adversarial review
+decision. **`DIRECTIONAL_COUNT`** (computed after Step 4) is the count of `directional`-classified
+issues actually fixed this round — not everything triaged. An issue the user deferred or declined
+in Step 3 doesn't count, since nothing about the PR changed for it.
+
+### Step 3.5: Adversarial Review Gate (MANDATORY CHECK)
+
+**⚠️ STOP: Do not skip this step without completing the checklist.**
+
+Before deciding whether to use adversarial review, answer these questions:
+
+#### Complexity Indicators (check all that apply)
+
+**Code Characteristics:**
+- [ ] Multiple execution paths (if/else, loops, recursion)
+- [ ] String manipulation or parsing
+- [ ] Collections (iteration, filtering, mapping, grouping)
+- [ ] Inheritance or type resolution
+- [ ] Null handling or defensive checks
+- [ ] Cross-class or cross-module interactions
+- [ ] Error handling or exception propagation
+
+**Edge Case Enumeration:**
+Can you enumerate ALL edge cases right now? (Requires at least 3 specific cases)
+- Happy path: _________________
+- Edge case 1: _________________
+- Edge case 2: _________________
+- Edge case 3: _________________
+
+**Confidence Check:**
+Would you bet that Copilot review finds zero logic issues (not style) in your implementation?
+- [ ] Yes - high confidence
+- [ ] No - uncertain
+
+#### Decision Rules
+
+**MUST spawn adversarial reviewer if:**
+- 2 or more complexity indicators checked
+- Cannot enumerate at least 3 specific edge cases
+- Not confident Copilot finds zero issues
+
+**MAY skip adversarial review ONLY if ALL of these are true:**
+- 0-1 complexity indicators
+- Can enumerate 3+ edge cases
+- Confident in implementation
+- Changes are one of:
+  - Pure style/formatting (whitespace, imports, comments)
+  - Simple constants or configuration
+  - Documentation-only
+  - Renaming via IDE refactoring
+
+#### When Skipping (Rare)
+
+If you decide to skip, document your reasoning:
+
 ```
-Issues are: Simple style fixes, obvious bugs with clear solutions
-→ Low complexity, no edge case risk
-→ Fix directly without agent overhead
+Skipping adversarial review because:
+- Complexity indicators: [X checked]
+- Edge cases enumerated: [list]
+- Change type: [specific reason]
 ```
+
+**Show this reasoning to the user** so they can override if needed.
+
+#### Things That SEEM Simple But AREN'T
+
+These patterns consistently hide edge cases - always use adversarial review:
+- Prefix/suffix stripping (What about: nested? qualified? super.?)
+- Name matching (What about: collisions? shadowing? packages? imports?)
+- Type resolution (What about: wildcards? fully-qualified? ambiguous?)
+- Null checks (What about: empty? combinations? parent fields?)
+- String splitting (What about: delimiters in data? edge counts? escaping?)
+- HashMap/Set operations (What about: iteration order? duplicates? collisions?)
 
 ### Fetch SonarQube Issues (AUTOMATED)
 
-**Use script** (recommended - checks quality gate + fetches blocking issues):
+⚠️ **USE SCRIPT** (saves ~3k tokens - checks quality gate + fetches blocking issues):
 ```bash
-$SKILL_DIR/scripts/check-sonar-quality-gate.sh $PR_NUMBER
+./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
 
-**Manual API calls** (for custom queries):
-```bash
-# Ensure sonar-project.properties exists
-if [ ! -f "sonar-project.properties" ]; then
-    echo "⚠️  No sonar-project.properties found. Creating from template..."
-    # Create or copy from reference repository
-fi
-
-# Use library function (DRY)
-source "$SKILL_DIR/scripts/lib/sonar-api.sh"
-get_quality_gate_status "$PR_NUMBER" > quality-gate.json
-format_quality_gate_status quality-gate.json
-
-# Or manual curl (if customization needed)
-PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d= -f2)
-SONAR_HOST=$(grep "^sonar.host.url=" sonar-project.properties | cut -d= -f2)
-
-curl -s -u "$SONAR_TOKEN:" \
-  "$SONAR_HOST/api/issues/search?componentKeys=$PROJECT_KEY&pullRequest=$PR_NUMBER&resolved=false" \
-  | jq '.issues[] | {key, message, severity, type, component, line, status}'
-```
-
-**SonarQube API endpoints** (via `lib/sonar-api.sh`):
-- `get_quality_gate_status` - Quality gate for PR
-- `get_pr_issues` - Issues by severity
-- `wait_for_analysis` - Poll for analysis completion
+**If `sonar-project.properties` is missing**, see "Handle Missing sonar-project.properties" in
+Tips and Best Practices below. **For custom queries** beyond what the script covers, use the
+`lib/sonar-api.sh` functions directly (`get_quality_gate_status`, `get_pr_issues`,
+`wait_for_analysis`) rather than a fresh `curl` — read the library file for their signatures.
 
 ## Step 3: Categorize and Prioritize Issues
 
@@ -346,7 +468,9 @@ curl -s -u "$SONAR_TOKEN:" \
 
 ### Present Questionable Issues to User
 
-For any MEDIUM or LOW severity issues, or issues you're uncertain about:
+For any MEDIUM or LOW severity issues, or issues you're uncertain about. Carry forward any
+`[outdated]` / `[resolved + new activity]` label from Step 1.6's Bucket 3 in the item header,
+right after the severity tag:
 
 ```
 I found the following issues that need your input:
@@ -361,78 +485,56 @@ I found the following issues that need your input:
    - Impact: Style only
    - **Decision needed**: Apply or ignore?
 
+3. **[MEDIUM] Copilot [resolved + new activity]**: Reviewer reopened concern about retry logic
+   - File: `RetryHandler.java:52`
+   - Impact: Thread was marked resolved, but a new non-complimentary comment followed
+   - **Decision needed**: Address the new comment or confirm it's already covered?
+
+4. **[LOW] Copilot [outdated]**: Suggestion predates a later commit in this PR
+   - File: `ExportJob.java:210`
+   - Impact: The flagged line may have already changed since this comment was posted
+   - **Decision needed**: Still applicable, or safe to resolve as stale?
+
 Should I address these? (yes/no/selective)
 ```
 
-## Step 3.5: Spawn Adversarial Reviewer (Conditional)
+## Step 3.5: Adversarial Review (Delegated to /adversarial-review)
 
-**If Step 2 assessment indicates high complexity**, spawn reviewer agent BEFORE implementing fixes.
+**If the Step 3.5 gate above indicates adversarial review is warranted**, delegate to the
+`/adversarial-review` skill BEFORE implementing fixes. The gate decides *whether* to run;
+this step describes *how*.
 
-### Adversarial Review Agent Pattern
+### Construct the Intent Brief (~200 words)
 
-**Agent Role**: Challenge completeness, probe edge cases, demand comprehensive tests
+Before invoking, compose the Intent Brief from the PR context — what the PR does, the key
+design decisions already made, what was deferred, and any accepted risks. Start from
+`PR_INTENT` and `RISK_FILES` (extracted in Step 1) and expand with anything the triage in
+Step 2 surfaced. This is the most important input: without it, fix agents cannot distinguish
+"intentional design choice" from "bug to fix."
 
-**Agent Prompt Template**:
+### Invoke with rounds=1
+
+This step runs on the diff of an already-open PR's fix round — a single sweep is the right
+cost/coverage trade-off:
+
 ```
-You are an adversarial code reviewer. Your job is to challenge the proposed fixes for completeness BEFORE implementation.
-
-Context: We're fixing [describe issues - e.g., "null handling bugs in privacy-critical persona filtering"]
-
-Code Section: [file paths and line numbers]
-
-Proposed Fixes: [brief summary of intended changes]
-
-Your Task:
-1. **Challenge Missing Edge Cases**
-   - What can be null that isn't being checked?
-   - What can be empty that isn't being validated?
-   - What combinations are missing? (null + empty, valid + invalid)
-   
-2. **Probe Related Bugs**
-   - If fixing null persona refs, what about null resource URIs?
-   - If checking persona IDs, what about relationship IDs?
-   - Are similar patterns buggy elsewhere in this file?
-
-3. **Demand Comprehensive Tests**
-   - List ALL scenarios that must be tested (not just reported issues)
-   - Include: null, empty, malformed, duplicates, combinations
-   - Require: happy path + edge cases + error paths
-
-4. **Question Design**
-   - Is this a proper fix or a patch?
-   - Should logic be extracted/simplified?
-   - Is conservative approach applied consistently?
-
-Output Format:
-## Edge Cases to Test
-- [scenario 1]
-- [scenario 2]
-...
-
-## Related Bugs to Check
-- [potential bug 1]
-- [potential bug 2]
-...
-
-## Design Questions
-- [question 1]
-- [question 2]
-...
-
-Be thorough and skeptical. Force comprehensive analysis BEFORE coding.
+Skill(adversarial-review, args="--rounds 1 --base-branch <base-branch> --intent-brief \"<intent-brief text>\"")
 ```
 
-### When to Skip Adversarial Review
+The `/adversarial-review` skill runs one round of parallel per-class agents, returns findings
+for review-pause (Step 3's categorize-and-prioritize loop serves as the disposition point),
+applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, commit, stash,
+restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
 
-**Skip agent if**:
-- Simple style fixes (comments, formatting, imports)
-- Obvious bugs with clear, isolated fixes
-- No edge case risk (CRUD operations, straightforward logic)
-- Time-sensitive hotfix (fix now, comprehensive tests later)
+Use the returned findings to drive the implementation step (Step 4) and the
+commit-and-push step (Step 7).
 
-### Example: Adversarial Review in Action
+### When to Skip (Rare — the gate decides)
 
-**Without Agent** (5 rounds):
+The Step 3.5 gate above lists the conditions. When skipping, document the reasoning (gate
+checklist result) so the user can override. The examples below show the value of the agent:
+
+**Without adversarial review** (5 rounds):
 ```
 Round 1: Fix substring matching bug
 Round 2: Fix null persona refs (Copilot found)
@@ -441,22 +543,139 @@ Round 4: Fix size mismatch logic (Copilot found)
 Round 5: Fix null resource URIs (Copilot found)
 ```
 
-**With Agent** (1 round):
-```
-Agent: "You're fixing substring matching - what else can go wrong?
-        - Null persona refs? Add test.
-        - Null resource URIs? Add test.
-        - Empty persona IDs? Add test.
-        - Duplicate IDs in Set? Add test.
-        
-        Show me size mismatch logic - can it handle duplicates?
-        No? Fix that too."
+**With adversarial review** (1 round):
+- Parallel agents sweep all known pattern classes in one shot
+- Cascade sweep finds null persona refs AND resource URIs AND empty IDs in the first pass
+- Approved fixes applied in one commit
+- Copilot finds only style issues in the next round
 
-[Implement ALL fixes + tests in one commit]
-→ Copilot finds only style issues in next round
+**Result**: ~80% reduction in rounds, better code quality, faster delivery
+
+## Step 3.7: Similar-Pattern Sweep (Mandatory)
+
+**Always run this step** — even if the sweep finds nothing, the cost is a grep; the payoff when it hits is eliminating an entire issue class in one commit instead of being surprised next round.
+
+### What to Do
+
+For each confirmed issue class from Step 3:
+
+1. **Abstract the pattern** — identify the class of issue, not just the literal string.
+   - Too literal: `"except json.JSONDecodeError"`
+   - Right level: `"single-exception catch missing OSError"`
+
+2. **Run a two-tier grep**:
+
+   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only.
+   ```bash
+   git diff --name-only | xargs grep -n "<pattern>"
+   ```
+
+   **Tier 3b — File-scoped grep** (structural absence): when the issue involves a property
+   that *all members of a set* should share (e.g., all `run_step_*` functions, all
+   `cmd_*` functions, all JSON-read sites), grep the *full changed file*, not just diff
+   lines. The sibling that's missing the property is often not in the diff.
+   ```bash
+   grep -n "<sibling-class-pattern>" <changed-file>
+   # Then check each hit for the missing property
+   ```
+
+3. **Evaluate hits** — for each result not already in the fix list:
+   - Is this the same anti-pattern, or superficially similar?
+   - Would fixing it belong in this commit's logical scope?
+   - If yes: add to fix list at the same severity as the original finding.
+
+4. **On "nothing found" for structural issues** — a zero result on a diff-scoped grep
+   does not mean the issue class is absent from the file. For absence-of-pattern issues
+   (missing preflight checks, fallback paths, guard conditions), enumerate the set:
+   "What other functions/call-sites of this class exist in the file?" Check each for the
+   property. Report any gaps at the same severity as the original finding.
+
+5. **Merge into the working fix list** — de-duplicate and carry forward into Step 3.8's decision summary.
+
+### Output for Step 3.8
+
+For each issue class swept, report one of:
+- **Hits found**: "Found the same pattern in N additional location(s) — fixing all of them eliminates this issue class rather than surfacing it again next round"
+- **Nothing found (textual)**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Gap found (structural)**: "Diff-scoped grep found nothing, but file-scoped check found N sibling(s) also missing this property — adding to fix list"
+
+### Examples
+
+```
+Issue flagged: fleet_state.py _load_fleet_state catches JSONDecodeError but not OSError
+
+Sweep pattern: single-exception catch missing companion error type
+Tier 3a grep: git diff --name-only | xargs grep -n "except json\."
+
+  fleet_state.py:88 — already in fix list (the original finding)
+
+Result: No additional hits — only one catch site in the changed files.
+
+---
+
+Issue flagged: fleet_runner.py ignores return code from cmd_set_merged
+
+Sweep pattern: return code from state-mutation command calls not captured or checked
+Tier 3a grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
+
+  fleet_runner.py:719 — already in fix list
+  fleet_runner.py:831 — NOT in fix list: rc = cmd_advance(...) assigned but never checked
+
+Adding fleet_runner.py:831 to fix list (same severity: medium).
+→ Fixing both sites in one commit; issue class fully addressed.
+
+---
+
+Issue flagged: run_step_analyze missing shutil.which("mvn") preflight
+
+Sweep pattern: run_step_* functions that call mvn lack preflight check
+Tier 3a grep: git diff --name-only | xargs grep -n "shutil.which"
+  → Nothing found in diff
+
+Tier 3b structural check: grep full file for all run_step_* functions
+  grep -n "^def run_step_" fleet_runner.py
+  → run_step_discover (no mvn — no gap), run_step_analyze (no preflight ← GAP),
+    run_step_tier1 (has preflight), run_step_verify (has preflight)
+
+Adding run_step_analyze preflight to fix list (same severity: high).
+→ Issue class fully addressed in one commit.
 ```
 
-**Result**: 80% reduction in rounds, better code quality, faster delivery
+### Key Principles
+
+- **Sweep is mandatory, not conditional.** Single-file typo fixes are a no-op — fast and safe to run anyway.
+- **Scope is the PR's changed files**, not the full repo. False positives from unrelated code are noise.
+- **When the issue is structural** (a property that all members of a function/call-site class should share), extend the grep to the *full changed file*, not just the diff. The sibling that's missing the property is likely not in the diff.
+- **"Nothing found" on a structural issue triggers a set-difference check**, not a clean pass. Enumerate the siblings; the absence is the finding.
+- **If the sweep surfaces a new instance that, when fixed, would introduce a Sonar finding**, that Sonar finding belongs in this commit too. The sweep never creates new rounds — it widens the current one.
+
+## Step 3.8: Show Decision Summary to User
+
+Before implementing, present your process decisions to the user:
+
+```
+📋 **Implementation Approach**
+
+**Complexity Assessment:**
+- Risk factors: [count] 
+  - [list checked items]
+- Edge cases identified: [count]
+  - [list enumerated cases]
+
+**Process Decisions:**
+- Test approach: [Test-First | Test-After]
+  - Reason: [why this choice]
+- Adversarial review: [Yes | Skipped]
+  - Reason: [why this choice]
+- XP Pair: [Yes | No]
+  - Reason: [why this choice]
+
+**If skipping recommended process steps, I need your approval.**
+
+Proceed? (yes/no/use more process)
+```
+
+This makes decisions visible and gives user a chance to correct before work starts.
 
 ## Step 4: Create Implementation Plan
 
@@ -655,6 +874,73 @@ if (persona1Id.isEmpty() || persona2Id.isEmpty()) {
 
 **Rationale**: Separating concerns makes PR easier to review and reduces noise in critical commits
 
+## Step 4.5: Post-Fix Cascade Sweep (MANDATORY)
+
+After applying all fixes from this round but **before committing**, re-sweep the PR's changed
+files to check whether the fixes themselves introduced new cascading issues.
+
+**Why**: A fix that adds a null check, restructures a branch, or extracts a method can expose
+a sibling callsite that was previously unreachable, or can introduce the same defensive-guard
+or control-flow pattern in a new location without the matching safeguard.
+
+### What to Sweep
+
+For each fix applied this round, ask:
+- **New code paths introduced**: Did the fix add a branch, a helper method, or a fallback
+  that itself needs a null guard, a returncode check, or an error handler?
+- **Sibling callsites now exposed**: Did fixing one callsite reveal that a neighboring
+  callsite (not in the original diff) now has the same gap?
+- **Structural consistency**: If the fix adds a pattern (e.g., `isinstance` guard, `try/except
+  (OSError, UnicodeDecodeError)`), is that pattern now present at every peer callsite in the
+  same file?
+
+### How to Run
+
+Same two-tier grep as Step 3.7, but targeted at code **introduced or modified by the fixes**:
+
+```bash
+# Tier A — what changed since before the fixes (the fixes themselves)
+git diff HEAD -- <changed files>
+
+# Tier B — structural check: if the fix adds a pattern, enumerate all peer sites
+grep -n "<pattern from fix>" <changed file> | grep -v "<already fixed>"
+```
+
+### Example
+
+```
+Fix applied: added stdout fallback to git fetch failure path in run_step_sync_repos.
+Pattern introduced: when stderr is empty, fall back to stdout then "(no output)".
+
+Tier A (git diff HEAD):
+  +        if not fetch_detail:
+  +            fetch_detail = (
+  +                "; ".join(...stdout...) or "(no output)"
+  +            )
+
+Tier B (structural check — enumerate all peer callsites in the same function):
+  grep -n "returncode != 0" fleet_runner.py
+  → Lines 502, 529, 559, 630, 684, 719 — all subprocess failure paths in run_step_sync_repos
+
+  Check each for the new pattern:
+  → Line 502 (fetch):   ✅ just fixed
+  → Line 529 (sym_ref): uses conditional suffix — different shape, gap not present
+  → Line 559 (status):  ❌ missing stdout fallback — add to fix list
+  → Line 630 (ahead):   ❌ missing — add
+  → Line 684 (ff-only): ❌ missing — add
+  → Line 719 (behind):  ❌ missing — add
+
+Result: 4 additional fix sites found. Fix all in this commit; class fully addressed.
+Without this sweep, each site would have surfaced as a separate Copilot round.
+```
+
+Report any new findings immediately — **add them to this round's fix list** rather than
+deferring to the next round. The goal is to exit each round fully clean on the fix's own
+footprint, not to create a chain of follow-up rounds.
+
+If the post-fix sweep finds nothing, state it explicitly: "Post-fix sweep complete — no new
+cascading issues introduced by this round's fixes."
+
 ## Step 5: Validate Changes Locally
 
 **CRITICAL**: Before pushing, run local SonarQube scan AND verify results:
@@ -679,76 +965,26 @@ echo "✅ Scanner completed - Task ID: $TASK_ID"
 **IMPORTANT**: The local scan only uploads data - server-side analysis takes 30-60 seconds.
 
 ```bash
-PROJECT_KEY=$(grep "^sonar.projectKey=" sonar-project.properties | cut -d= -f2)
-SONAR_HOST=$(grep "^sonar.host.url=" sonar-project.properties | cut -d= -f2)
-
-# Poll task status (max 12 attempts = 60 seconds)
-echo "⏳ Waiting for SonarQube server processing..."
-for i in {1..12}; do
-  STATUS=$(curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-    "$SONAR_HOST/api/ce/task?id=$TASK_ID" 2>/dev/null | jq -r '.task.status' 2>/dev/null)
-  
-  if [ "$STATUS" = "SUCCESS" ]; then
-    echo "✅ Analysis complete"
-    break
-  elif [ "$STATUS" = "FAILED" ]; then
-    echo "❌ Analysis failed - check dashboard"
-    break
-  fi
-  
-  echo "   Processing... ($i/12)"
-  sleep 5
-done
+source "./scripts/lib/sonar-api.sh"
+wait_for_analysis "$TASK_ID"
 ```
 
-**Note**: Some enterprise SonarQube instances use SSO that blocks API access. If the poll fails, proceed to manual dashboard review.
+**Note**: Some enterprise SonarQube instances use SSO that blocks API access. If `wait_for_analysis`
+times out or errors, proceed to manual dashboard review (Option B below).
 
 ### Step 5c: Review Results
 
-**Option A: API Access Available** (preferred):
+**Option A: API Access Available** (preferred) — use the same script as Step 2's fetch:
 ```bash
-# Fetch quality gate status
-QG_STATUS=$(curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-  "$SONAR_HOST/api/qualitygates/project_status?projectKey=$PROJECT_KEY&pullRequest=$PR_NUMBER" \
-  | jq -r '.projectStatus.status')
-
-if [ "$QG_STATUS" = "OK" ]; then
-  echo "✅ Quality gate: PASSED"
-elif [ "$QG_STATUS" = "ERROR" ]; then
-  echo "❌ Quality gate: FAILED"
-  
-  # Fetch blocking issues
-  curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-    "$SONAR_HOST/api/issues/search?componentKeys=$PROJECT_KEY&pullRequest=$PR_NUMBER&resolved=false&severities=BLOCKER,CRITICAL" \
-    | jq -r '.issues[] | "  - [\(.severity)] \(.message) (\(.component):\(.line))"'
-  
-  echo ""
-  echo "Fix blocking issues before committing"
-  exit 1
-else
-  echo "⚠️  Could not determine quality gate status (likely SSO-protected API)"
-  echo "   Proceed to manual dashboard review below"
-fi
+./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
+It fetches the quality gate status and, if it failed, the blocking (BLOCKER/CRITICAL-equivalent)
+issues. If it reports FAILED, fix the listed issues before committing.
 
-**Option B: Manual Dashboard Review** (fallback for SSO-protected instances):
-```bash
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "⚠️  CRITICAL: Review SonarQube Dashboard"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "   URL: $SONAR_HOST/dashboard?id=$PROJECT_KEY&pullRequest=$PR_NUMBER"
-echo ""
-echo "   Wait 30-60 seconds for analysis, then verify:"
-echo "   - ✅ Quality Gate: PASSED"
-echo "   - ✅ No new BLOCKER or CRITICAL issues"
-echo "   - ✅ Coverage acceptable (no significant drop)"
-echo "   - ✅ Security hotspots reviewed"
-echo ""
-read -p "Press Enter after dashboard review confirms no blocking issues..."
-echo ""
-```
+**Option B: Manual Dashboard Review** (fallback for SSO-protected instances): open
+`$SONAR_HOST/dashboard?id=$PROJECT_KEY&pullRequest=$PR_NUMBER`, wait 30-60 seconds for analysis,
+and verify: Quality Gate passed, no new BLOCKER/CRITICAL issues, coverage acceptable, security
+hotspots reviewed.
 
 **If new issues found**: Fix them before committing (iterate Step 4-5).
 
@@ -760,139 +996,63 @@ echo ""
 
 ### Resolve Fixed Issues (AUTOMATED)
 
-**Use bulk script** (recommended - resolve multiple threads at once):
+⚠️ **USE BULK SCRIPT** (saves ~2k tokens - resolve multiple threads at once):
 ```bash
 # Resolve all threads in a specific file
-$SKILL_DIR/scripts/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --filter-path 'FullExportJobIntegrationTest.java' \
   --message 'Fixed integration test setup'
 
 # Resolve specific threads
-$SKILL_DIR/scripts/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --threads 'THREAD_ID_1,THREAD_ID_2,THREAD_ID_3' \
   --message 'Fixed null handling'
 
 # Resolve all unresolved threads (use carefully!)
-$SKILL_DIR/scripts/resolve-threads-bulk.sh $PR_NUMBER \
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
   --all-unresolved \
   --message 'Addressed all review feedback'
 ```
 
-**Use single-thread script** (when different messages needed):
+⚠️ **USE SINGLE-THREAD SCRIPT** (when different messages needed for each thread):
 ```bash
 # Resolve thread with optional message (tries threaded reply, falls back to direct resolution)
-$SKILL_DIR/scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: Added null check for persona refs"
 
 # Multiple threads with different messages (loop)
 for thread_id in "$THREAD_ID_1" "$THREAD_ID_2" "$THREAD_ID_3"; do
-  $SKILL_DIR/scripts/resolve-thread.sh $PR_NUMBER "$thread_id" "Fixed specific issue"
+  ./scripts/resolve-thread.sh $PR_NUMBER "$thread_id" "Fixed specific issue"
 done
 ```
 
-**Manual approach** (for customization):
-
-#### Option A: Threaded Reply + Resolve (Preferred)
-
-```bash
-# Use library function (handles capability detection)
-source "$SKILL_DIR/scripts/lib/github-api.sh"
-
-if try_threaded_reply "$COMMENT_ID" "✅ Fixed: Added null check"; then
-  echo "Reply added"
-fi
-
-resolve_thread "$THREAD_ID"
-```
-
-#### Option B: Direct API calls (maximum control)
-
-```bash
-# Step 1: Add threaded reply explaining the fix
-gh api repos/{owner}/{repo}/pulls/comments/$COMMENT_ID/replies \
-  -f body="✅ Fixed: [brief explanation]
-
-Details: [what you changed and why]
-Will be included in next commit."
-
-# Step 2: Resolve the review thread
-gh api graphql -f query='
-  mutation($threadId: ID!) {
-    resolveReviewThread(input: {threadId: $threadId}) {
-      thread { id isResolved }
-    }
-  }
-' -f threadId="$THREAD_ID"
-```
-
-**Key points**:
-- ❌ Top-level comments alone are NOT sufficient - threads must be resolved
-- ✅ Script automatically detects threaded reply capability and adapts
-- ✅ Resolve threads even if you can't add threaded replies
+**If the bulk/single script doesn't cover your case** (e.g. one-off custom logic), use the
+underlying `lib/github-api.sh` functions directly — `try_threaded_reply` and `resolve_thread` —
+rather than writing a fresh `gh api graphql` mutation. They already handle capability detection
+(falling back to direct resolution when threaded replies are unavailable) and cache updates.
 
 ### Document Won't-Fix Decisions
 
-For issues you're not fixing:
+For issues you're not fixing, resolve with a reason instead of leaving the thread open:
 
 ```bash
-# Try to reply to the specific thread (if API works)
-gh api repos/{owner}/{repo}/pulls/comments/$COMMENT_ID/replies \
-  -f body="Won't fix: [reason]
-
-Rationale: [explanation - e.g., outside PR scope, style preference, etc.]
-See CLAUDE.md section X for context."
-
-# ALWAYS resolve the thread (mark as acknowledged) - REQUIRED
-gh api graphql -f query='
-  mutation($threadId: ID!) {
-    resolveReviewThread(input: {threadId: $threadId}) {
-      thread { id isResolved }
-    }
-  }
-' -f threadId="$THREAD_ID"
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Won't fix: [reason] — [rationale, e.g. outside PR scope, style preference]"
 ```
 
-**Resolving threads is MANDATORY** - it signals to reviewers that you've acknowledged and addressed each issue.
+**Resolving threads is MANDATORY** — it signals to reviewers that you've acknowledged and
+addressed each issue, whether by fixing it or explaining why not.
 
-### Get Thread IDs and Comment IDs (Using Cache)
+### Look Up a Thread's IDs from Cache
 
-**NEW**: Use cached thread data instead of re-fetching:
+`THREADS_FILE` is a plain JSON cache — query it with `jq` for a specific thread's IDs, then hand
+them to the resolve script (no need to re-fetch or re-derive the fetch/resolve logic):
 
 ```bash
-# Get unresolved threads from cache (fast, no API call)
-jq -r 'select(.isResolved == false)' "$THREADS_FILE" | jq -s .
-
-# Example: Resolve a specific thread
 THREAD_ID=$(jq -r 'select(.path == "FullExportJob.java" and .line == 186) | .threadId' "$THREADS_FILE")
-COMMENT_ID=$(jq -r 'select(.path == "FullExportJob.java" and .line == 186) | .commentId' "$THREADS_FILE")
-
-# Check API capabilities before attempting threaded reply
-if grep -q "threaded_replies_enabled" "$API_CAPS_FILE" 2>/dev/null; then
-  # Option A: Try threaded reply first
-  gh api repos/{owner}/{repo}/pulls/comments/$COMMENT_ID/replies \
-    -f body="✅ Fixed: [explanation]" || {
-    # Fallback to direct resolution if reply fails
-    gh api graphql -f query='
-      mutation($threadId: ID!) {
-        resolveReviewThread(input: {threadId: $threadId}) {
-          thread { id isResolved }
-        }
-      }
-    ' -f threadId="$THREAD_ID"
-  }
-else
-  # Option B: Direct resolution (no threaded reply support)
-  gh api graphql -f query='
-    mutation($threadId: ID!) {
-      resolveReviewThread(input: {threadId: $threadId}) {
-        thread { id isResolved }
-      }
-    }
-  ' -f threadId="$THREAD_ID"
-fi
-
-# Update cache to mark thread as resolved
-jq --arg tid "$THREAD_ID" 'if .threadId == $tid then .isResolved = true else . end' "$THREADS_FILE" > "${THREADS_FILE}.tmp" && mv "${THREADS_FILE}.tmp" "$THREADS_FILE"
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Fixed: added null check for persona refs"
 ```
+
+`resolve-thread.sh` updates `$THREADS_FILE` itself after a successful resolution — no separate
+cache-update step needed.
 
 ### Update Checklist
 
@@ -910,61 +1070,48 @@ else
 fi
 ```
 
-### OLD METHOD (For Reference)
+**Re-fetching threads** (e.g. after new Copilot comments land): re-run
+`./scripts/init-pr-state.sh $PR_NUMBER` — it re-caches threads and auto-increments the round.
+Don't hand-write the fetch query; it's the same one `fetch_pr_threads()` already runs.
 
-If you need to re-fetch threads (e.g., after new Copilot comments):
+**Why resolve threads, and why before commit?** Shows reviewers what's addressed, keeps the PR
+interface clean (resolved threads collapse), creates an audit trail, and lets your commit
+message reference already-resolved issues instead of the reverse order (fix → resolve → commit →
+push, not commit → push → resolve).
 
-```bash
-# Fetch all unresolved threads with comment IDs
-gh api graphql -f query='
-  query($owner: String!, $repo: String!, $pr: Int!) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
-          nodes {
-            id
-            isResolved
-            comments(first: 10) {
-              nodes {
-                id
-                databaseId
-                body
-                path
-                line
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-' -F owner='{owner}' -F repo='{repo}' -F pr=$PR_NUMBER \
-  | jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | {
-    threadId: .id,
-    commentId: .comments.nodes[0].databaseId,
-    body: .comments.nodes[0].body,
-    path: .comments.nodes[0].path,
-    line: .comments.nodes[0].line
-  }'
-```
+### Reply Tone (NEW)
 
-**Important fields**:
-- `threadId` (GraphQL ID) - Used for resolving the thread
-- `commentId` (Database ID) - Used for replying to the review comment
-- First comment in thread is usually the Copilot issue
+Write replies as a teammate — casual, direct. No "delve", no "certainly", no "great point".
 
-**Why resolve threads?**
-- **Shows reviewers you've addressed each issue** - they can see at a glance what's been fixed
-- **Cleaner PR interface** - resolved threads collapse, reducing clutter
-- **Clear audit trail** - documents that each concern was considered
-- **Better git history** - commits can reference resolved issues
+Use **future tense** when acknowledging a fix that hasn't been made yet:
+  Bad: "Fixed the null check."
+  Good: "I'll fix that in a follow-up."
 
-**Why resolve BEFORE commit?**
-- Cleaner workflow: Fix → Resolve → Commit → Push
-- Reviewers see resolved threads immediately after your push
-- Easier to track progress during iterations
+Use **past tense** when confirming a fix you just made:
+  Good: "Good catch — added a null check before the map call."
+  Good: "This is intentional — we want to fall through to the default handler here."
 
-**Summary**: Resolving threads is REQUIRED. If threaded replies fail, fall back to resolving threads + optional top-level comment.
+### Thread-Accountability Closeout (NEW)
+
+Before moving to Step 7, reconcile **every** thread this session touched — both the Step 1.6
+skip-buckets and everything triaged in Step 3. Build a one-line-per-thread status table:
+
+- `resolved-silent` — handled in Step 1.6's Silent bucket
+- `replied-and-resolved` — fixed or explained in Step 4/6
+- `won't-fix-resolved` — documented won't-fix + resolved above
+- `skipped` — user chose to skip during Step 3.8 approval
+- `adjusted` — user reworded the reply or change; treat as replied-and-resolved
+
+Format: `file:line — outcome`.
+
+**Hard stop**: for each `skipped` thread, pause and ask the user to explicitly confirm "leave
+open" or provide a reply now. Do not proceed to Step 7 until every skipped thread has either an
+explicit acknowledgment or a posted reply. The principle: a thread the user has seen and chosen
+to leave open is fine; a thread that fell off the workflow without anyone noticing is not.
+
+Only run the full table when there's more than a trivial number of threads — for a single-digit
+round, a one-line summary (`Handled: N silent, M replied, K won't-fix, all threads accounted
+for.`) is enough.
 
 ## Step 7: Pre-Push Checklist & Commit
 
@@ -1013,62 +1160,64 @@ fi
 
 ### Commit with Structured Message (AUTOMATED)
 
-**Use script** (recommended - auto-generates message with round tracking):
+⚠️ **USE SCRIPT** (saves ~2k tokens - auto-generates message with round tracking, records fix
+history):
 ```bash
 # Stage changes first
 git add <files>
 
-# Generate commit and update fix tracking
-$SKILL_DIR/scripts/commit-pr-fixes.sh $PR_NUMBER
+# Generate commit; pass DIRECTIONAL_COUNT (from Step 2/4's classification) so it's persisted to
+# fixes.json — Step 8 reads it back from disk instead of relying on conversation memory
+./scripts/commit-pr-fixes.sh $PR_NUMBER "$DIRECTIONAL_COUNT"
 ```
 
-**Manual approach** (for customization):
+**For heavy customization** beyond what the script covers, read `commit-pr-fixes.sh` itself
+rather than reimplementing its commit-message and `fixes.json` bookkeeping inline.
+
+### Protected-Branch Guard (NEW — before push)
+
+**Before pushing**, verify the current branch does not track a protected branch:
 ```bash
-# Collect resolved thread IDs from cache
-RESOLVED_THREADS=$(jq -r 'select(.isResolved == true) | .threadId' "$THREADS_FILE" | tr '\n' ', ' | sed 's/,$//')
-
-# Get changed files
-CHANGED_FILES=$(git diff --cached --name-only)
-
-# Build simple commit message (round tracking from $WORKSPACE_DIR/round.txt)
-ROUND=$(cat "$WORKSPACE_DIR/round.txt")
-git commit -m "fix: Address PR #${PR_NUMBER} review feedback (Round ${ROUND})
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
-
-# Record fix in history
-COMMIT_SHA=$(git rev-parse HEAD)
-jq --arg round "$ROUND" \
-   --arg commit "$COMMIT_SHA" \
-   --argjson files "$(echo "$CHANGED_FILES" | jq -R . | jq -s .)" \
-   '.[$round] = {
-     commit: $commit,
-     files: $files,
-     timestamp: (now|todate)
-   }' "$FIXES_FILE" > "${FIXES_FILE}.tmp" && mv "${FIXES_FILE}.tmp" "$FIXES_FILE"
-
-echo "✅ Recorded Round $ROUND fixes in $FIXES_FILE"
-
-# Push to PR branch
-git push origin $(git branch --show-current)
+git config branch.$(git branch --show-current).merge
+```
+If that returns `refs/heads/master` or `refs/heads/main`, **STOP** — alert the user and ask how
+to proceed. Otherwise:
+```bash
+git push
 ```
 
-**Benefits**:
-- **Auto-incremented round numbers** (no manual tracking)
-- **Thread IDs automatically collected** from cache
-- **Fix history persisted** for post-mortem analysis
-- **Commit SHA tracked** for traceability
+## Step 8: Re-Request Review & Monitor for New Comments
 
-**Commit Message Template Explained**:
-- **Round $ROUND**: Auto-incremented from state file
-- **Critical/High/Medium**: Match severity categories from Step 3
-- **file:line**: Help reviewers locate changes
-- **Test Coverage**: Auto-counted from test output
-- **Resolves**: Auto-generated from resolved threads in cache
+### Active Copilot Re-Request (NEW — replaces passive waiting)
 
-## Step 8: Monitor for New Copilot Comments
+Read `DIRECTIONAL_COUNT` back from `fixes.json` for the round just committed (persisted by
+`commit-pr-fixes.sh` in Step 7) rather than trusting conversation memory — this survives a
+context compaction or a resumed session:
+```bash
+DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0' "$FIXES_FILE")
+```
 
-**IMPORTANT**: After pushing, Copilot may analyze the new commit and add MORE comments.
+- **If `DIRECTIONAL_COUNT >= 1`**: at least one fix shifted what the PR does. Actively
+  re-request review — don't wait for Copilot to notice the push on its own:
+  ```bash
+  gh pr edit $PR_NUMBER --add-reviewer @copilot
+  ```
+  Use exact spelling `@copilot`; no REST fallback. If it fails (422 / user-not-found), tell the
+  user: "Copilot re-review couldn't be triggered via CLI — use the 'Re-request review' button
+  next to Copilot in the Reviewers panel."
+
+  **Track re-review count**: the PR gets one automatic review on open (review #1). Each
+  re-request you trigger increments an internal counter (re-request #1 = review #2, etc.). See
+  the numeric `/plan` escalation under Convergence Criterion below before re-requesting a 3rd+
+  time.
+
+  `address-pr-issues` has no PR-description-generation tool, so unlike a fully automated
+  refresh, surface a one-line manual nudge: "N directional fix(es) this round — consider
+  updating the PR description before merge."
+
+- **If `DIRECTIONAL_COUNT == 0`**: every fix this round was polish (style, naming, tests, minor
+  guards) — skip the re-request and state so: "No directional fixes this round — not
+  re-requesting Copilot review."
 
 ### Wait for CI/CD to Complete
 
@@ -1082,49 +1231,16 @@ gh run list --branch $(git branch --show-current) --limit 1
 
 ### Check for New Copilot Comments (Update Cache)
 
-**NEW**: Refresh cached thread data after CI/CD completes:
+Refresh cached thread data after CI/CD completes, then diff against the pre-round snapshot to
+find what's new — the fetch itself is a script call, not a hand-written query:
 
 ```bash
 # Save current state for comparison
 cp "$THREADS_FILE" "${THREADS_FILE}.before-round-${ROUND}"
 
-# Re-fetch threads after CI/CD completes
-gh api graphql -f query='
-  query($owner: String!, $repo: String!, $pr: Int!) {
-    repository(owner: $owner, name: $repo) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
-          nodes {
-            id
-            isResolved
-            comments(first: 10) {
-              nodes {
-                id
-                databaseId
-                author { login }
-                body
-                path
-                line
-                createdAt
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-' -F owner='{owner}' -F repo='{repo}' -F pr=$PR_NUMBER \
-  | jq '.data.repository.pullRequest.reviewThreads.nodes[] | {
-    threadId: .id,
-    commentId: .comments.nodes[0].databaseId,
-    author: .comments.nodes[0].author.login,
-    isResolved,
-    path: .comments.nodes[0].path,
-    line: .comments.nodes[0].line,
-    bodySummary: (.comments.nodes[0].body | split("\n")[0] | .[0:100]),
-    bodyFull: .comments.nodes[0].body,
-    createdAt: .comments.nodes[0].createdAt
-  }' > "$THREADS_FILE"
+# Re-fetch (also auto-increments round; use fetch-pr-threads.sh instead if you only need
+# to view rather than advance the round)
+./scripts/init-pr-state.sh $PR_NUMBER
 
 # Compare with previous state to detect new threads
 NEW_THREADS=$(jq -s '.[0] - .[1]' "$THREADS_FILE" "${THREADS_FILE}.before-round-${ROUND}" | jq 'select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]")')
@@ -1139,32 +1255,65 @@ NEW_THREADS=$(jq -s '.[0] - .[1]' "$THREADS_FILE" "${THREADS_FILE}.before-round-
 **Decision tree**:
 ```
 New Copilot comments after commit?
-├─ Critical/High → Fix immediately (Step 4 again)
+├─ Same class as a prior round's fix → Sweep gap (see "Pattern Class Recurrence" below)
+├─ Critical/High (new class) → Fix immediately (Step 4 again)
 ├─ Medium → User decides: fix now or later
-└─ Low → Document and defer to future PR/ticket
+└─ Low / all won't-fix → Converging (see "Convergence Criterion" below)
 ```
 
-### Example: Post-Commit Iteration
+**Note**: After any fix round, repeat Step 6 (resolve new conversations) before pushing again.
 
-```bash
-# Pushed commit fixing 5 issues
-git push origin feature/my-branch
+### Pattern Class Recurrence
 
-# Wait 30 minutes, CI/CD completes
-# Copilot adds 2 NEW comments:
-#   1. "Consider using early returns" (MEDIUM)
-#   2. "Add unit test for edge case" (LOW)
+When Copilot finds more instances of a pattern class already fixed this PR, the cause is a
+sweep that was too narrow — not a new concern requiring adversarial review.
 
-# Decision: Fix #1 now (improves readability), defer #2 (already have tests)
-[Implement early returns...]
-mvn test && sonar-scanner
-git commit -m "refactor: Use early returns per Copilot suggestion"
-git push
-```
+**How to recognize it**: The new thread describes the same structural gap (missing fallback,
+missing guard, missing validation) at a different callsite, and a prior commit message shows
+you already fixed that gap elsewhere.
 
-**Pro tip**: Limit to **2-3 post-commit iterations** maximum. Diminishing returns after that.
+**Response** (do NOT re-run adversarial review — the class is already known):
 
-**Note**: After post-commit fixes, repeat Step 6 (resolve new conversations) before pushing again.
+1. **Identify the class** from the prior round's commit message or fix notes.
+2. **Widen the grep scope** — scope expands with each recurrence:
+   - First encounter → PR's changed files only
+   - Recurrence → full file containing the changed code
+   - Second recurrence → full function family across all files in the PR
+3. **Enumerate ALL peer callsites** of the same type (e.g., every `returncode != 0` block,
+   every `run_step_*` function, every JSON-read site) and check each against the missing property.
+4. **Fix all remaining instances in one commit.** Use a message like
+   `sweep: exhaust [class name]` rather than `fix: Round N` — this is gap-closing, not a new
+   round of findings.
+5. **Run Step 4.5 post-fix sweep** to confirm exhaustion before pushing.
+6. **State the outcome**: "Pattern class exhausted — N total sites fixed across M rounds."
+
+**Example**: Copilot flags `git rev-list` failure path missing stdout fallback (Round 3),
+after you already fixed `git fetch` in Round 1. Widen from PR-changed-files to full file.
+Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class is closed.
+
+### Convergence Criterion
+
+Stop iterating when a round produces only issues you are choosing not to fix. Signs that
+the PR has converged:
+
+- Every new thread is style-only, doc-wording, or a design choice you disagree with.
+- No new bug classes have appeared since the last two rounds.
+- Your Step 3.5 gate would rate every new thread as "skip adversarial review."
+- The thread severity trend is declining (Critical/High → Medium → Low → doc-only).
+
+When converged: document won't-fix rationale on each remaining thread, resolve all threads,
+and present the PR to the user as ready for merge review. Do not keep iterating hoping
+Copilot will eventually stop — the convergence criterion ends the loop, not a round cap.
+
+### Numeric /plan Escalation (NEW)
+
+In addition to the qualitative signs above, use the re-review count tracked in Step 8: if this
+would be re-request #2 or later (the 3rd Copilot review or beyond), **stop before re-requesting**
+and recommend a `/plan` cycle instead. Draft the actual `/plan` prompt — not a placeholder —
+naming this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check
+gaps in the export module"), with thread IDs and affected scope where available. Present it to
+the user and wait for their response before continuing. This turns "just keep fixing what
+Copilot flags" into a deliberate checkpoint once a PR has clearly outgrown reactive rounds.
 
 ## SonarQube Issue Resolution
 
@@ -1190,166 +1339,36 @@ curl -u "$SONAR_TOKEN:" -X POST \
   -d "text=Intentional: [reason]"
 ```
 
-## State Management & Fix History (NEW)
+## State Management & Fix History
 
-### View Fix History
-
-After completing multiple rounds, view the complete fix history:
+`$FIXES_FILE` (per-round commit/files history) and `$THREADS_FILE.before-round-N` snapshots
+(saved in Step 8) are plain JSON — query them with `jq` for whatever view you need. Two
+starting points:
 
 ```bash
-# View all fixes across all rounds
+# Full fix history across all rounds
 cat "$FIXES_FILE"
 
-# Pretty-print fix history
-jq -r 'to_entries[] | "
-\(.key):
-  Commit: \(.value.commit)
-  Threads Resolved: \(.value.threads_resolved | join(", "))
-  Files Changed: \(.value.files_changed | length)
-  Tests Passing: \(.value.tests_passing)
-"' "$FIXES_FILE"
-
-# Example output:
-# round_1:
-#   Commit: abc123def
-#   Threads Resolved: PRRT_kwDOQ5-SAM59LkA-, PRRT_kwDOQ5-SAM59LkBj
-#   Files Changed: 3
-#   Tests Passing: 495
-# 
-# round_2:
-#   Commit: def456ghi
-#   Threads Resolved: PRRT_kwDOQ5-SAM59OMjh, PRRT_kwDOQ5-SAM59OMkF
-#   Files Changed: 2
-#   Tests Passing: 496
-```
-
-### View Thread History
-
-Compare thread state across rounds:
-
-```bash
-# View original thread state (Round 1)
-cat "$WORKSPACE_DIR/threads.json.before-round-1"
-
-# View current thread state
-cat "$THREADS_FILE"
-
-# Count resolved threads per round
-for i in {1..10}; do
-  if [ -f "$WORKSPACE_DIR/threads.json.before-round-$i" ]; then
-    RESOLVED=$(jq 'select(.isResolved == true)' "$WORKSPACE_DIR/threads.json.before-round-$i" | jq -s length)
-    echo "After Round $i: $RESOLVED threads resolved"
-  fi
-done
-```
-
-### Cleanup State Files
-
-After PR is merged, clean up state files:
-
-```bash
-# Manual cleanup (if trap didn't execute)
-rm -rf "/tmp/pr-${PR_NUMBER}"
-
-# OR: Archive for post-mortem analysis
-ARCHIVE_DIR="$HOME/.claude/pr-history"
-mkdir -p "$ARCHIVE_DIR"
-mv "/tmp/pr-${PR_NUMBER}" "$ARCHIVE_DIR/pr-${PR_NUMBER}-$(date +%Y%m%d)"
-
-echo "✅ Archived PR #${PR_NUMBER} state to $ARCHIVE_DIR"
-```
-
-### Post-Mortem Analysis
-
-After completing the PR, analyze the workflow:
-
-```bash
-# Count total rounds
-TOTAL_ROUNDS=$(jq 'keys | length' "$FIXES_FILE")
-
-# Count total threads resolved
-TOTAL_THREADS=$(jq '[.[].threads_resolved[]] | length' "$FIXES_FILE")
-
-# List all commits
-jq -r '.[].commit' "$FIXES_FILE"
-
-# Calculate efficiency metrics
-echo "PR #${PR_NUMBER} Workflow Summary:"
-echo "  Total Rounds: $TOTAL_ROUNDS"
-echo "  Total Threads Resolved: $TOTAL_THREADS"
-echo "  Average Threads/Round: $((TOTAL_THREADS / TOTAL_ROUNDS))"
-echo ""
-echo "Round Breakdown:"
+# Rounds + threads resolved + files changed, one line per round
 jq -r 'to_entries[] | "\(.key): \(.value.threads_resolved | length) threads, \(.value.files_changed | length) files"' "$FIXES_FILE"
 ```
 
-**Benefits of State Management**:
-- **Traceability**: Full audit trail of all fixes
-- **Performance Analysis**: Identify bottlenecks (which rounds took longest)
-- **Learning**: Understand patterns (which types of issues cascade)
-- **Documentation**: Export fix history for handoff docs or post-mortems
+**Cleanup after merge**: `rm -rf "/tmp/pr-${PR_NUMBER}"`, or archive it first with
+`mv "/tmp/pr-${PR_NUMBER}" "$HOME/.claude/pr-history/pr-${PR_NUMBER}-$(date +%Y%m%d)"` if you
+want it for a later post-mortem.
 
 ## Tips and Best Practices
 
-### Resolve Conversations Before Pushing (Critical!)
+### Don't Use `gh pr comment` for Fix Replies
 
-**Always resolve GitHub threads BEFORE committing**:
-- ✅ Cleaner workflow: Fix → Resolve → Commit → Push
-- ✅ Reviewers see resolved conversations immediately
-- ✅ Commit messages reference already-addressed issues
-- ✅ Easier to track progress across iterations
-
-**Bad workflow** ❌:
-```bash
-git commit && git push  # Push first
-# Now resolve conversations  # Too late!
-
-# OR using wrong API:
-gh pr comment $PR --body "Fixed"  # ❌ Top-level comment, not threaded!
-```
-
-**Good workflow** ✅:
-```bash
-# Fix issues
-[make changes, run tests, sonar-scanner...]
-
-# Resolve conversations FIRST (threaded replies!)
-gh api repos/{owner}/{repo}/pulls/comments/$COMMENT_ID/replies \
-  -f body="✅ Fixed..."
-gh api graphql -f query='mutation...'
-
-# THEN commit and push
-git commit -m "fix: Address issues (threads #1, #2 resolved)"
-git push
-```
-
-**Key API distinction**:
-- ❌ `gh pr comment` → Top-level PR comment (not threaded)
-- ✅ `gh api .../pulls/comments/$ID/replies` → Threaded reply to specific review comment
+`gh pr comment` posts a **top-level** PR comment, not a threaded reply — it doesn't resolve
+anything and reviewers won't see it attached to the flagged line. Always resolve via
+`resolve-thread.sh` / `resolve-threads-bulk.sh` (Step 6), which handle the threaded-reply-plus-
+resolve sequence correctly, in the fix → resolve → commit → push order described there.
 
 ### Anticipate Further Issues
 
-When making changes, think ahead:
-- Will this introduce new SonarQube warnings?
-- Does Copilot flag similar patterns elsewhere?
-- Should I apply this fix consistently across the file?
-
-**Run local scans** to catch issues before CI/CD:
-```bash
-# After each significant change
-sonar-scanner -Dsonar.analysis.mode=preview
-
-# Review console output for new issues
-```
-
-### Batch Related Issues
-
-Group similar issues in one commit:
-- All null checks together
-- All resource leaks together
-- All style fixes together
-
-**Rationale**: Easier to review, clearer git history
+See **Step 3.7 — Similar-Pattern Sweep**: mandatory grep of all PR-touched files for each confirmed issue class before any fix is implemented. This handles the "batch related issues" concern automatically.
 
 ### Lessons from Real-World Usage
 

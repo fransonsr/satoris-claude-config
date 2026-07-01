@@ -1,5 +1,73 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-07-01 - v1.6.0: Ported apply-feedback Strengths + Script-First Cleanup
+
+**Motivation**: Compared against `golden-pr:apply-feedback`, which handles the same
+"address open PR review comments" job with a leaner, subagent-delegated design. Four
+capabilities were missing here; ported them over. Separately, direct review found the SKILL
+body reproducing GraphQL/curl operations that the skill's own `scripts/`/`lib/` already cover
+— the duplication is why the agent kept re-deriving queries inline instead of calling scripts.
+
+**Added**:
+1. **Step 1.6 — Silent-thread pre-filter**: auto-handle purely-complimentary and
+   already-resolved threads (precise, checkable definition) before the CRITICAL/HIGH/MEDIUM/LOW
+   triage in Step 3. New `react_to_comment()` helper in `lib/github-api.sh`.
+2. **PR intent + directional/polish classification**: Step 1 now reads the PR body for
+   `PR_INTENT`/`RISK_FILES`; Step 2's triage schema gains a `classification` field
+   (directional | polish) — a fix that shifts what the PR does vs. one that refines within
+   existing intent. Drives Step 8's `DIRECTIONAL_COUNT`-gated **active** Copilot re-request
+   (`gh pr edit --add-reviewer @copilot`), replacing the old passive "wait ~5-10 min."
+   No PR-description auto-refresh (this skill has no generator tool) — surfaces a manual nudge
+   instead.
+3. **Thread-accountability closeout** (Step 6): a per-thread status table covering every
+   thread touched this session, with a hard stop on any `skipped` thread lacking an explicit
+   "leave open" acknowledgment.
+4. **Protected-branch guard** (Step 7, before push), a **Reply Tone** contract (future tense for
+   not-yet-made fixes, past tense for confirmed ones), and a **numeric `/plan` escalation**
+   (re-request #2+ triggers a recommended `/plan` cycle instead of another blind re-request),
+   sharpening the existing qualitative Convergence Criterion.
+
+**Removed / collapsed** (script-first enforcement): deleted the fully-redundant manual
+`<details>` blocks that reimplemented `init-pr-state.sh`, the thread-fetch GraphQL query
+(previously duplicated 3×), the Sonar polling loop, and the manual commit block — all replaced
+with pointers to the existing scripts/`lib/` functions. Added a hard rule to the "Use Automation
+Scripts First" section: if you're about to write `gh api graphql` or a SonarQube `curl` by hand,
+a script already does it. Condensed the post-mortem jq catalog to two commands + a pointer.
+
+**Net effect**: four new capabilities landed with the file still shorter than before
+(~1754 → ~1450 lines).
+
+**Follow-up hardening (same day)** — implementing the above as prose-only left two things
+unbuildable, caught on review:
+- `fetch_pr_threads()` only ever cached each thread's *first* comment, but Step 1.6's bucket
+  rules need the *most recent* comment (to detect resolved-with-new-activity) and `isOutdated`
+  (for the `[outdated]` label) — neither field existed in the cache. Extended the GraphQL query
+  and cached schema with `lastCommentAuthor`/`lastCommentBody`/`lastCommentId`/`isOutdated`.
+- Added `scripts/classify-threads.sh` — turns Step 1.6's bucket rules into a deterministic jq
+  classifier instead of prose the agent applies per-thread. The "purely complimentary" heuristic
+  was hardened beyond its `apply-feedback` origin (expanded trigger-word vocabulary + a word-count
+  guard) after testing showed the original definition misclassifies short substantive comments
+  like "This method should validate input" as complimentary — a false positive here silently
+  auto-resolves a real comment with no human ever seeing it.
+- `commit-pr-fixes.sh` now takes an optional `directional_count` argument and persists it into
+  `fixes.json`, so Step 8's Copilot re-request decision reads from disk instead of depending on
+  conversation memory surviving a context compaction or resumed session.
+
+**Also extended**: `copilot-review-patterns.md` Class 11 (Cross-File Rule Consistency) to cover
+doc-vs-script restatement — this session found `address-pr-issues/SKILL.md` had already suffered
+a real drift incident from exactly this pattern (see `~/.claude/copilot-review-patterns.md`).
+README.md resynced to current SKILL.md (was a stale pre-adversarial-review snapshot, ~728 lines
+diverged before this session).
+
+**Follow-up (same day, round 2)** — self-review turned up two more gaps:
+- QUICK_START.md never mentioned Step 1.6 or `classify-threads.sh` — added a "Filter Trivial
+  Threads" cheat-sheet entry and a workflow-diagram step, so the cheat sheet doesn't omit a
+  documented step.
+- Step 3's "Present Questionable Issues to User" template didn't show where Step 1.6's
+  `[outdated]` / `[resolved + new activity]` labels appear in the presented list — added two
+  labeled example items.
+README.md resynced again to match.
+
 ## 2026-06-12 - v1.5.0: Sweep Improvements + Pagination Warning
 
 ### Step 3.7: Two-tier sweep for structural absence (Changes 1 & 2)
@@ -433,6 +501,9 @@ done
 
 ## Version History
 
+- **2026-07-01**: Ported apply-feedback strengths (silent-thread filter, directional/polish
+  classification, thread-accountability closeout, protected-branch guard, /plan escalation) +
+  script-first cleanup (net line reduction)
 - **2026-04-20**: Major update (SonarQube API, pre-push checklist, conversation ordering)
 - **2026-04-17**: Added adversarial review agent pattern
 - **2026-04-16**: Initial version (basic workflow)

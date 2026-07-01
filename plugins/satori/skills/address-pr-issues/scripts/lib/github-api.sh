@@ -44,7 +44,8 @@ fetch_pr_threads() {
             nodes {
               id
               isResolved
-              comments(first: 10) {
+              isOutdated
+              firstComment: comments(first: 1) {
                 nodes {
                   id
                   databaseId
@@ -52,6 +53,14 @@ fetch_pr_threads() {
                   body
                   path
                   line
+                  createdAt
+                }
+              }
+              lastComment: comments(last: 1) {
+                nodes {
+                  databaseId
+                  author { login }
+                  body
                   createdAt
                 }
               }
@@ -74,17 +83,25 @@ fetch_pr_threads() {
     echo "   See Step 1 pagination note in SKILL.md for the full query." >&2
   fi
 
+  # `firstComment`/`lastComment` fields are used (rather than a single `comments` list) so the
+  # cache captures both the original review comment (for replying/resolving) and the most recent
+  # activity (for Step 1.6's silent-thread classification) without over-fetching every comment in
+  # a long thread.
   echo "$raw_response" \
     | jq -c '.data.repository.pullRequest.reviewThreads.nodes[] | {
       threadId: .id,
-      commentId: .comments.nodes[0].databaseId,
-      author: .comments.nodes[0].author.login,
+      commentId: .firstComment.nodes[0].databaseId,
+      author: .firstComment.nodes[0].author.login,
       isResolved,
-      path: .comments.nodes[0].path,
-      line: .comments.nodes[0].line,
-      bodySummary: (.comments.nodes[0].body | split("\n")[0] | .[0:100]),
-      bodyFull: .comments.nodes[0].body,
-      createdAt: .comments.nodes[0].createdAt
+      isOutdated,
+      path: .firstComment.nodes[0].path,
+      line: .firstComment.nodes[0].line,
+      bodySummary: (.firstComment.nodes[0].body | split("\n")[0] | .[0:100]),
+      bodyFull: .firstComment.nodes[0].body,
+      createdAt: .firstComment.nodes[0].createdAt,
+      lastCommentId: .lastComment.nodes[0].databaseId,
+      lastCommentAuthor: .lastComment.nodes[0].author.login,
+      lastCommentBody: .lastComment.nodes[0].body
     }' > "$output_file"
 }
 
@@ -126,6 +143,19 @@ add_pr_comment() {
   local body="$2"
 
   gh pr comment "$pr_number" --body "$body"
+}
+
+# React to a review comment (e.g. to silently ack a purely complimentary thread)
+# Usage: react_to_comment <comment_id> [content]  (content defaults to "+1")
+react_to_comment() {
+  local comment_id="$1"
+  local content="${2:-+1}"
+
+  get_repo_info || return 1
+
+  gh api --method POST \
+    "repos/$REPO_OWNER/$REPO_NAME/pulls/comments/$comment_id/reactions" \
+    -f content="$content" > /dev/null
 }
 
 # Test if threaded reply API is available
