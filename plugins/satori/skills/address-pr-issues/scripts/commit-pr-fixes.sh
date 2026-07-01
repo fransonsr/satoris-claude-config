@@ -20,6 +20,10 @@ if ! [[ "$DIRECTIONAL_COUNT" =~ ^[0-9]+$ ]]; then
   echo "⚠️  directional_count must be a non-negative integer, got: $DIRECTIONAL_COUNT" >&2
   exit 1
 fi
+# Strip leading zeros now that the digits-only check has passed — bash's arithmetic/test
+# operators treat a leading-zero numeral as octal, so "08"/"09" would otherwise crash
+# `-gt`/`(( ))` below with "value too great for base" despite passing the regex above.
+DIRECTIONAL_COUNT=$((10#$DIRECTIONAL_COUNT))
 
 WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
 ROUND_FILE="$WORKSPACE_DIR/round.txt"
@@ -35,7 +39,7 @@ ROUND=$(cat "$ROUND_FILE")
 # Generate commit message
 COMMIT_MSG="fix: Address PR #${PR_NUMBER} review feedback (Round ${ROUND})
 
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
+Co-Authored-By: Claude <noreply@anthropic.com>"
 
 echo "Commit message:"
 echo "---"

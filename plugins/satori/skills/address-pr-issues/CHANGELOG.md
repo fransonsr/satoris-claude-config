@@ -1,5 +1,43 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-07-01 - v1.7.0: First Real Dogfood Run (pre-pr-audit + adversarial-review)
+
+**Context**: Ran `/satori:pre-pr-audit` against this skill's own diff for the first time —
+previously it had never been reviewed by its own tooling. Surfaced 42 findings total: 9 from
+the mandatory adversarial pattern review (11 classes), 33 from Steps 4.8/4.9 (spec-completeness
++ whole-document coherence walk). ~16 were caused by today's diff; the rest was pre-existing
+structural debt (duplicate "Step 3.5"/"Step 4" headings, Workflow Overview numbers that never
+matched the body, several orphaned/undefined references) that the whole-document walk surfaced
+because it reads entire files, not just diffs. Fixed all of it in one batch:
+
+- **`classify-threads.sh`**: fixed a real bug — stale-schema caches and empty comment bodies
+  were failing OPEN into the auto-resolving `silent` bucket instead of failing closed to `keep`.
+  Added a `has()`-based stale-schema guard and an empty-text guard in `is_complimentary()`.
+- **`commit-pr-fixes.sh`**: fixed a real crash — a zero-padded `directional_count` (e.g. `"08"`)
+  passed the digits-only regex but crashed bash's `-gt` (octal interpretation of leading zero).
+  Also replaced the hardcoded, already-stale `Co-Authored-By: Claude Sonnet 4.5` with a
+  generic `Co-Authored-By: Claude` — model names go stale, this shouldn't need updating again.
+- **SKILL.md/README.md**: renamed the duplicate "Step 3.5" (adversarial review gate → "Step
+  2.5") and duplicate "Step 4" (execute fixes → "Step 4.1") headings; fixed the Workflow
+  Overview's wrong numbers (1.5→1.6, 3.5→3.7 for pre-fix sweep, "return to step 5"→"step 4");
+  added the missing DIRECTIONAL_COUNT derivation (persist Step 2's triage to `triage.json`,
+  compute the count from it after Step 4.1 — this was referenced at Step 7/8 but never
+  actually shown); gave the Step 8 re-review counter a real persistence file
+  (`copilot_review_count.txt`, it previously had none unlike every other cross-round counter);
+  added a Bucket 1 outcome category to the Thread-Accountability Closeout (it claimed to cover
+  "both" Step 1.6 buckets but only had a slot for one); added the missing `commentId`
+  derivation for Step 1.6's silent-bucket react step; moved the SonarQube fetch section from
+  under Step 2 back to Step 1 (where the Workflow Overview already said it lived).
+- **scripts/README.md, QUICK_START.md**: removed a literal reproduction of `commit-pr-fixes.sh`'s
+  commit-message template (Class 11 drift risk — confirmed a stale co-author line), clarified
+  that scripts/README.md's 1-7 workflow numbering is independent of SKILL.md's step numbers
+  rather than implying a 1:1 mapping, and pointed both at the new DIRECTIONAL_COUNT derivation.
+
+**Process change going forward**: `plugin.json`/`marketplace.json`'s version must be bumped
+whenever plugin content changes, or `Skill()` invocations keep serving a stale cached snapshot
+indefinitely (discovered during this run — the cache was 5 days stale despite several commits
+landing in between). See `~/.claude/CLAUDE.md`'s dogfooding section for the full workflow.
+
 ## 2026-07-01 - v1.6.0: Ported apply-feedback Strengths + Script-First Cleanup
 
 **Motivation**: Compared against `golden-pr:apply-feedback`, which handles the same

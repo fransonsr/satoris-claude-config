@@ -70,17 +70,17 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 ## Workflow Overview
 
 1. **Fetch Issues**: Read Copilot PR comments, PR description (for intent/risk scope), and SonarQube analysis
-1.5. **Silent-thread pre-filter (NEW)**: Auto-handle purely-complimentary and already-resolved threads before triage
+1.6. **Silent-thread pre-filter (NEW)**: Auto-handle purely-complimentary and already-resolved threads before triage
 2. **Assess Complexity**: Determine if adversarial review agent needed
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
-3.5. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
+3.7. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
 4. **Plan & Execute**: Create implementation plan and fix issues using TDD / xp-pair for complex changes
 4.5. **Post-fix sweep**: Re-sweep fixes for cascading issues they may have introduced — add any hits to this round before committing
 5. **Validate**: Run local sonar-scanner to catch new issues before committing
 6. **Resolve Conversations**: Mark fixed GitHub threads as resolved, reconcile every thread's disposition (NEW)
 7. **Commit & Push**: Protected-branch check, then commit and push to PR branch
 8. **Monitor**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting)
-9. **Repeat**: If new significant issues appear, return to step 5; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
+9. **Repeat**: If new significant issues appear, return to step 4; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
 
 **IMPORTANT**: This is an **iterative process**. Expect multiple rounds:
 - Fixing code often introduces new SonarQube issues (e.g., extracted methods should be static)
@@ -221,6 +221,14 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 - `$WORKSPACE_DIR/api-capabilities.txt` - API feature detection results
 - `$WORKSPACE_DIR/fixes.json` - Fix history per round
 - `$WORKSPACE_DIR/checklist.json` - Pre-commit checklist state
+- `$WORKSPACE_DIR/triage.json` - Step 2's persisted triage results (written in Step 2)
+- `$WORKSPACE_DIR/copilot_review_count.txt` - Re-review counter (written in Step 8)
+
+**Shorthand used throughout this doc**: `$THREADS_FILE`, `$CHECKLIST_FILE`, `$FIXES_FILE`, and
+`$ROUND` are not exported by any script — they're shorthand for
+`$WORKSPACE_DIR/threads.json`, `$WORKSPACE_DIR/checklist.json`, `$WORKSPACE_DIR/fixes.json`, and
+`$(cat "$WORKSPACE_DIR/round.txt")` respectively. Set them yourself before running a snippet that
+uses them, e.g. `THREADS_FILE="$WORKSPACE_DIR/threads.json"`.
 
 **Benefits**:
 - Faster workflow (no redundant API calls)
@@ -238,6 +246,18 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 
 **For custom filtering** beyond what the script's flags support, query `$THREADS_FILE` directly
 with `jq` rather than adding a new script flag for a one-off — the cache is plain JSON.
+
+### Fetch SonarQube Issues (AUTOMATED)
+
+⚠️ **USE SCRIPT** (saves ~3k tokens - checks quality gate + fetches blocking issues):
+```bash
+./scripts/check-sonar-quality-gate.sh $PR_NUMBER
+```
+
+**If `sonar-project.properties` is missing**, see "Handle Missing sonar-project.properties" in
+Tips and Best Practices below. **For custom queries** beyond what the script covers, use the
+`lib/sonar-api.sh` functions directly (`get_quality_gate_status`, `get_pr_issues`,
+`wait_for_analysis`) rather than a fresh `curl` — read the library file for their signatures.
 
 ## Step 1.6: Silent-Thread Pre-Filter (NEW)
 
@@ -266,9 +286,16 @@ PR timeline for no benefit.
 
 ### Bucket 2 — Silent (auto-handle, no user prompt)
 
-`isResolved == false` AND the most recent comment is purely complimentary. For each thread ID
-the script prints: react 👍 via `react_to_comment()` (in `lib/github-api.sh`), then resolve via
-`./scripts/resolve-thread.sh $PR_NUMBER <thread_id>`.
+`isResolved == false` AND the most recent comment is purely complimentary. `classify-threads.sh`
+only *classifies* these threads — it does not react or resolve them itself. For each thread ID
+it prints, derive the `commentId` (needed by `react_to_comment()`, unlike `resolve-thread.sh`
+which takes the `threadId` directly) from the cache, then react and resolve:
+```bash
+COMMENT_ID=$(jq -r --arg tid "$THREAD_ID" 'select(.threadId == $tid) | .commentId' "$THREADS_FILE")
+# react_to_comment() is a lib/github-api.sh function, not a standalone script — source it first:
+source "./scripts/lib/github-api.sh" && react_to_comment "$COMMENT_ID"
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID"
+```
 
 ### Bucket 3 — Keep (flows into Step 3)
 
@@ -277,8 +304,9 @@ non-complimentary activity from someone other than the PR author (`labels: ["res
 and outdated unresolved threads (`labels: ["outdated"]`). Carry these labels into the Step 3
 presentation as `[resolved + new activity]` / `[outdated]` so nothing is silently missed.
 
-The script's own summary line (`N silent threads handled, M already-resolved skipped — K
-substantive threads to triage.`) is what to show the user before moving to Step 2.
+The script's own summary line (`N silent threads identified (react + resolve pending), M
+already-resolved skipped — K substantive threads to triage.`) is what to show the user before
+moving to Step 2.
 
 **If the script isn't available or a thread's cache predates it** (missing `lastCommentAuthor`/
 `isOutdated` fields — added when `fetch_pr_threads()` was extended for this step), re-run
@@ -324,9 +352,17 @@ Before implementing fixes, ask:
 
 ### Parallel Issue Triage (Workflow)
 
-After fetching threads, triage all issues in parallel — one agent per issue. This offloads assessment from the implementation session's context; only the structured results return.
+Triage only Step 1.6's Bucket 3 ("keep") threads — Buckets 1 and 2 were already disposed of
+without a triage agent:
+```bash
+jq 'select(.bucket == "keep")' "$THREADS_FILE"
+```
+Triage these in parallel, one agent per issue, using the `Workflow` tool (Claude Code's
+multi-agent orchestration primitive — spawns one agent per item concurrently and returns each
+agent's structured result). This offloads assessment from the implementation session's context;
+only the structured results return, not the full per-issue analysis work.
 
-Use the Workflow tool, spawning one agent per issue. Each agent receives the thread body, file path, line number, the relevant code section (read from disk), and `PR_INTENT`/`RISK_FILES` from Step 1.
+Spawn one agent per issue via `Workflow`. Each agent receives the thread body, file path, line number, the relevant code section (read from disk), and `PR_INTENT`/`RISK_FILES` from Step 1.
 
 Each agent returns:
 ```json
@@ -351,12 +387,18 @@ change what the PR does?", not "how bad is it":
   formatting, tests) without changing what the PR does.
 - When ambiguous, classify as `polish` — the directional bar is high.
 
-Use the merged triage results to drive Step 3 categorization and the Step 3.5 adversarial review
-decision. **`DIRECTIONAL_COUNT`** (computed after Step 4) is the count of `directional`-classified
-issues actually fixed this round — not everything triaged. An issue the user deferred or declined
-in Step 3 doesn't count, since nothing about the PR changed for it.
+**Persist the merged triage results** to `$WORKSPACE_DIR/triage.json` (an array of the per-issue
+JSON objects above, keyed by `issue_id`) before moving on — this is what Step 4.1 reads back to
+compute `DIRECTIONAL_COUNT`, so it survives a context compaction the same way `threads.json`/
+`fixes.json` do.
 
-### Step 3.5: Adversarial Review Gate (MANDATORY CHECK)
+Use the merged triage results to drive Step 3 categorization and the Step 2.5 adversarial review
+decision. **`DIRECTIONAL_COUNT`** is the count of `directional`-classified issues actually fixed
+this round — not everything triaged. An issue the user deferred or declined in Step 3 doesn't
+count, since nothing about the PR changed for it. See "Derive DIRECTIONAL_COUNT" at the end of
+Step 4.1 for the concrete computation.
+
+### Step 2.5: Adversarial Review Gate (MANDATORY CHECK)
 
 **⚠️ STOP: Do not skip this step without completing the checklist.**
 
@@ -425,18 +467,6 @@ These patterns consistently hide edge cases - always use adversarial review:
 - String splitting (What about: delimiters in data? edge counts? escaping?)
 - HashMap/Set operations (What about: iteration order? duplicates? collisions?)
 
-### Fetch SonarQube Issues (AUTOMATED)
-
-⚠️ **USE SCRIPT** (saves ~3k tokens - checks quality gate + fetches blocking issues):
-```bash
-./scripts/check-sonar-quality-gate.sh $PR_NUMBER
-```
-
-**If `sonar-project.properties` is missing**, see "Handle Missing sonar-project.properties" in
-Tips and Best Practices below. **For custom queries** beyond what the script covers, use the
-`lib/sonar-api.sh` functions directly (`get_quality_gate_status`, `get_pr_issues`,
-`wait_for_analysis`) rather than a fresh `curl` — read the library file for their signatures.
-
 ## Step 3: Categorize and Prioritize Issues
 
 ### Issue Severity Matrix
@@ -500,7 +530,7 @@ Should I address these? (yes/no/selective)
 
 ## Step 3.5: Adversarial Review (Delegated to /adversarial-review)
 
-**If the Step 3.5 gate above indicates adversarial review is warranted**, delegate to the
+**If the Step 2.5 gate above indicates adversarial review is warranted**, delegate to the
 `/adversarial-review` skill BEFORE implementing fixes. The gate decides *whether* to run;
 this step describes *how*.
 
@@ -526,12 +556,12 @@ for review-pause (Step 3's categorize-and-prioritize loop serves as the disposit
 applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, commit, stash,
 restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
 
-Use the returned findings to drive the implementation step (Step 4) and the
+Use the returned findings to drive the implementation step (Step 4/4.1) and the
 commit-and-push step (Step 7).
 
 ### When to Skip (Rare — the gate decides)
 
-The Step 3.5 gate above lists the conditions. When skipping, document the reasoning (gate
+The Step 2.5 gate above lists the conditions. When skipping, document the reasoning (gate
 checklist result) so the user can override. The examples below show the value of the agent:
 
 **Without adversarial review** (5 rounds):
@@ -739,7 +769,7 @@ Based on confirmed issues, create a plan using TDD principles:
 - Local sonar-scanner before commit
 ```
 
-## Step 4: Execute Fixes (Iterative Loop)
+## Step 4.1: Execute Fixes (Iterative Loop)
 
 **CRITICAL**: This step is typically executed **2-4 times** before committing. Each fix may introduce new issues.
 
@@ -873,6 +903,26 @@ if (persona1Id.isEmpty() || persona2Id.isEmpty()) {
   - High confidence in correctness
 
 **Rationale**: Separating concerns makes PR easier to review and reduces noise in critical commits
+
+### Derive DIRECTIONAL_COUNT (before moving to Step 4.5)
+
+Now that this round's fixes are implemented, compute `DIRECTIONAL_COUNT` — needed by Step 7's
+commit and Step 8's re-request decision. It's the count of `triage.json` entries classified
+`directional` whose issues you actually fixed this round (not deferred, not declined, not
+won't-fixed):
+
+```bash
+# List the issue_ids you actually fixed this round, one per line, e.g.:
+FIXED_IDS="thread_abc thread_def"
+
+DIRECTIONAL_COUNT=$(jq --arg ids "$FIXED_IDS" '
+  [.[] | select(.classification == "directional") | select(.issue_id as $id | ($ids | split(" ")) | index($id))] | length
+' "$WORKSPACE_DIR/triage.json")
+```
+
+If you didn't persist `triage.json` in Step 2 (e.g. a small round with only 1-2 issues, triaged
+inline instead of via `Workflow`), tally by hand against the fix list you just completed instead
+of skipping this — `DIRECTIONAL_COUNT` must have a real value before Step 7.
 
 ## Step 4.5: Post-Fix Cascade Sweep (MANDATORY)
 
@@ -1093,11 +1143,14 @@ Use **past tense** when confirming a fix you just made:
 
 ### Thread-Accountability Closeout (NEW)
 
-Before moving to Step 7, reconcile **every** thread this session touched — both the Step 1.6
-skip-buckets and everything triaged in Step 3. Build a one-line-per-thread status table:
+Before moving to Step 7, reconcile **every** thread this session touched — both of Step 1.6's
+skip-buckets (not just Silent) and everything triaged in Step 3. Build a one-line-per-thread
+status table:
 
-- `resolved-silent` — handled in Step 1.6's Silent bucket
-- `replied-and-resolved` — fixed or explained in Step 4/6
+- `already-resolved-skip` — Step 1.6's Bucket 1; no action was needed or taken. List via
+  `jq -r 'select(.bucket == "already_resolved") | .threadId' "$THREADS_FILE"`
+- `resolved-silent` — handled in Step 1.6's Bucket 2 (Silent)
+- `replied-and-resolved` — fixed or explained in Step 4.1/6
 - `won't-fix-resolved` — documented won't-fix + resolved above
 - `skipped` — user chose to skip during Step 3.8 approval
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
@@ -1110,8 +1163,8 @@ explicit acknowledgment or a posted reply. The principle: a thread the user has 
 to leave open is fine; a thread that fell off the workflow without anyone noticing is not.
 
 Only run the full table when there's more than a trivial number of threads — for a single-digit
-round, a one-line summary (`Handled: N silent, M replied, K won't-fix, all threads accounted
-for.`) is enough.
+round, a one-line summary (`Handled: N already-resolved, M silent, P replied, K won't-fix, all
+threads accounted for.`) is enough.
 
 ## Step 7: Pre-Push Checklist & Commit
 
@@ -1206,10 +1259,18 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   user: "Copilot re-review couldn't be triggered via CLI — use the 'Re-request review' button
   next to Copilot in the Reviewers panel."
 
-  **Track re-review count**: the PR gets one automatic review on open (review #1). Each
-  re-request you trigger increments an internal counter (re-request #1 = review #2, etc.). See
-  the numeric `/plan` escalation under Convergence Criterion below before re-requesting a 3rd+
-  time.
+  **Track re-review count** in `$WORKSPACE_DIR/copilot_review_count.txt` — a plain integer file,
+  the same pattern as `round.txt`, so this survives a context compaction like every other
+  cross-round counter in this doc:
+  ```bash
+  COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
+  # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
+  [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
+  # After a successful re-request above, increment it
+  echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
+  ```
+  See the numeric `/plan` escalation under Convergence Criterion below, which reads this file
+  before re-requesting a 3rd+ time.
 
   `address-pr-issues` has no PR-description-generation tool, so unlike a fully automated
   refresh, surface a one-line manual nudge: "N directional fix(es) this round — consider
@@ -1256,7 +1317,7 @@ NEW_THREADS=$(jq -s '.[0] - .[1]' "$THREADS_FILE" "${THREADS_FILE}.before-round-
 ```
 New Copilot comments after commit?
 ├─ Same class as a prior round's fix → Sweep gap (see "Pattern Class Recurrence" below)
-├─ Critical/High (new class) → Fix immediately (Step 4 again)
+├─ Critical/High (new class) → Fix immediately (Step 4.1 again)
 ├─ Medium → User decides: fix now or later
 └─ Low / all won't-fix → Converging (see "Convergence Criterion" below)
 ```
@@ -1298,7 +1359,7 @@ the PR has converged:
 
 - Every new thread is style-only, doc-wording, or a design choice you disagree with.
 - No new bug classes have appeared since the last two rounds.
-- Your Step 3.5 gate would rate every new thread as "skip adversarial review."
+- Your Step 2.5 gate would rate every new thread as "skip adversarial review."
 - The thread severity trend is declining (Critical/High → Medium → Low → doc-only).
 
 When converged: document won't-fix rationale on each remaining thread, resolve all threads,
@@ -1307,9 +1368,10 @@ Copilot will eventually stop — the convergence criterion ends the loop, not a 
 
 ### Numeric /plan Escalation (NEW)
 
-In addition to the qualitative signs above, use the re-review count tracked in Step 8: if this
-would be re-request #2 or later (the 3rd Copilot review or beyond), **stop before re-requesting**
-and recommend a `/plan` cycle instead. Draft the actual `/plan` prompt — not a placeholder —
+In addition to the qualitative signs above, check `$WORKSPACE_DIR/copilot_review_count.txt`
+(tracked in Step 8) before re-requesting: `[[ $(cat "$COUNT_FILE") -ge 2 ]]` means this would be
+review #3 or beyond. **Stop before re-requesting** and recommend a `/plan` cycle instead. Draft
+the actual `/plan` prompt — not a placeholder —
 naming this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check
 gaps in the export module"), with thread IDs and affected scope where available. Present it to
 the user and wait for their response before continuing. This turns "just keep fixing what

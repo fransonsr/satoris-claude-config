@@ -106,8 +106,8 @@ git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
 
 Each agent runs the diff **once at the start of its review**, before applying its lens. An agent
 must not re-diff after Phase D fixes begin. Within a round the tree is frozen until Phase D, so
-every Phase A agent sees the same state — the same guarantee the orchestrator-extract model
-provided, without the orchestrator needing to hold file contents.
+every Phase A agent sees the same state — consistent across all agents in the round — without
+the orchestrator needing to hold or pass file contents itself.
 
 ---
 
@@ -126,14 +126,21 @@ Spawn one review agent for **each entry in `PATTERN_CLASSES`**. Run them concurr
 2. The pinned `BASE_BRANCH`, `CURRENT_BRANCH`, and the enumeration commands from Setup Step 4
 3. Instruction to the agent: *run the diff once (orientation), enumerate changed files, and read
    the **full contents** of the files your lens needs:*
-   - **Code lenses** (classes 1–5, 7): read the full contents of changed **source** files
-   - **Doc/spec lenses** (Documentation Accuracy #6, Semantic Correctness #8, Operator Spec
-     Completeness #9, Spec Operator Walkthrough #10, Cross-File Rule Consistency #11): read the
-     full contents of changed **doc** files; read source files only if the lens explicitly
-     requires cross-referencing code (e.g., class 6 doc-vs-code checks)
-   - **Class 11 (Cross-File Rule Consistency)**: read full contents of **both** changed source and
-     doc files — a rule can be restated across a doc and a code file
+   - **Code lenses** (State Machine / Control Flow Logic, Defensive Guards, Operator
+     Observability / Error Message Accuracy, Provenance / Identity Discrimination,
+     Infrastructure / Environment Handling, Test Integrity): read the full contents of changed
+     **source** files
+   - **Doc/spec lenses** (Documentation Accuracy, Semantic Correctness / Logical Completeness,
+     Operator Spec Completeness, Spec Operator Walkthrough): read the full contents of changed
+     **doc** files; read source files only if the lens explicitly requires cross-referencing
+     code (e.g., Documentation Accuracy's doc-vs-code checks)
+   - **Cross-File Rule Consistency**: read full contents of **both** changed source and doc
+     files — a rule can be restated across a doc and a code file (this lens is not in either
+     bucket above; it needs everything)
 4. The Intent Brief
+
+Reference classes by name only, as `PATTERN_CLASSES` does — never by number. Numbers drift as
+classes are added, renamed, or reordered in the patterns file; names are the stable identifier.
 
 **Model selection:**
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
@@ -182,7 +189,7 @@ Present the synthesized findings to the calling session. For each finding, the u
 |-------------|--------|
 | **Fix** | Proceed to Phase D |
 | **Contradicts design** | Override — no fix; do not flag as "missed" |
-| **Accepted risk** | Record as a known limitation; include in Phase E summary and PR description. Do NOT silently drop — the absence of a finding in the summary is a claim that it was addressed |
+| **Accepted risk** | Record as a known limitation; include in the Summary Output's Known Limitations section and PR description. Do NOT silently drop — the absence of a finding in the summary is a claim that it was addressed |
 | **False positive** | Skip; note the reason in the round summary |
 
 ### Phase D — Apply Fixes
@@ -205,8 +212,8 @@ before proceeding — do not continue to the next round with a red test suite.
 
 ### Phase E — Check Termination
 
-The next round's Phase A agents will self-diff the now-modified working tree when they start.
-No orchestrator re-extraction is needed.
+The next round's Phase A agents will self-diff the now-modified working tree when they start —
+the orchestrator does not need to re-read or re-pass file contents between rounds.
 
 **Terminate the loop when:**
 - All agents returned `"is_clean": true` and the synthesizer finds no new findings, OR

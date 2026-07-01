@@ -27,21 +27,33 @@ fi
 # "Purely complimentary" definition (SKILL.md Step 1.6): none of a question mark, a trigger
 # word, a file/line reference, or conditional language. Any one present -> substantive.
 #
-# Two hardenings beyond the SKILL.md definition, both because this is an executable filter with
-# no human judgment fallback (a false positive here means a real comment is auto-resolved with
-# nobody looking at it):
+# Hardenings beyond the SKILL.md definition, all because this is an executable filter with no
+# human judgment fallback (a false positive here means a real comment is auto-resolved with
+# nobody looking at it) — fail CLOSED (route to `keep`) on any degraded/ambiguous input, never
+# fail open into the auto-resolving `silent` bucket:
 # 1. Trigger list expanded with common critique/necessity words ("should", "needs", "missing",
 #    "wrong", "bug", etc.) — the original list is action-verb-only and misses phrasing like
 #    "this should validate input", which contains no listed verb but is clearly substantive.
 # 2. Word-count guard: genuine compliments ("LGTM", "Nice work", "👍") are almost always short.
 #    Cap complimentary classification at 8 words as an independent second signal.
-# Both err toward the safe side (more threads land in `keep`, not fewer) — and any thread
-# resolved via the silent bucket still surfaces in Step 6's accountability closeout table, so a
-# misclassification is visible, not silently lost.
+# 3. Empty/missing latest-comment text is NOT treated as complimentary — an unresolvable body
+#    (both lastCommentBody and bodyFull null/blank) must not silently auto-resolve.
+# 4. A stale-schema cache (written before lastCommentAuthor/lastCommentBody/isOutdated existed)
+#    is detected via `has()` and routed straight to `keep`, not silently classified on the
+#    FIRST comment's data as if it were the latest activity.
+# All of these err toward the safe side (more threads land in `keep`, not fewer) — and any
+# thread resolved via the silent bucket still surfaces in Step 6's accountability closeout
+# table, so a misclassification is visible, not silently lost.
+FIRST_RECORD=$(head -n 1 "$THREADS_FILE" 2>/dev/null || echo '{}')
+if ! echo "$FIRST_RECORD" | jq -e 'has("lastCommentAuthor") and has("lastCommentBody") and has("isOutdated")' > /dev/null 2>&1; then
+  echo "⚠️  threads.json predates the lastComment*/isOutdated schema — re-run init-pr-state.sh to refresh the cache. Routing all threads to 'keep' until then (no auto-resolve on stale data)." >&2
+fi
+
 jq -c --arg prAuthor "$PR_AUTHOR" '
 def is_complimentary(text):
   (
-    (text | test("\\?"))
+    (text | length) == 0
+    or (text | test("\\?"))
     or (text | test("\\b(add|remove|change|fix|update|rename|refactor|replace|consider|check|verify|ensure|move|revert|should|shouldn.t|needs?|missing|must|wrong|incorrect|bug|issue|problem|broken|fails?|failing)\\b"; "i"))
     or (text | test("\\b(but|however|though|although|unless)\\b"; "i"))
     or (text | test("[A-Za-z0-9_/.-]+\\.[A-Za-z0-9]{1,6}:[0-9]+|\\bline[s]?\\s+[0-9]+\\b"; "i"))
@@ -49,10 +61,13 @@ def is_complimentary(text):
   ) | not;
 
 . as $t
+| ((($t | has("lastCommentAuthor")) and ($t | has("lastCommentBody"))) | not) as $staleSchema
 | ($t.lastCommentAuthor // $t.author) as $lastAuthor
 | ($t.lastCommentBody // $t.bodyFull // "") as $lastText
 | is_complimentary($lastText) as $complimentary
-| if ($t.isResolved == true) and ($lastAuthor == $prAuthor or $complimentary) then
+| if $staleSchema then
+    $t + {bucket: "keep", labels: ["stale_cache_schema"]}
+  elif ($t.isResolved == true) and ($lastAuthor == $prAuthor or $complimentary) then
     $t + {bucket: "already_resolved", labels: []}
   elif ($t.isResolved == false) and $complimentary then
     $t + {bucket: "silent", labels: []}
@@ -68,7 +83,7 @@ SILENT=$(jq -s 'map(select(.bucket == "silent")) | length' "$THREADS_FILE")
 ALREADY_RESOLVED=$(jq -s 'map(select(.bucket == "already_resolved")) | length' "$THREADS_FILE")
 KEEP=$(jq -s 'map(select(.bucket == "keep")) | length' "$THREADS_FILE")
 
-echo "$SILENT silent threads handled, $ALREADY_RESOLVED already-resolved skipped — $KEEP substantive threads to triage."
+echo "$SILENT silent threads identified (react + resolve pending), $ALREADY_RESOLVED already-resolved skipped — $KEEP substantive threads to triage."
 echo ""
 echo "Silent thread IDs (react + resolve, no user prompt):"
 jq -r 'select(.bucket == "silent") | .threadId' "$THREADS_FILE"

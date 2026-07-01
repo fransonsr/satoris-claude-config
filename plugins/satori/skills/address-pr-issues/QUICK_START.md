@@ -189,11 +189,14 @@ private static final String INVALID_FORMAT_MSG = "Invalid format";
 
 **Strategy**:
 1. Fix initial issues
-2. Push (after the protected-branch guard passes)
-3. If any fix this round was **directional** (changed what the PR does), actively
-   re-request Copilot review — don't just wait for it (see SKILL.md Step 8)
-4. Wait for CI/CD, then check for new Copilot comments
-5. Fix only CRITICAL/HIGH, defer others
+2. Derive DIRECTIONAL_COUNT from Step 2's persisted `triage.json` (see SKILL.md's "Derive
+   DIRECTIONAL_COUNT" subsection, end of the Execute Fixes step) — the count of `directional`-
+   classified issues you actually fixed this round, not everything triaged
+3. Push (after the protected-branch guard passes)
+4. If `DIRECTIONAL_COUNT >= 1` (a fix changed what the PR does), actively re-request Copilot
+   review — don't just wait for it (see SKILL.md's Re-Request Review step)
+5. Wait for CI/CD, then check for new Copilot comments
+6. Fix only CRITICAL/HIGH, defer others
 
 ---
 

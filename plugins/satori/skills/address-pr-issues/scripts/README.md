@@ -211,15 +211,14 @@ Generate structured commit message with round tracking. `directional_count` (def
 persisted into `fixes.json` so Step 8 can read back how many directional-classified fixes
 landed this round without depending on conversation memory.
 
-**Example**:
+**Example** (see `commit-pr-fixes.sh` itself for the exact commit-message template — not
+reproduced verbatim here, so this example can't drift from the script per Class 11):
 ```bash
 ./commit-pr-fixes.sh 68 2
 # Output:
 # Commit message:
 # ---
-# fix: Address PR #68 review feedback (Round 3)
-#
-# Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+# <the script's commit message, with round number filled in>
 # ---
 #
 # Create commit with this message? (y/n) y
@@ -253,7 +252,9 @@ Located in `lib/`:
 
 ## Typical Workflow
 
-Matches SKILL.md's step order — **resolve threads before committing**, not after.
+Follows the same activity sequence as SKILL.md — **resolve threads before committing**, not
+after — using this script-focused 1-7 numbering, which is independent of SKILL.md's own step
+numbers (1, 1.6, 2, 2.5, 3, 3.5, 3.7, 3.8, 4, 4.1, 4.5, 5, 6, 7, 8, 9); don't try to map them 1:1.
 
 ```bash
 # 1. Initialize state (run once per PR or round)
@@ -277,11 +278,13 @@ PR_AUTHOR=$(gh pr view 68 --json author -q .author.login)
 ./resolve-thread.sh 68 PRRT_kwDO... "Fixed resource leak"
 ./resolve-thread.sh 68 PRRT_kwDO... "Added null check"
 
-# 5. THEN commit — pass the directional-fix count from Step 2's classification
+# 5. THEN commit — pass DIRECTIONAL_COUNT, derived per SKILL.md's "Derive DIRECTIONAL_COUNT"
+# subsection (end of the Execute Fixes step) from Step 2's persisted triage.json
 ./commit-pr-fixes.sh 68 2
 
-# 6. Push (after the protected-branch guard — see SKILL.md Step 7), then re-request Copilot
-# review if DIRECTIONAL_COUNT >= 1 (see SKILL.md Step 8) instead of just waiting
+# 6. Push (after the protected-branch guard — see SKILL.md's Pre-Push Checklist & Commit step),
+# then re-request Copilot review if DIRECTIONAL_COUNT >= 1 (see SKILL.md's Re-Request Review
+# step) instead of just waiting
 git push
 
 # 7. Next round (if needed)

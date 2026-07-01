@@ -136,7 +136,7 @@ Set expectations for when the implementing session should stop and ask rather th
 
 **Example**:
 ```markdown
-### Complexity: MEDIUM
+### Pause-and-Ask Conditions
 
 **Pause and ask if**:
 - Test data for null resource URIs not found in S3 sample files
@@ -176,9 +176,9 @@ Set expectations for when the implementing session should stop and ask rather th
    - Includes verified context with citations
    - Lists explicit unknowns for implementer to discover
    - **If any `key-files` are SKILL.md files**, include a **SKILL.md Writing Disciplines** section
-     in the generated handoff document, immediately before the step-by-step implementation plan.
-     This delegates the pre-write disciplines to the implementing session — the orchestration
-     session does NOT execute them. Use this template:
+     in the generated handoff document, placed after the numbered context sections (1-5 above)
+     and before Complexity Signal (6). This delegates the pre-write disciplines to the
+     implementing session — the orchestration session does NOT execute them. Use this template:
 
      ```markdown
      ## SKILL.md Writing Disciplines
@@ -208,10 +208,13 @@ Set expectations for when the implementing session should stop and ask rather th
 
    - **Note**: The implementing agent should create a progress document on first session:
      - Location: `~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md`
-     - Template: `~/.claude/plugins/*/handoff/templates/IMPLEMENTATION-PROGRESS-template.md`
-     - Pattern: Implementing agent reads handoff (immutable), updates progress (mutable)
+     - Template: `IMPLEMENTATION-PROGRESS-template.md` in this skill's own `templates/`
+       directory (resolve relative to wherever this SKILL.md is installed — the plugin's
+       skill directory, not a fixed absolute path)
+     - Pattern: Implementing agent reads handoff (stable), updates progress (mutable)
 
-3. **Quality Gate** (do not write the file until all pass):
+3. **Quality Gate** (do not write the file until all pass — the same items as "Quality
+   Checklist" near the end of this document, enforced here rather than just described there):
 
    **Critical (MUST pass)**:
    - [ ] All file paths in `key-files` and "What to Change" verified to exist
@@ -220,6 +223,7 @@ Set expectations for when the implementing session should stop and ask rather th
    - [ ] No invented commit hashes or unverified references
    - [ ] Explicit unknowns listed — if a fact could not be verified, it is in "Explicit Unknowns"
    - [ ] Scope boundaries present (what to change AND what NOT to change)
+   - [ ] Decision authority explicit (what implementer decides vs asks)
    - [ ] Pause-and-ask conditions explicit
    - [ ] If any `key-files` are SKILL.md files: SKILL.md Writing Disciplines section is present
 
@@ -322,7 +326,7 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 > Progress, decisions, blockers, and questions belong in the `-PROGRESS.md` file — not in memory.  
 > Memory is for durable cross-project preferences, not task-level noise that would clutter future sessions.
 
-**Handoff Document (Immutable)**:
+**Handoff Document (Stable — updated only per "When to Update Handoff Document" below)**:
 - Location: `~/.claude/handoff/active/{task-slug}.md`
 - Purpose: Original specification for implementing agent
 - Content: Executive summary, technical specs, architecture, implementation guide, acceptance criteria

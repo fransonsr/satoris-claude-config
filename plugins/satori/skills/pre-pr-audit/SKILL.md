@@ -1,6 +1,6 @@
 ---
 name: pre-pr-audit
-description: Proactive code quality audit before creating a pull request - identifies resource leaks, edge case gaps, test coverage issues, and code quality problems using pattern matching and optional SonarQube analysis. Automatically fixes issues when possible. Use this skill whenever the user is about to create a PR, push code, or wants to check code quality before committing. Also use when they mention "before PR", "pre-commit check", "quality check", or "catch issues early".
+description: Proactive code quality audit before creating a pull request - runs a mandatory multi-round adversarial pattern review plus pattern matching and optional SonarQube analysis to identify resource leaks, edge case gaps, test coverage issues, and code quality problems. Automatically fixes issues when possible. Use this skill whenever the user is about to create a PR, push code, or wants to check code quality before committing. Also use when they mention "before PR", "pre-commit check", "quality check", or "catch issues early".
 ---
 
 # Pre-PR Code Quality Audit
@@ -57,6 +57,7 @@ fi
 ```bash
 CHANGED_FILES=$(git diff --name-only $BASE_BRANCH...HEAD)
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
+CHANGED_TEST_FILES=$(echo "$CHANGED_JAVA_FILES" | grep -E "(^|/)src/test/" || true)
 CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
 
 # If no Java files, check if there are other languages to analyze
@@ -92,9 +93,9 @@ fi
 
 ## Step 4: Run Parallel Analysis (Workflow)
 
-Steps 4, 4.5, 4.6, and 4.7 run as parallel workflow agents — not sequentially in this session. This keeps the implementation session's context lean: only findings return, not the full analysis work.
+Steps 4, 4.5, 4.6, 4.7, 4.8, and 4.9 all run as parallel workflow agents — not sequentially in this session. This keeps the implementation session's context lean: only findings return, not the full analysis work.
 
-Use the Workflow tool to spawn these agents simultaneously. Pass each agent the git diff output, changed file contents, and project patterns from CLAUDE.md:
+Use the `Workflow` tool (Claude Code's multi-agent orchestration primitive) to spawn these agents simultaneously. Pass each agent the git diff output, changed file contents, and project patterns from CLAUDE.md. Step 4.7's entry in this batch is the `Workflow` tool's own agent making the `Skill(adversarial-review, ...)` call described in Step 4.7 below — it is not a separate, second invocation outside this parallel batch:
 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
@@ -890,11 +891,11 @@ When user approves a fix, apply the appropriate fix pattern:
 
 ## Step 7: SonarQube Analysis (MANDATORY - Always Present This Choice)
 
-**NEVER skip this step silently.** After pattern checks AND Copilot simulator complete, you MUST present the SonarQube option to the user. The agent must wait for an explicit user decision — skipping without asking is not allowed.
+**NEVER skip this step silently.** After pattern checks AND the Adversarial Pattern Review (Step 4.7) complete, you MUST present the SonarQube option to the user. The agent must wait for an explicit user decision — skipping without asking is not allowed.
 
 ```markdown
 Pattern checks complete. Found X issues (Y fixed, Z skipped).
-Copilot simulator complete. Predicted N high-confidence issues.
+Adversarial Pattern Review complete. Found N high-confidence issues across M rounds.
 
 Would you like me to run SonarQube analysis for additional checking?
 (This will take 2-3 minutes but may catch build-time issues)
@@ -964,7 +965,7 @@ After all checks complete:
 - Resolution scope: J
 - Maven API usage: K
 
-**Spec-Completeness Review** (Step 4.8, if SKILL.md files changed):
+**Spec-Completeness Review** (Step 4.8, if spec/doc files changed):
 - Scope-broadening sweep: N issues found
 - Rename cascade: N issues found
 - Operator executability: N issues found
