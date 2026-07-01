@@ -54,7 +54,7 @@ Read ~/.claude/handoff/continue/<slug>-CONTINUATION.md and resume.
 
 Creates comprehensive handoff documents that enable a fresh Claude Code session to implement tasks without needing conversation history.
 
-## Usage
+### Usage
 
 ```
 /handoff <task-id> <brief-description>
@@ -65,11 +65,11 @@ Creates comprehensive handoff documents that enable a fresh Claude Code session 
 - `/handoff 5.2 Add retry logic to Kafka consumer`
 - `/handoff bug-123 Fix null pointer in ChunkWriter`
 
-## What This Skill Does
+### What This Skill Does
 
 Creates a surgical, production-ready handoff document with:
 
-### 1. Verified Context (NOT Assumptions)
+#### 1. Verified Context (NOT Assumptions)
 - ✅ Facts verified with file:line citations or commit hashes
 - ✅ Explicit unknowns listed (what needs discovery)
 - ❌ NO "probably" or "might" statements
@@ -86,7 +86,7 @@ Creates a surgical, production-ready handoff document with:
 - Is this code path hit during incremental sync? → Ask team lead
 ```
 
-### 2. Scope Clarity (Surgical Precision)
+#### 2. Scope Clarity (Surgical Precision)
 - What to change (file paths + line numbers)
 - What NOT to change (explicit boundaries)
 - Decision authority (what implementer decides vs asks)
@@ -106,7 +106,7 @@ Creates a surgical, production-ready handoff document with:
 **Ask First**: API changes, new dependencies, scope expansion
 ```
 
-### 3. Prior Work & Patterns
+#### 3. Prior Work & Patterns
 - Similar patterns to follow (with file:line references)
 - Anti-patterns to AVOID (with reasons)
 - Related PRs (successful and failed attempts)
@@ -121,7 +121,7 @@ Creates a surgical, production-ready handoff document with:
 - PR #45 approach (had performance issues, reverted in PR #52)
 ```
 
-### 4. Known Gotchas & Constraints
+#### 4. Known Gotchas & Constraints
 - Edge cases to handle
 - Platform/library constraints
 - Team preferences
@@ -137,7 +137,7 @@ Creates a surgical, production-ready handoff document with:
 - Can't use lombok (@Builder) - team preference
 ```
 
-### 5. Testable Acceptance Criteria
+#### 5. Testable Acceptance Criteria
 - Specific test names that must pass
 - Manual verification steps
 - Quality gates (Sonar, Copilot)
@@ -151,51 +151,46 @@ Creates a surgical, production-ready handoff document with:
 - [ ] Manual verification: Run against `/test-data/sample-data.json`
 ```
 
-### 6. Test Strategy Justification
-- Explicit recommendation: test-first or test-after
-- Reasoning based on complexity
+#### 6. Complexity Signal
+
+The implementing session decides its own process (test-first vs test-after, `/xp-pair` vs solo). Your job is to surface the evidence that informs those decisions — not to prescribe the outcome.
+
+Document which complexity indicators are actually present in this task:
+- Multiple execution paths (if/else, loops, recursion)
+- String manipulation or parsing
+- Collections (iteration, filtering, mapping, grouping)
+- Inheritance or type resolution
+- Null handling or defensive checks
+- Cross-class or cross-module interactions
+- Privacy/security critical code
+- Unclear or ambiguous requirements
 
 **Example**:
 ```markdown
-**Use Test-First (RED-GREEN-REFACTOR)** because:
-- Requirements unclear (test helps clarify)
-- Privacy-critical code (comprehensive coverage required)
+### Complexity Signal
+**Indicators**: type resolution across 3 inheritance levels, HashMap iteration (nondeterminism risk), privacy-critical filtering
 
-**NOT Test-After** because:
-- Design is NOT obvious (need to explore via tests)
+**Specific risks**:
+- `PersonaFilter.java:45` uses HashMap for deduplication — iteration order is nondeterministic
+- Type resolution must handle: simple names, `super.`, fully-qualified, and wildcard imports
+- Privacy-critical: conservative fail-safe required (remove ALL relationships if ANY fails verification)
 ```
 
-### 7. Iteration Expectations
-- Expected complexity (LOW/MEDIUM/HIGH)
-- Likely number of feedback rounds
-- When to pause and ask
+#### 7. When to Pause and Ask
+
+Set expectations for when the implementing session should stop and ask rather than push forward.
 
 **Example**:
 ```markdown
-### Expected Complexity: LOW
-- Straightforward null checks
+### Complexity: MEDIUM
 
-### Expected Iterations
-- **Likely**: 1-2 rounds
-- **If blockers**: Pause and ask (missing test data, unclear legacy behavior)
-- **Don't spin**: If stuck >30min, ask for guidance
+**Pause and ask if**:
+- Test data for null resource URIs not found in S3 sample files
+- Legacy `LegacyFilter` behavior differs from documented expectation
+- Scope expansion required beyond `PersonaFilter.java`
 ```
 
-### 8. Skill Routing Recommendations
-- Should implementer use `/xp-pair`? (YES/NO with justification)
-- Other skills needed?
-
-**Example**:
-```markdown
-### Use `/xp-pair`? **NO**
-- Complexity: LOW (straightforward null checks)
-- Pattern established (similar to PR #63)
-
-**Switch to xp-pair IF**:
-- Complexity increases (unexpected edge cases)
-```
-
-## How It Works
+### How It Works
 
 1. **Context Gathering**:
    - Reads task details from `docs/implementation/implementation-tasks.md`
@@ -205,34 +200,97 @@ Creates a surgical, production-ready handoff document with:
    - **VERIFIES** facts (no assumptions)
 
 2. **Document Generation**:
-   - Creates `~/.claude/handoff/<task-id>-<slug>.md`
-   - Follows comprehensive template (see README.md)
+   - Run `mkdir -p ~/.claude/handoff/active` (idempotent)
+   - Creates `~/.claude/handoff/active/<task-id>-<slug>.md`
+   - Begin document with YAML frontmatter (generate from gathered context):
+     ```yaml
+     ---
+     task-id: <task-id>
+     task-type: <implementation | port | fix | research | refactor>
+     repo: <org/repo-name>
+     branch-from: <branch name>
+     plugin-version: <if applicable, e.g. "0.5.0">
+     key-files:
+       - <path/to/file.java>
+       - <path/to/other.java>
+     dependencies-complete: <true | false — are all prerequisite tasks done?>
+     estimated-complexity: <trivial | small | medium | large>
+     ---
+     ```
+   - Verify all `key-files` paths exist before writing — fail if any path is wrong
+   - Follows comprehensive template for prose sections
    - Includes verified context with citations
    - Lists explicit unknowns for implementer to discover
+   - **If any `key-files` are SKILL.md files**, include a **SKILL.md Writing Disciplines** section
+     in the generated handoff document, immediately before the step-by-step implementation plan.
+     This delegates the pre-write disciplines to the implementing session — the orchestration
+     session does NOT execute them. Use this template:
+
+     ```markdown
+     ## SKILL.md Writing Disciplines
+
+     This handoff involves editing a SKILL.md file. Before writing any new content, the
+     implementing session must complete these disciplines in order:
+
+     **1. Scope-term grep pre-flight** (do this FIRST, before touching the file):
+     - Identify every term that describes the current scope (e.g., the call categories,
+       phase names, or step references that the change will broaden or rename)
+     - Grep the full SKILL.md for each old term and list all hits explicitly
+     - Mark each hit as "update needed" or "no change needed" before writing anything
+     - This sweep is a precondition of the edit, not a post-condition
+
+     **2. Branch enumeration** (do this before writing any conditional step):
+     - For every decision point the new content introduces, list all branches explicitly:
+       found / not-found, per-type distinctions, combined conditions (X=0 AND Y non-empty)
+     - Write the prose for each branch only after the full branch set is enumerated
+     - A branch with no documented path is a Copilot finding waiting to happen
+
+     **3. Pre-commit operator read** (do this before committing):
+     - Read the modified sections linearly, top to bottom, as an operator who has never
+       seen this document and has no knowledge of what was intended
+     - Flag every step where you cannot proceed without guessing
+     - Fix before committing — this is the cheapest moment to catch these gaps
+     ```
+
    - **Note**: The implementing agent should create a progress document on first session:
-     - Location: `~/.claude/handoff/<task-id>-<slug>-PROGRESS.md`
+     - Location: `~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md`
      - Template: `~/.claude/plugins/*/handoff/templates/IMPLEMENTATION-PROGRESS-template.md`
      - Pattern: Implementing agent reads handoff (immutable), updates progress (mutable)
 
-3. **Quality Validation**:
-   - Verifies all file paths exist
-   - Checks line number references for accuracy
-   - Ensures no "TODO" or placeholder sections
-   - Confirms all references are real (no made-up commit hashes)
+3. **Quality Gate** (do not write the file until all pass):
 
-## File Naming Convention
+   **Critical (MUST pass)**:
+   - [ ] All file paths in `key-files` and "What to Change" verified to exist
+   - [ ] All line number references checked for accuracy (read the file, confirm lines)
+   - [ ] No "TODO", "fill this in", or placeholder sections remain
+   - [ ] No invented commit hashes or unverified references
+   - [ ] Explicit unknowns listed — if a fact could not be verified, it is in "Explicit Unknowns"
+   - [ ] Scope boundaries present (what to change AND what NOT to change)
+   - [ ] Pause-and-ask conditions explicit
+   - [ ] If any `key-files` are SKILL.md files: SKILL.md Writing Disciplines section is present
+
+   **Essential (REQUIRED)**:
+   - [ ] YAML frontmatter complete and all paths verified
+   - [ ] Prior work referenced with file:line citations
+   - [ ] Complexity signal present with specific indicators (not "MEDIUM" alone)
+   - [ ] Acceptance criteria are checkable (not "tests pass" — specific test names or commands)
+
+   If any Critical item fails: fix the handoff before writing. Do not write a
+   handoff with known gaps and leave them as TODOs.
+
+### File Naming Convention
 
 Handoff documents are saved as:
 ```
-~/.claude/handoff/<task-id>-<slug>.md
+~/.claude/handoff/active/<task-id>-<slug>.md
 ```
 
 **Examples**:
-- `task-4.16.2-collection-indices-writer.md`
-- `bug-123-null-pointer-fix.md`
-- `feature-kafka-retry-logic.md`
+- `active/task-4.16.2-collection-indices-writer.md`
+- `active/bug-123-null-pointer-fix.md`
+- `active/feature-kafka-retry-logic.md`
 
-## Key Philosophy
+### Key Philosophy
 
 **Before**: Generic template-based handoffs  
 **After**: Surgical precision with verified facts
@@ -244,7 +302,7 @@ Handoff documents are saved as:
 - ❌ Asking "am I done yet?"
 - ❌ Repeating mistakes from failed PRs
 
-## Integration with Project Standards
+### Integration with Project Standards
 
 The skill automatically incorporates:
 - **CLAUDE.md**: Architectural decisions, naming conventions
@@ -253,42 +311,40 @@ The skill automatically incorporates:
 - **Legacy code**: References to previous implementations
 - **Related PRs**: Successful patterns and failed attempts
 
-## Quality Checklist
+### Quality Checklist
 
 Every handoff document must have:
 
-### Critical Quality Gates (MUST HAVE)
+#### Critical Quality Gates (MUST HAVE)
 - [ ] **Verified context** (NOT assumptions) - with file:line citations
 - [ ] **Explicit unknowns** listed (what needs discovery)
 - [ ] **Scope boundaries** clear (what to change + what NOT to change)
 - [ ] **Decision authority** explicit (what implementer decides vs asks)
 - [ ] **Acceptance criteria testable** (specific test names, checklists)
 
-### Essential Content (REQUIRED)
+#### Essential Content (REQUIRED)
 - [ ] Prior work referenced (similar patterns + anti-patterns)
 - [ ] Known gotchas documented (edge cases, constraints)
-- [ ] Test strategy justified (why test-first or test-after)
-- [ ] Iteration expectations set (complexity, likely rounds)
-- [ ] Skill routing recommendations (xp-pair yes/no)
+- [ ] Complexity signal present (specific indicators, not "LOW/MEDIUM/HIGH" alone)
+- [ ] Pause-and-ask conditions explicit
 
-### Self-Contained Verification
+#### Self-Contained Verification
 - [ ] Implementer can start without reading conversation history
 - [ ] All file paths verified to exist
 - [ ] All line number references accurate
 - [ ] No "TODO: fill this in" sections
 
-## Success Criteria
+### Success Criteria
 
 A good handoff document enables a fresh Claude session to:
 - ✅ Understand the task without reading conversation history
-- ✅ Know exactly what to implement and how
+- ✅ Know exactly what to implement and what is out of scope
 - ✅ Have clear acceptance criteria for completion
 - ✅ Follow project patterns and standards
-- ✅ Know when to use TDD vs test-after
-- ✅ Know when to use `/xp-pair` skill
-- ✅ Mitigate risks proactively
+- ✅ Make its own informed process decisions (TDD approach, xp-pair) from the complexity signal
+- ✅ Know when to pause and ask rather than push forward
 
-## When to Use This Skill
+### When to Use This Skill
 
 **Use for**:
 - Complex features requiring detailed context
@@ -302,25 +358,29 @@ A good handoff document enables a fresh Claude session to:
 - Documentation-only changes
 - Tasks you'll implement immediately (in same session)
 
-## Inter-Agent Communication Pattern
+### Inter-Agent Communication Pattern
 
 This skill implements the **Handoff + Progress** pattern for inter-agent communication.
 
-### Two-File Approach
+#### Two-File Approach
+
+> **⚠️ Do NOT use Claude memory for inter-agent communication.**  
+> Progress, decisions, blockers, and questions belong in the `-PROGRESS.md` file — not in memory.  
+> Memory is for durable cross-project preferences, not task-level noise that would clutter future sessions.
 
 **Handoff Document (Immutable)**:
-- Location: `~/.claude/handoff/{task-slug}.md`
+- Location: `~/.claude/handoff/active/{task-slug}.md`
 - Purpose: Original specification for implementing agent
 - Content: Executive summary, technical specs, architecture, implementation guide, acceptance criteria
 - Update policy: Only on fundamental architecture changes
 
 **Implementation Progress (Mutable)**:
-- Location: `~/.claude/handoff/{task-slug}-PROGRESS.md`
-- Purpose: Track implementation evolution, decisions, blockers
+- Location: `~/.claude/handoff/active/{task-slug}-PROGRESS.md`
+- Purpose: Track implementation evolution, decisions, blockers, and feedback to the orchestrating session
 - Content: Architectural decisions, progress checklist, blockers, questions
-- Update policy: Implementing agent updates frequently
+- Update policy: Implementing agent updates frequently — this is the communication channel back to the orchestrator
 
-### Responsibility Model
+#### Responsibility Model
 
 **Orchestrating Agent (this skill)**:
 - Creates handoff document with complete specification
@@ -331,11 +391,12 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 **Implementing Agent (reads handoff)**:
 - Reads handoff document (does not modify)
 - Creates progress document on first session
-- Updates progress document frequently
-- Records decisions, progress, blockers, questions
+- Updates progress document frequently — **this is the only feedback channel back to the orchestrator**
+- Records decisions, progress, blockers, questions in progress document (NOT in memory)
 - May request handoff updates for fundamental changes
+- **Does NOT archive** — leave both files in `active/` when done; the orchestrating session archives after verifying
 
-### When to Update Handoff Document
+#### When to Update Handoff Document
 
 **Orchestrating agent updates handoff only when**:
 - Fundamental architecture changes invalidate original spec
@@ -355,7 +416,7 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 
 (These go in progress document)
 
-### When Implementing Agent Updates Progress
+#### When Implementing Agent Updates Progress
 
 **Update progress document for**:
 - Architectural decisions made during implementation
@@ -370,18 +431,53 @@ This skill implements the **Handoff + Progress** pattern for inter-agent communi
 - Encountering a blocker
 - Discovering ambiguity in spec
 
-### Benefits
+**Distinguish blockers from observations**: Use `### Blockers` for items requiring
+orchestrator reply before work continues. Use `### Observations` for corrections,
+surprises, or lessons that don't block progress. The orchestrating session will scan
+`### Blockers` first.
+
+#### Benefits
 
 - **Clean Specification**: Handoff remains readable, focused on "what to build"
 - **Clear Progress**: Progress document tracks "how we're building it"
 - **Better Communication**: Implementing agent can ask questions without polluting spec
 - **Audit Trail**: Decisions captured with date, rationale, impact
 
-## Related Documentation
+#### Handoff Lifecycle (Orchestrating Session Responsibility)
 
-See `~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/handoff/README.md` for:
-- Complete document structure template
-- Detailed examples of each section
-- Context gathering strategy
-- Document generation process
-- Error handling guidelines
+Handoff documents are **task-scoped** — they live in `active/` while a task is in flight and move to `archive/` when complete.
+
+**Directory layout**:
+```
+~/.claude/handoff/
+  active/    ← in-progress tasks (small, scannable)
+  archive/   ← completed tasks (audit trail preserved)
+```
+
+**When creating a handoff**, write it to `active/`:
+```
+~/.claude/handoff/active/<task-id>-<slug>.md
+~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md  (created by implementing agent)
+```
+
+**When to archive**: Once the orchestrating session confirms the result is complete and accurate (all acceptance criteria met, output verified), move both files to `archive/`:
+
+```bash
+SLUG="<task-id>-<slug>"
+mkdir -p ~/.claude/handoff/archive
+mv ~/.claude/handoff/active/${SLUG}.md ~/.claude/handoff/archive/
+mv -f ~/.claude/handoff/active/${SLUG}-PROGRESS.md ~/.claude/handoff/archive/ 2>/dev/null || true
+```
+
+**When NOT to archive**:
+- Implementation is still in progress (progress document shows incomplete items)
+- Acceptance criteria have not been verified by the orchestrating session
+- The implementing session flagged blockers or open questions
+
+**Verification before archiving**: Read the PROGRESS document and confirm:
+- [ ] All acceptance criteria checklist items are checked
+- [ ] No open blockers or questions remain
+- [ ] The orchestrating session has verified the output (not just taken the implementing agent's word)
+
+> **Why archive rather than delete?** Completed handoff docs preserve the *why* behind design decisions, anti-patterns to avoid on re-entry, and scope constraints that aren't obvious from the code. Archiving keeps `active/` small and scannable while retaining the audit trail.
+

@@ -435,11 +435,3 @@ mv -f ~/.claude/handoff/active/${SLUG}-PROGRESS.md ~/.claude/handoff/archive/ 2>
 
 > **Why archive rather than delete?** Completed handoff docs preserve the *why* behind design decisions, anti-patterns to avoid on re-entry, and scope constraints that aren't obvious from the code. Archiving keeps `active/` small and scannable while retaining the audit trail.
 
-## Related Documentation
-
-See `~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/handoff/README.md` for:
-- Complete document structure template
-- Detailed examples of each section
-- Context gathering strategy
-- Document generation process
-- Error handling guidelines
