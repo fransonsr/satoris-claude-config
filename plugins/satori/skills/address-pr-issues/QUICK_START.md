@@ -28,6 +28,9 @@
 
 ### The Correct Workflow
 
+Box numbers below match SKILL.md's actual step/sub-step headers exactly — if a step here doesn't
+have a numbered box, it's folded into the box before it, not skipped:
+
 ```
 ┌─────────────────────────────────────────┐
 │ 1. Fetch issues (Copilot + SonarQube)  │
@@ -55,29 +58,48 @@
 └────────────────┬────────────────────────┘   --rounds 1, before fixing
                  │
 ┌────────────────▼────────────────────────┐
-│ 4. Fix issues (test + sonar-scanner)   │
+│ 3.7. Pre-fix sweep (MANDATORY)         │ ← grep the PR's touched files for
+│      Fix every instance, not just the  │   the same pattern before fixing —
+│      one flagged                        │   always run this step
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 5. RESOLVE CONVERSATIONS ⚠️ CRITICAL    │ ← Do this BEFORE commit!
+│ 3.8. Show decision summary to user     │ ← process decisions (test
+└────────────────┬────────────────────────┘   approach, risk factors) before
+                 │                              implementing
+┌────────────────▼────────────────────────┐
+│ 4. Create implementation plan          │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 4.1. Execute fixes (iterative loop)    │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 4.5. Post-fix cascade sweep (MANDATORY)│ ← re-sweep fixes for cascading
+│      Add any hits before committing    │   issues before committing
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 5. Validate locally (sonar-scanner)    │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 6. RESOLVE CONVERSATIONS ⚠️ CRITICAL    │ ← Do this BEFORE commit!
 │    - Add comments explaining fixes     │
 │    - Mark threads as resolved via API  │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 6. Commit changes                       │
-└────────────────┬────────────────────────┘
-                 │
-┌────────────────▼────────────────────────┐
-│ 7. Push to GitHub (protected-branch    │
+│ 7. Commit & push (protected-branch     │
 │    guard checked first)                 │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 8. Wait for CI/CD + new Copilot review │
+│ 8. Re-request review & monitor CI/CD   │
 └────────────────┬────────────────────────┘
                  │
-                 └─→ New issues? Return to step 4
+                 └─→ New issues? Return to step 4.1
 ```
 
 **Why this order matters**: Reviewers see resolved conversations immediately, commit messages reference already-addressed issues.

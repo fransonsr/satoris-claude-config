@@ -37,24 +37,38 @@ fi
 # 2. Word-count guard: genuine compliments ("LGTM", "Nice work", "👍") are almost always short.
 #    Cap complimentary classification at 8 words as an independent second signal.
 # 3. Empty/missing latest-comment text is NOT treated as complimentary — an unresolvable body
-#    (both lastCommentBody and bodyFull null/blank) must not silently auto-resolve.
+#    (both lastCommentBody and bodyFull null/blank) must not silently auto-resolve. It is
+#    routed to `keep` with an explicit `empty_content` label (not merged into the unlabeled
+#    default case) so it is visible in the DEGRADED count below, not indistinguishable from a
+#    `keep` thread whose content was actually read and found substantive.
 # 4. A stale-schema cache (written before lastCommentAuthor/lastCommentBody/isOutdated existed)
 #    is detected via `has()` on ALL THREE fields and routed straight to `keep`, not silently
-#    classified on the FIRST comment's data as if it were the latest activity. (Round 2 fix:
-#    the jq guard below previously checked only 2 of these 3 fields, disagreeing with this
-#    comment and the warning banner below it — a record missing only `isOutdated` slipped
-#    through un-guarded. Now all three are checked in both places.)
-# 5. A present-but-null `lastCommentAuthor` (GitHub returns `author: null` for deleted/
-#    suspended/anonymized accounts — a real API case, not hypothetical) is treated the same as
-#    "unknown," not silently swapped for the thread-opener's identity via `//` fallback — that
-#    fallback compared the wrong two people (last commenter vs. first commenter) and could
-#    misclassify a genuinely-reopened thread as already-resolved.
+#    classified on the FIRST comment's data as if it were the latest activity. The pre-check
+#    below scans EVERY record, not just the first — a mixed-schema cache (e.g. threads merged
+#    from two `init-pr-state.sh` runs on different days) can have old-schema records anywhere
+#    in the file, and a first-record-only check would print a banner that doesn't match what
+#    the per-record classification below actually does.
+# 5. A present-but-null `lastCommentAuthor` OR `lastCommentBody` (GitHub returns `null` for
+#    deleted/suspended/anonymized accounts and for comments that fail to resolve — real API
+#    cases, not hypothetical) is treated as "the last comment is unusable," not silently
+#    swapped for the thread-opener's identity/body via `//` fallback — that fallback compared
+#    the wrong two people (last commenter vs. first commenter) and could misclassify a
+#    genuinely-reopened thread as already-resolved. Both fields come from the same underlying
+#    GraphQL node, so either going null is treated as one combined signal
+#    (`last_comment_unavailable`), not two independently-patched symptoms. NOTE: when the
+#    thread IS resolved (`isResolved == true`), a null last-comment-author could mean the real
+#    last commenter *was* the PR author, whose account was later deleted/renamed — in that case
+#    this thread may actually belong in `already_resolved` but cannot be proven so from the
+#    cached data. Treat `keep` + `last_comment_unavailable` on an already-resolved thread as a
+#    candidate to double check manually, not as equivalent to a `keep` + `last_comment_unavailable`
+#    on a thread that is still open.
 # All of these err toward the safe side (more threads land in `keep`, not fewer) — and any
 # thread resolved via the silent bucket still surfaces in Step 6's accountability closeout
 # table, so a misclassification is visible, not silently lost.
-FIRST_RECORD=$(head -n 1 "$THREADS_FILE" 2>/dev/null || echo '{}')
-if ! echo "$FIRST_RECORD" | jq -e 'has("lastCommentAuthor") and has("lastCommentBody") and has("isOutdated")' > /dev/null 2>&1; then
-  echo "⚠️  threads.json predates the lastComment*/isOutdated schema — re-run init-pr-state.sh to refresh the cache. Routing all threads to 'keep' until then (no auto-resolve on stale data)." >&2
+STALE_COUNT=$(jq -s 'map(select((has("lastCommentAuthor") and has("lastCommentBody") and has("isOutdated")) | not)) | length' "$THREADS_FILE" 2>/dev/null || echo 0)
+if [[ "$STALE_COUNT" -gt 0 ]]; then
+  TOTAL_COUNT=$(jq -s 'length' "$THREADS_FILE")
+  echo "⚠️  $STALE_COUNT of $TOTAL_COUNT threads in threads.json predate the lastComment*/isOutdated schema — re-run init-pr-state.sh to refresh the cache. Those $STALE_COUNT thread(s) are routed to 'keep' until then (no auto-resolve on stale data)." >&2
 fi
 
 jq -c --arg prAuthor "$PR_AUTHOR" '
@@ -70,15 +84,18 @@ def is_complimentary(text):
 
 . as $t
 | ((($t | has("lastCommentAuthor")) and ($t | has("lastCommentBody")) and ($t | has("isOutdated"))) | not) as $staleSchema
-| ($t.lastCommentAuthor == null) as $lastAuthorUnknown
+| (($t.lastCommentAuthor == null) or ($t.lastCommentBody == null)) as $lastCommentUnavailable
 | ($t.lastCommentBody // $t.bodyFull // "") as $lastText
+| ($lastText == "") as $contentUnknown
 | is_complimentary($lastText) as $complimentary
 | if $staleSchema then
     $t + {bucket: "keep", labels: ["stale_cache_schema"]}
-  elif $lastAuthorUnknown then
-    $t + {bucket: "keep", labels: ["last_author_unknown"]}
+  elif $lastCommentUnavailable then
+    $t + {bucket: "keep", labels: ["last_comment_unavailable"]}
   elif ($t.isResolved == true) and ($t.lastCommentAuthor == $prAuthor or $complimentary) then
     $t + {bucket: "already_resolved", labels: []}
+  elif $contentUnknown then
+    $t + {bucket: "keep", labels: ["empty_content"]}
   elif ($t.isResolved == false) and $complimentary then
     $t + {bucket: "silent", labels: []}
   else
@@ -92,11 +109,11 @@ def is_complimentary(text):
 SILENT=$(jq -s 'map(select(.bucket == "silent")) | length' "$THREADS_FILE")
 ALREADY_RESOLVED=$(jq -s 'map(select(.bucket == "already_resolved")) | length' "$THREADS_FILE")
 KEEP=$(jq -s 'map(select(.bucket == "keep")) | length' "$THREADS_FILE")
-DEGRADED=$(jq -s 'map(select(.labels == ["stale_cache_schema"] or .labels == ["last_author_unknown"])) | length' "$THREADS_FILE")
+DEGRADED=$(jq -s 'map(select(.labels == ["stale_cache_schema"] or .labels == ["last_comment_unavailable"] or .labels == ["empty_content"])) | length' "$THREADS_FILE")
 
 echo "$SILENT silent threads identified (react + resolve pending), $ALREADY_RESOLVED already-resolved skipped — $KEEP substantive threads to triage."
 if [[ "$DEGRADED" -gt 0 ]]; then
-  echo "⚠️  $DEGRADED of the $KEEP 'substantive' threads were routed to keep only because their data was degraded (stale schema or unknown last-comment author), not because classification found real content — no content classification actually ran on them."
+  echo "⚠️  $DEGRADED of the $KEEP 'substantive' threads were routed to keep only because their data was degraded (stale cache schema, an unavailable last-comment author/body, or empty comment content), not because classification found real content — no content classification actually ran on them."
 fi
 echo ""
 echo "Silent thread IDs (react + resolve, no user prompt):"

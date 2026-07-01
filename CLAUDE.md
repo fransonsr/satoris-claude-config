@@ -377,6 +377,48 @@ cp ~/.claude/copilot-review-patterns.md \
   ~/github/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md
 ```
 
+### Dogfooding Own Tooling (satori plugin skills)
+
+`satoris-claude-config` has no Copilot/external review access — `/satori:pre-pr-audit` and
+`/satori:adversarial-review` are the review mechanism for changes to the plugin's own skills.
+Apply this workflow whenever editing `plugins/satori/skills/**`.
+
+**1. Plugin cache is stale by default.** `Skill()` invocations serve a cached snapshot under
+`~/.claude/plugins/cache/satoris-claude-config/satori/<version>/`, keyed by the version string in
+`plugin.json`/`marketplace.json`. Editing skill content alone does **not** invalidate this cache —
+confirmed empirically: the cache sat 5 days stale despite several intervening commits. Before
+running a skill you just edited, bump the version in both files and push to origin (or run
+`/reload-plugins` + `/reload-skills`, though a plain content push with no version bump has been
+observed to leave `reload-skills` reporting no changes).
+
+**2. Preserve a diffable baseline while still pushing.** `/adversarial-review`'s diff step always
+runs `git diff origin/$BASE_BRANCH...$CURRENT_BRANCH` — this requires a real
+remote-tracking branch, not a bare commit SHA or a local-only tag. To snapshot "before this
+session's changes" while remaining free to push interim work to `master`:
+```bash
+git tag pre-review-baseline-<date> origin/master
+git branch pre-review-baseline pre-review-baseline-<date>
+git push origin pre-review-baseline-<date> pre-review-baseline
+```
+Then pass `--base-branch pre-review-baseline` to `/adversarial-review` / `/pre-pr-audit` for every
+round in the session, so all rounds diff against the same fixed point.
+
+**3. Expect the first run on a given skill to surface pre-existing debt, not just diff-caused
+issues.** `/pre-pr-audit`'s whole-document coherence walk (Steps 4.8/4.9) reads entire files, not
+just the diff — the first audit of a skill that has never been reviewed by its own tooling will
+surface structural debt that predates the current change (duplicate headings, stale
+cross-references, numbering drift). Fix it all in that first batch; subsequent runs on the same
+skill should mostly surface genuine diff-caused issues instead of accumulated debt.
+
+**4. Run at least two verification rounds — do not trust a single fix batch.** A fix written in
+response to a review finding can itself contain a bug, and a single round of review will not
+catch a bug in that round's own fix (the fix hasn't been reviewed yet). Observed directly: a
+Round 1 fix for a stale-schema guard checked only 2 of the 3 fields it needed to; Round 2's fix
+for that gap itself left a sibling field's null-handling unfixed, which Round 3 then caught.
+Budget for `/adversarial-review --rounds 3` (or manually iterating rounds) to actually run to
+convergence — all classes reporting clean — rather than stopping after the first round's fixes
+are applied.
+
 ## Decision Override Protocol
 
 ### When I Think Something is "Straightforward"

@@ -82,7 +82,7 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 6. **Resolve Conversations**: Mark fixed GitHub threads as resolved, reconcile every thread's disposition (NEW)
 7. **Commit & Push**: Protected-branch check, then commit and push to PR branch
 8. **Monitor**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting)
-9. **Repeat**: If new significant issues appear, return to step 4; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
+9. **Repeat**: If new significant issues appear, return to step 4.1; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
 
 **IMPORTANT**: This is an **iterative process**. Expect multiple rounds:
 - Fixing code often introduces new SonarQube issues (e.g., extracted methods should be static)
@@ -225,6 +225,9 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 - `$WORKSPACE_DIR/checklist.json` - Pre-commit checklist state
 - `$WORKSPACE_DIR/triage.json` - Step 2's persisted triage results (written in Step 2)
 - `$WORKSPACE_DIR/copilot_review_count.txt` - Re-review counter (written in Step 8)
+- `$WORKSPACE_DIR/last_rerequest_round.txt` - Round number of the last Copilot re-request
+  (written in Step 8) — prevents double-incrementing the counter above if Step 8 is re-entered
+  for the same round
 
 **Shorthand used throughout this doc**: `$THREADS_FILE`, `$CHECKLIST_FILE`, `$FIXES_FILE`, and
 `$ROUND` are not exported by any script — they're shorthand for
@@ -301,18 +304,38 @@ source "./scripts/lib/github-api.sh" && react_to_comment "$COMMENT_ID"
 
 ### Bucket 3 — Keep (flows into Step 3)
 
-Everything else: unresolved threads with substantive feedback, resolved threads with new
-non-complimentary activity from someone other than the PR author (`labels: ["resolved_new_activity"]`),
-and outdated unresolved threads (`labels: ["outdated"]`). Carry these labels into the Step 3
-presentation as `[resolved + new activity]` / `[outdated]` so nothing is silently missed.
+Two different reasons land a thread here, and they must stay distinguishable downstream — do
+not treat "keep" as a single homogeneous bucket:
+
+- **Content-based keep** — the script actually read the last comment and it's substantive:
+  unresolved threads with substantive feedback, resolved threads with new non-complimentary
+  activity from someone other than the PR author (`labels: ["resolved_new_activity"]`), and
+  outdated unresolved threads (`labels: ["outdated"]`). Carry these labels into the Step 3
+  presentation as `[resolved + new activity]` / `[outdated]` so nothing is silently missed.
+- **Degraded-data keep** — the script could NOT read the content (or trust the schema) and
+  failed closed rather than guessing: `labels: ["stale_cache_schema"]` (cache predates the
+  current schema), `labels: ["last_comment_unavailable"]` (the last comment's author or body
+  came back `null` — e.g. a deleted/suspended GitHub account), or `labels: ["empty_content"]`
+  (the last comment resolved to empty text). **Pass `labels` through to the Step 2 triage
+  agent alongside thread body/file/line** — an agent that only sees the thread body has no way
+  to know the "body" it received might be a stale first-comment fallback, not real latest
+  activity. Tag these threads distinctly in the Step 3 presentation too (e.g. `[unverifiable:
+  stale cache]` / `[unverifiable: last comment unknown]` / `[unverifiable: empty content]`) and
+  require explicit human confirmation before auto-fixing anything CRITICAL/HIGH on one of
+  them, since severity itself would have been judged from unverified data. A
+  `last_comment_unavailable` thread that is also `isResolved == true` is worth a second look —
+  the deleted/renamed account could have been the PR author, meaning this may actually belong
+  in Bucket 1, just unprovable from the cached data.
 
 The script's own summary line (`N silent threads identified (react + resolve pending), M
-already-resolved skipped — K substantive threads to triage.`) is what to show the user before
-moving to Step 2.
+already-resolved skipped — K substantive threads to triage.`, plus a follow-up warning line
+whenever any of those K threads are degraded-data keeps rather than confirmed content) is what
+to show the user before moving to Step 2.
 
 **If the script isn't available or a thread's cache predates it** (missing `lastCommentAuthor`/
-`isOutdated` fields — added when `fetch_pr_threads()` was extended for this step), re-run
-`./scripts/init-pr-state.sh $PR_NUMBER` first to refresh the cache with the current schema.
+`lastCommentBody`/`isOutdated` fields — added when `fetch_pr_threads()` was extended for this
+step), re-run `./scripts/init-pr-state.sh $PR_NUMBER` first to refresh the cache with the
+current schema.
 
 ## Step 2: Assess Complexity & Edge Case Risk (NEW)
 
@@ -364,7 +387,12 @@ multi-agent orchestration primitive — spawns one agent per item concurrently a
 agent's structured result). This offloads assessment from the implementation session's context;
 only the structured results return, not the full per-issue analysis work.
 
-Spawn one agent per issue via `Workflow`. Each agent receives the thread body, file path, line number, the relevant code section (read from disk), and `PR_INTENT`/`RISK_FILES` from Step 1.
+Spawn one agent per issue via `Workflow`. Each agent receives the thread body, file path, line
+number, the relevant code section (read from disk), `PR_INTENT`/`RISK_FILES` from Step 1, and
+**the thread's `labels` array from Step 1.6** — do not omit `labels`: it is the only place a
+degraded-data keep (`stale_cache_schema` / `last_comment_unavailable` / `empty_content`, see
+Bucket 3 above) is recorded, and an agent that receives only the thread body has no way to know
+that body might be a stale fallback rather than confirmed latest activity.
 
 Each agent returns:
 ```json
@@ -375,9 +403,18 @@ Each agent returns:
   "proposed_fix": "brief description of the fix",
   "cascading_risk": true,
   "classification": "directional|polish",
+  "unverifiable_provenance": false,
   "notes": "any context about related bugs or edge cases"
 }
 ```
+
+**`unverifiable_provenance`** is `true` whenever the input `labels` contains
+`stale_cache_schema`, `last_comment_unavailable`, or `empty_content` — set it mechanically from
+the label, don't have the agent infer it from the body text. When `true`, the agent must still
+assess severity from whatever body text it received, but Step 3 treats the result as a
+**candidate for human confirmation**, not an auto-fixable CRITICAL/HIGH finding, since the
+severity itself was judged from data the classifier could not verify was actually the thread's
+latest content.
 
 **`classification`** (NEW) is a separate axis from `severity` — it answers "does fixing this
 change what the PR does?", not "how bad is it":
@@ -502,7 +539,11 @@ These patterns consistently hide edge cases - always use adversarial review:
 
 For any MEDIUM or LOW severity issues, or issues you're uncertain about. Carry forward any
 `[outdated]` / `[resolved + new activity]` label from Step 1.6's Bucket 3 in the item header,
-right after the severity tag:
+right after the severity tag. **Also always present any issue where the triage agent returned
+`unverifiable_provenance: true`**, regardless of its severity — a CRITICAL/HIGH finding on
+unverifiable data does not get auto-fixed like a normal CRITICAL/HIGH would; it goes here
+instead, tagged `[unverifiable: stale cache]` / `[unverifiable: last comment unknown]` /
+`[unverifiable: empty content]` depending on which label drove it:
 
 ```
 I found the following issues that need your input:
@@ -526,6 +567,14 @@ I found the following issues that need your input:
    - File: `ExportJob.java:210`
    - Impact: The flagged line may have already changed since this comment was posted
    - **Decision needed**: Still applicable, or safe to resolve as stale?
+
+5. **[HIGH] Copilot [unverifiable: last comment unknown]**: Severity assessed from a comment
+   body whose author field came back null (deleted/suspended account) — classify-threads.sh
+   could not confirm this was the thread's actual latest activity
+   - File: `PaymentValidator.java:88`
+   - Impact: Unknown until a human re-reads the thread directly on GitHub
+   - **Decision needed**: Confirm the severity by reading the thread yourself, then treat as a
+     normal issue — do not let the agent's severity call drive an automatic fix here
 
 Should I address these? (yes/no/selective)
 ```
@@ -1156,6 +1205,11 @@ status table:
 - `won't-fix-resolved` — documented won't-fix + resolved above
 - `skipped` — user chose to skip during Step 3.8 approval
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
+- `kept-unverifiable` — Step 1.6's Bucket 3 with a degraded-data label
+  (`stale_cache_schema` / `last_comment_unavailable` / `empty_content`), presented per
+  "Present Questionable Issues to User" above and resolved only after a human confirmed the
+  content directly on GitHub — do not fold these into `replied-and-resolved`; the whole point
+  of this row is that the original triage severity was never trustworthy on its own
 
 Format: `file:line — outcome`.
 
@@ -1237,17 +1291,26 @@ merge ref, which is empty (and the command exits non-zero) on any branch that ha
 tracking ref configured, e.g. one created with `git checkout -b` and never pushed with `-u`. On
 such a branch this check silently fails open, matching neither `refs/heads/master` nor
 `refs/heads/main`, and falls through to an unguarded push. Compare the branch name directly
-instead, which has no such gap:
+instead, which has no such gap. Also treat an **empty** branch name (detached HEAD — `git
+branch --show-current` prints nothing, exit code 0) as a stop condition: a bare `git push` from
+detached HEAD fails on its own, but with git's generic "you are not currently on a branch"
+error rather than this section's specific diagnostic, so check for it explicitly:
 ```bash
 CURRENT_BRANCH=$(git branch --show-current)
-if [[ "$CURRENT_BRANCH" == "master" || "$CURRENT_BRANCH" == "main" ]]; then
-  echo "🛑 STOP: current branch is '$CURRENT_BRANCH' — refusing to push directly to a protected branch." >&2
+if [[ -z "$CURRENT_BRANCH" ]]; then
+  echo "🛑 STOP: detached HEAD — not on any branch. Check out a branch before pushing." >&2
+  exit 1
+elif [[ "$CURRENT_BRANCH" == "master" || "$CURRENT_BRANCH" == "main" ]]; then
+  echo "🛑 STOP: current branch is '$CURRENT_BRANCH' — refusing to push directly to the default branch (master/main). This is a branch-name match, not a query of GitHub's branch-protection rules — a differently-named protected branch (develop/release/trunk) would not trigger this guard." >&2
   exit 1
 fi
 ```
-Otherwise:
+Otherwise, push with an explicit upstream — a branch that has never been pushed before (the
+exact case this guard's own reasoning above calls out as a real scenario) has no upstream yet,
+and a bare `git push` fails on it with "no upstream branch"; `-u` is a no-op on a branch that's
+already tracked, so it's safe to always include:
 ```bash
-git push
+git push -u origin "$CURRENT_BRANCH"
 ```
 
 ## Step 8: Re-Request Review & Monitor for New Comments
@@ -1268,25 +1331,35 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   action it gates, not several sections later where it's easy to skip in practice:
   ```bash
   COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
+  LAST_REREQUEST_ROUND_FILE="$WORKSPACE_DIR/last_rerequest_round.txt"
   # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
   [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
   ```
-  - **If `$(cat "$COUNT_FILE") -ge 2`** (this re-request would be review #3 or beyond): **stop**
-    — do not re-request. Follow "Numeric /plan Escalation" under Convergence Criterion below:
-    draft an actual `/plan` prompt naming this PR's recurring themes and wait for the user.
+  - **If `$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)` already equals `$ROUND`**: Step 8 is
+    being re-entered for a round it already re-requested on (e.g. after a context compaction or
+    a resumed session) — skip re-requesting and skip incrementing the counter. State so and
+    move on; re-requesting again would double-count a single round's request.
+  - **Elif `$(cat "$COUNT_FILE") -ge 2`** (this re-request would be review #3 or beyond):
+    **stop** — do not re-request. Follow "Numeric /plan Escalation" under Convergence Criterion
+    below: draft an actual `/plan` prompt naming this PR's recurring themes and wait for the user.
   - **Otherwise**, actively re-request review — don't wait for Copilot to notice the push on
-    its own:
+    its own, and capture `gh`'s own error output rather than assuming why it failed:
     ```bash
-    gh pr edit $PR_NUMBER --add-reviewer @copilot
+    if ! GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
+      echo "⚠️  Copilot re-review couldn't be triggered via CLI (gh reported: $GH_ERR)."
+      echo "    If this is 422/user-not-found, use the 'Re-request review' button next to"
+      echo "    Copilot in the Reviewers panel. If this is an auth/permission error"
+      echo "    (401/403), the UI button will fail too — check 'gh auth status' and your"
+      echo "    repo write access before retrying either path."
+    fi
     ```
-    Use exact spelling `@copilot`; no REST fallback. If it fails (422 / user-not-found), tell
-    the user: "Copilot re-review couldn't be triggered via CLI — use the 'Re-request review'
-    button next to Copilot in the Reviewers panel."
+    Use exact spelling `@copilot`; no REST fallback.
 
-    Then increment the counter (same file, same pattern as `round.txt`, so it survives a
-    context compaction like every other cross-round counter in this doc):
+    Then record that this round's re-request happened (same pattern as `round.txt`, so it
+    survives a context compaction like every other cross-round counter in this doc):
     ```bash
     echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
+    echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
     ```
 
   `address-pr-issues` has no PR-description-generation tool, so unlike a fully automated
@@ -1303,8 +1376,11 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
 # Check CI/CD status (typically 15-30 minutes)
 gh run watch
 
-# OR: Check manually after waiting
-gh run list --branch $(git branch --show-current) --limit 1
+# OR: Check manually after waiting — reuse $CURRENT_BRANCH from the Protected-Branch Guard
+# above rather than re-deriving it; a re-derivation in detached HEAD silently passes an
+# empty --branch value and returns zero runs with no error, which reads as "no CI runs found"
+# instead of "you aren't on a branch"
+gh run list --branch "$CURRENT_BRANCH" --limit 1
 ```
 
 ### Check for New Copilot Comments (Update Cache)
