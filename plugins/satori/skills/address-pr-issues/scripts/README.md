@@ -173,18 +173,10 @@ Resolve multiple GitHub review threads at once.
   --all-unresolved \
   --message 'Addressed all review feedback'
 
-# Output:
-# 📍 Resolving 5 thread(s) with message: "Fixed integration test setup"
-#
-#   Resolving: FullExportJobIntegrationTest.java:234 ... ✅
-#   Resolving: FullExportJobIntegrationTest.java:253 ... ✅
-#   Resolving: FullExportJobIntegrationTest.java:261 ... ✅
-#   Resolving: FullExportJobIntegrationTest.java:288 ... ✅
-#   Resolving: FullExportJobIntegrationTest.java:320 ... ✅
-#
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ✅ Resolved: 5 thread(s)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Output: a header line naming the message and thread count, a bare `path:line` list of
+# the matched threads, an optional batch-size note, and a final aggregate
+# "✅ Resolved: N thread(s)" / "❌ Failed: N thread(s)" summary — see resolve-threads-bulk.py
+# for the exact wording, not reproduced verbatim here so this example can't drift.
 ```
 
 ### SonarQube Operations

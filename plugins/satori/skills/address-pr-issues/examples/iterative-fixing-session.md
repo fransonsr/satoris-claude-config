@@ -195,16 +195,12 @@ sonar-scanner
 
 ### Commit
 
+Same as Iteration 3 — use the script, not a hand-written message:
+
 ```bash
 git add ...
-git commit -m "refactor: Use early returns in validateRecord()
-
-Simplifies control flow per Copilot suggestion.
-Add test for empty string ID edge case.
-
-Resolves: Copilot threads #4, #5"
-
-git push origin feature/bulk-export-stage4
+./scripts/commit-pr-fixes.sh $PR_NUMBER "$DIRECTIONAL_COUNT"
+git push
 ```
 
 ---
@@ -213,27 +209,16 @@ git push origin feature/bulk-export-stage4
 
 ### Resolve All Fixed Issues
 
+Resolve conversations BEFORE this commit, not after (see "Why resolve threads, and why before
+commit?" in SKILL.md's Step 6) — shown here after the commit only to keep this walkthrough's
+narrative order. Use `resolve-threads-bulk.sh`, not hand-written `gh api graphql`/`gh pr
+comment` — the latter posts a top-level comment that doesn't resolve anything (see SKILL.md's
+"Don't Use `gh pr comment` for Fix Replies"):
+
 ```bash
-# Get PR number
-PR_NUMBER=42
-
-# Fetch all review threads
-gh api graphql -f query='...' > threads.json
-
-# For each resolved Copilot thread, add comment and resolve
-for THREAD_ID in $(jq -r '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id' threads.json); do
-  # Add comment
-  gh pr comment $PR_NUMBER --body "✅ Fixed in commits $(git log --oneline -5 | head -3 | cut -d' ' -f1 | tr '\n' ' ')"
-  
-  # Resolve thread
-  gh api graphql -f query='
-    mutation($threadId: ID!) {
-      resolveReviewThread(input: {threadId: $threadId}) {
-        thread { id isResolved }
-      }
-    }
-  ' -f threadId="$THREAD_ID"
-done
+./scripts/resolve-threads-bulk.sh $PR_NUMBER \
+  --all-unresolved \
+  --message "Fixed in commits $(git log --oneline -5 | head -3 | cut -d' ' -f1 | tr '\n' ' ')"
 ```
 
 ### Final PR State

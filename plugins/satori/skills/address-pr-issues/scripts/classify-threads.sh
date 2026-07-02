@@ -113,7 +113,7 @@ DEGRADED=$(jq -s 'map(select(.labels == ["stale_cache_schema"] or .labels == ["l
 
 echo "$SILENT silent threads identified (react + resolve pending), $ALREADY_RESOLVED already-resolved skipped — $KEEP substantive threads to triage."
 if [[ "$DEGRADED" -gt 0 ]]; then
-  echo "⚠️  $DEGRADED of the $KEEP 'substantive' threads were routed to keep because their data was degraded, stale, or their last-comment author couldn't be verified — not because content classification confirmed them substantive (stale cache schema, an unavailable last-comment author/body, or empty comment content)."
+  echo "⚠️  $DEGRADED of the $KEEP 'substantive' threads were routed to keep because their last comment couldn't be verified (author or body missing), the cache schema was stale, or the content was empty — not because content classification confirmed them substantive."
 fi
 echo ""
 echo "Silent thread IDs (react + resolve, no user prompt):"

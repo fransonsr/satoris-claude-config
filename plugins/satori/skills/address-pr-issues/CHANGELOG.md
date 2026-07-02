@@ -1,5 +1,32 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-07-01 - v1.7.1: Adversarial-Review Convergence Rounds 2-4
+
+**Context**: Per the dogfooding discipline (`~/.claude/CLAUDE.md`'s dogfooding section) of
+running multiple verification rounds rather than trusting a single fix batch, ran three more
+`/adversarial-review` rounds against v1.7.0's own fixes. Each round found real bugs in the
+*previous* round's fixes, not just new debt — the whole reason this discipline exists:
+
+- **Round 2** (8 fixes): `classify-threads.sh`'s stale-schema guard checked only 2 of the 3
+  required fields (missing `isOutdated`); a present-but-null `lastCommentAuthor` silently fell
+  back to the thread-opener's identity instead of failing closed; the Protected-Branch Guard
+  (`git config branch.<name>.merge`) failed open on any branch with no tracking ref configured
+  — verified live by creating an actual untracked branch.
+- **Round 3** (17 fixes): the Round 2 fix for `lastCommentAuthor` left the sibling field
+  `lastCommentBody` with the identical null-fallback gap; threads with genuinely empty content
+  had no degraded-data label at all; the Step 2 triage agent never received the `labels` field
+  where degraded-data markers live, so a thread kept only because its data was unverifiable was
+  triaged as if reliable; the stale-schema banner checked only the first cached record instead
+  of the whole file.
+- **Round 4** (14 fixes): the Round 3 fix for Step 8's re-request counter advanced it even when
+  the `gh pr edit` call *failed*, recording a re-request that never happened; the `$CURRENT_BRANCH`
+  reuse fix reintroduced the exact cross-snippet variable-persistence gap it was meant to close;
+  `scripts/lib/github-api.sh` crashed the entire thread fetch on a null first-comment body (the
+  same class of gap already fixed on the last-comment side); a previously-untouched
+  `examples/iterative-fixing-session.md` had a stale hand-written commit-message template.
+
+See commits `f8d4a6c`, `0ddab3a`, `b5ee8a4` for full per-round detail.
+
 ## 2026-07-01 - v1.7.0: First Real Dogfood Run (pre-pr-audit + adversarial-review)
 
 **Context**: Ran `/satori:pre-pr-audit` against this skill's own diff for the first time —
@@ -539,6 +566,8 @@ done
 
 ## Version History
 
+- **2026-07-01**: First real dogfood run (pre-pr-audit + adversarial-review) + 4 rounds of
+  adversarial-review convergence fixes (v1.7.0-v1.7.1)
 - **2026-07-01**: Ported apply-feedback strengths (silent-thread filter, directional/polish
   classification, thread-accountability closeout, protected-branch guard, /plan escalation) +
   script-first cleanup (net line reduction)

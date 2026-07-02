@@ -229,11 +229,20 @@ adversarial-review Intent Brief, and the directional/polish classification in St
   (written in Step 8) — prevents double-incrementing the counter above if Step 8 is re-entered
   for the same round
 
-**Shorthand used throughout this doc**: `$THREADS_FILE`, `$CHECKLIST_FILE`, `$FIXES_FILE`, and
-`$ROUND` are not exported by any script — they're shorthand for
-`$WORKSPACE_DIR/threads.json`, `$WORKSPACE_DIR/checklist.json`, `$WORKSPACE_DIR/fixes.json`, and
-`$(cat "$WORKSPACE_DIR/round.txt")` respectively. Set them yourself before running a snippet that
-uses them, e.g. `THREADS_FILE="$WORKSPACE_DIR/threads.json"`.
+**Shorthand used throughout this doc**: `$WORKSPACE_DIR` itself is not exported by any
+script — `init-pr-state.sh` and the other wrapper scripts set it only inside their own
+subprocess, so it does NOT persist back to your shell, and it will NOT survive into a separate
+command invocation, a new shell/terminal, or a resumed session. Re-derive it yourself before any
+snippet that references it (or anything built from it) if it isn't already set in your current
+shell: `WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"` — which in turn needs `$PR_NUMBER` (and, for
+Step 1.6, `$PR_AUTHOR`) re-derived too if those have also gone stale:
+`PR_NUMBER=$(gh pr view --json number -q .number)` /
+`PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)`. `$THREADS_FILE`,
+`$CHECKLIST_FILE`, `$FIXES_FILE`, and `$ROUND` are the same kind of shorthand, one level down —
+they're shorthand for `$WORKSPACE_DIR/threads.json`, `$WORKSPACE_DIR/checklist.json`,
+`$WORKSPACE_DIR/fixes.json`, and `$(cat "$WORKSPACE_DIR/round.txt")` respectively. Set them
+yourself before running a snippet that uses them, e.g.
+`THREADS_FILE="$WORKSPACE_DIR/threads.json"`.
 
 **Benefits**:
 - Faster workflow (no redundant API calls)
@@ -439,7 +448,7 @@ this round — not everything triaged. An issue the user deferred or declined in
 count, since nothing about the PR changed for it. See "Derive DIRECTIONAL_COUNT" at the end of
 Step 4.1 for the concrete computation.
 
-### Step 2.5: Adversarial Review Gate (MANDATORY CHECK)
+## Step 2.5: Adversarial Review Gate (MANDATORY CHECK)
 
 **⚠️ STOP: Do not skip this step without completing the checklist.**
 
@@ -1089,7 +1098,7 @@ issues. If it reports FAILED, fix the listed issues before committing.
 and verify: Quality Gate passed, no new BLOCKER/CRITICAL issues, coverage acceptable, security
 hotspots reviewed.
 
-**If new issues found**: Fix them before committing (iterate Step 4-5).
+**If new issues found**: Fix them before committing (iterate Step 4.1, then re-run Step 5).
 
 ## Step 6: Resolve Conversations (BEFORE Commit)
 
@@ -1209,12 +1218,15 @@ status table:
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
 - `kept-unverifiable` — Step 1.6's Bucket 3 with a degraded-data label
   (`stale_cache_schema` / `last_comment_unavailable` / `empty_content`), presented per
-  "Present Questionable Issues to User" above, where the user **explicitly confirmed** the
-  content directly on GitHub. Do not fold these into `replied-and-resolved`; the whole point
-  of this row is that the original triage severity was never trustworthy on its own. **If the
-  user does not explicitly confirm** — declines, defers, or the round ends before follow-up —
-  classify the thread as `skipped` instead, subject to the same hard stop below; a thread
-  only counts as `kept-unverifiable` once confirmation has actually happened.
+  "Present Questionable Issues to User" above, where the user **confirmed the content is
+  accurate/current and no further action is needed**. Do not fold these into
+  `replied-and-resolved`; the whole point of this row is that the original triage severity was
+  never trustworthy on its own. **If confirming the content reveals a real issue that then gets
+  fixed**, classify as `replied-and-resolved` instead — `kept-unverifiable` is reserved for
+  confirmed-and-done, not confirmed-and-then-fixed. **If the user does not explicitly
+  confirm** — declines, defers, or the round ends before follow-up — classify the thread as
+  `skipped` instead, subject to the same hard stop below; a thread only counts as
+  `kept-unverifiable` once confirmation has actually happened with no further action required.
 
 Format: `file:line — outcome`.
 
@@ -1322,9 +1334,12 @@ git push -u origin "$CURRENT_BRANCH"
 
 ### Active Copilot Re-Request (NEW — replaces passive waiting)
 
-Read `DIRECTIONAL_COUNT` back from `fixes.json` for the round just committed (persisted by
-`commit-pr-fixes.sh` in Step 7) rather than trusting conversation memory — this survives a
-context compaction or a resumed session:
+Re-derive `$ROUND` and `$FIXES_FILE` if this is a new shell/session (see the shorthand note in
+Step 1 — they don't persist from an earlier command invocation any more than `$CURRENT_BRANCH`
+does below): `ROUND=$(cat "$WORKSPACE_DIR/round.txt")`,
+`FIXES_FILE="$WORKSPACE_DIR/fixes.json"`. Then read `DIRECTIONAL_COUNT` back from `fixes.json`
+for the round just committed (persisted by `commit-pr-fixes.sh` in Step 7) rather than trusting
+conversation memory — this survives a context compaction or a resumed session:
 ```bash
 DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0' "$FIXES_FILE")
 ```
@@ -1361,6 +1376,7 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
       # round is done) and inflates the /plan-escalation count past actual review activity.
       echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
       echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
+      echo "✅ Re-requested Copilot review for round $ROUND (review #$(cat "$COUNT_FILE"))."
     else
       echo "⚠️  Copilot re-review couldn't be triggered via CLI (gh reported: $GH_ERR)."
       echo "    If this is 422/user-not-found, use the 'Re-request review' button next to"
@@ -1422,7 +1438,7 @@ NEW_THREADS=$(jq -s '.[0] - .[1]' "$THREADS_FILE" "${THREADS_FILE}.before-round-
 **If new comments found**:
 - Evaluate severity (same prioritization matrix)
 - **Minor issues** (style, suggestions): Consider batch-fixing later
-- **Significant issues** (bugs, security): Loop back to Step 4
+- **Significant issues** (bugs, security): Loop back to Step 4.1
 
 **Decision tree**:
 ```

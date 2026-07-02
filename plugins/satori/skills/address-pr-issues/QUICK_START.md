@@ -300,3 +300,30 @@ sonar-scanner
 
 ```
 User: /address-pr-issues 42
+
+Claude: Fetched 8 unresolved threads. classify-threads.sh: 2 silent (auto-resolved),
+        1 already-resolved (skipped), 5 substantive to triage.
+        [Step 2 triage] 1 CRITICAL, 2 MEDIUM, 2 LOW. No adversarial review needed
+        (no cascading edge-case indicators).
+
+        I found 2 issues that need your input: [...]
+
+User: Fix all of them.
+
+Claude: [Fixes applied, Step 3.7 pre-fix sweep found 1 sibling instance, Step 4.5
+        post-fix sweep clean, sonar-scanner clean]
+        Resolved 5 threads. Committed (Round 1, 1 directional fix). Pushed.
+        Re-requesting Copilot review (review #2).
+
+[~15-30 min later, after CI/CD]
+
+Claude: 1 new Copilot comment on the pushed changes. Evaluating severity... LOW,
+        style-only. Presenting for your decision rather than auto-fixing.
+
+User: Accept it as-is, we're done here.
+
+Claude: Resolved the thread as won't-fix with rationale. PR ready for merge review.
+```
+
+See `examples/iterative-fixing-session.md` for a longer, multi-round walkthrough with
+SonarQube issues interleaved.
