@@ -1,11 +1,14 @@
 # Address PR Issues Skill - Changelog
 
-## 2026-07-01 - v1.7.1: Adversarial-Review Convergence Rounds 2-4
+## 2026-07-01 - v1.7.2: Adversarial-Review Convergence Rounds 2-6
 
 **Context**: Per the dogfooding discipline (`~/.claude/CLAUDE.md`'s dogfooding section) of
-running multiple verification rounds rather than trusting a single fix batch, ran three more
+running multiple verification rounds rather than trusting a single fix batch, ran five more
 `/adversarial-review` rounds against v1.7.0's own fixes. Each round found real bugs in the
-*previous* round's fixes, not just new debt — the whole reason this discipline exists:
+*previous* round's fixes, not just new debt — the whole reason this discipline exists. Findings
+per round plateaued at 13-16 (Round 3 onward) rather than converging to zero — a large,
+actively-edited document may not realistically reach a fully clean round, so Round 6 was
+adopted as the stopping point rather than continuing indefinitely:
 
 - **Round 2** (8 fixes): `classify-threads.sh`'s stale-schema guard checked only 2 of the 3
   required fields (missing `isOutdated`); a present-but-null `lastCommentAuthor` silently fell
@@ -24,8 +27,24 @@ running multiple verification rounds rather than trusting a single fix batch, ra
   `scripts/lib/github-api.sh` crashed the entire thread fetch on a null first-comment body (the
   same class of gap already fixed on the last-comment side); a previously-untouched
   `examples/iterative-fixing-session.md` had a stale hand-written commit-message template.
+- **Round 5** (13 fixes): `$WORKSPACE_DIR` itself — unlike the shorthand vars derived from it —
+  was never covered by SKILL.md's "shorthand" disclaimer despite ~2 dozen usage sites depending
+  on it (pre-existing debt, not introduced by any round); `examples/iterative-fixing-session.md`
+  had two more stale hand-written blocks beyond the one Round 4 fixed, including a raw
+  `gh api graphql`/`gh pr comment` block contradicting SKILL.md's own Hard Rule; a dangling,
+  incomplete "Example Session Flow" in QUICK_START.md had survived three prior rounds untouched.
+- **Round 6** (14 fixes): the Round 5 fix for `$WORKSPACE_DIR` only added a reminder at Step 8 —
+  the identical gap existed at Step 6, Step 7, and the State Management section too;
+  `commit-pr-fixes.sh`'s recovery/retry path silently defaulted `DIRECTIONAL_COUNT` to 0 if the
+  operator retried without re-passing the same arg; `classify-threads.sh`'s `is_complimentary()`
+  crashed the entire script on a non-string comment body (verified live, pre-existing since
+  Round 1); the "Example Session Flow" written in Round 5 itself reintroduced a misconception
+  (that `classify-threads.sh` resolves threads, not just classifies them) that SKILL.md
+  explicitly warns against elsewhere — the same misconception also existed, pre-existing and
+  uncaught, at QUICK_START.md's "Filter Trivial Threads" section.
 
-See commits `f8d4a6c`, `0ddab3a`, `b5ee8a4` for full per-round detail.
+See commits `f8d4a6c`, `0ddab3a`, `b5ee8a4`, `df8a759`, and this round's commit for full
+per-round detail.
 
 ## 2026-07-01 - v1.7.0: First Real Dogfood Run (pre-pr-audit + adversarial-review)
 
@@ -566,8 +585,8 @@ done
 
 ## Version History
 
-- **2026-07-01**: First real dogfood run (pre-pr-audit + adversarial-review) + 4 rounds of
-  adversarial-review convergence fixes (v1.7.0-v1.7.1)
+- **2026-07-01**: First real dogfood run (pre-pr-audit + adversarial-review) + 5 rounds of
+  adversarial-review convergence fixes (v1.7.0-v1.7.2)
 - **2026-07-01**: Ported apply-feedback strengths (silent-thread filter, directional/polish
   classification, thread-accountability closeout, protected-branch guard, /plan escalation) +
   script-first cleanup (net line reduction)

@@ -37,8 +37,8 @@ have a numbered box, it's folded into the box before it, not skipped:
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 1.6. Filter trivial threads (auto)     │ ← classify-threads.sh: silent/
-│      LGTM-only threads react+resolve   │   already-resolved auto-handled
+│ 1.6. Filter trivial threads (auto)     │ ← classify-threads.sh classifies only;
+│      LGTM-only → react+resolve next    │   react+resolve is a separate step after
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
@@ -123,15 +123,17 @@ First" table.** Don't hand-write `gh api graphql` or SonarQube `curl` calls; a s
 PR_AUTHOR=$(gh pr view 42 --json author -q .author.login)
 ./scripts/classify-threads.sh 42 "$PR_AUTHOR"
 ```
-Auto-resolves purely-complimentary threads ("LGTM", "👍") and skips already-resolved ones with
-no substantive activity — before you spend any triage effort on them. See SKILL.md Step 1.6.
+Classifies (does not itself resolve) purely-complimentary threads ("LGTM", "👍") for a
+react+resolve you do right after, and flags already-resolved ones with no substantive activity
+to skip entirely — before you spend any triage effort on them. See SKILL.md Step 1.6.
 
 ### Fetch SonarQube Issues
 ```bash
 ./scripts/check-sonar-quality-gate.sh 42
 ```
-**Note**: Enterprise SonarQube instances with SSO may block Web API access — the script falls
-back to telling you to check the dashboard manually if the API returns HTML.
+**Note**: Enterprise SonarQube instances with SSO may block Web API access, causing this script
+to time out or error rather than detecting the block itself — if that happens, fall back to
+manual dashboard review (SKILL.md Step 5's Option B).
 
 ### Local Validation (Critical!)
 ```bash
@@ -301,8 +303,8 @@ sonar-scanner
 ```
 User: /address-pr-issues 42
 
-Claude: Fetched 8 unresolved threads. classify-threads.sh: 2 silent (auto-resolved),
-        1 already-resolved (skipped), 5 substantive to triage.
+Claude: Fetched 8 unresolved threads. classify-threads.sh: 2 silent (react+resolve
+        pending), 1 already-resolved (skipped), 5 substantive to triage.
         [Step 2 triage] 1 CRITICAL, 2 MEDIUM, 2 LOW. No adversarial review needed
         (no cascading edge-case indicators).
 

@@ -9,6 +9,8 @@
 set -euo pipefail
 
 PR_NUMBER="${1:-}"
+DIRECTIONAL_COUNT_ARG_PROVIDED=false
+[[ $# -ge 2 ]] && DIRECTIONAL_COUNT_ARG_PROVIDED=true
 DIRECTIONAL_COUNT="${2:-0}"
 
 if [[ -z "$PR_NUMBER" ]]; then
@@ -47,6 +49,15 @@ if git diff --cached --quiet; then
   # failed afterward — a bare re-run would otherwise hit "nothing to commit" and abort without
   # ever retrying the tracking write. Recover case (b) by tracking the existing HEAD instead.
   if git log -1 --format=%s 2>/dev/null | grep -qF "PR #${PR_NUMBER} review feedback (Round ${ROUND})"; then
+    # This recovery path exists specifically to retry a failed fixes.json write, so
+    # fixes.json[$round] does NOT already have a directional_count to fall back on — the only
+    # source of truth is whatever the operator passes as $2. A bare retry with no arg silently
+    # defaults to 0, converting a directional round into a polish round from Step 8's
+    # perspective. Refuse rather than guess: require the operator to re-supply the same value.
+    if [[ "$DIRECTIONAL_COUNT_ARG_PROVIDED" != "true" ]]; then
+      echo "🛑 Recovering round $ROUND's tracking for an existing commit, but no directional_count arg was passed — refusing to silently record 0. Re-run with the SAME value you used originally: $0 $PR_NUMBER <directional_count>." >&2
+      exit 1
+    fi
     echo "ℹ️  Nothing staged, but HEAD is already this round's commit — recovering fixes.json tracking for it instead of creating a new commit."
     COMMIT_SHA=$(git rev-parse HEAD)
     CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD | jq -R . | jq -s .)

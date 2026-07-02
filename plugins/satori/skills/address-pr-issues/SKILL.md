@@ -398,10 +398,12 @@ only the structured results return, not the full per-issue analysis work.
 
 Spawn one agent per issue via `Workflow`. Each agent receives the thread body, file path, line
 number, the relevant code section (read from disk), `PR_INTENT`/`RISK_FILES` from Step 1, and
-**the thread's `labels` array from Step 1.6** — do not omit `labels`: it is the only place a
-degraded-data keep (`stale_cache_schema` / `last_comment_unavailable` / `empty_content`, see
-Bucket 3 above) is recorded, and an agent that receives only the thread body has no way to know
-that body might be a stale fallback rather than confirmed latest activity.
+**the thread's `labels` and `isResolved` fields from Step 1.6** — do not omit these: `labels` is
+the only place a degraded-data keep (`stale_cache_schema` / `last_comment_unavailable` /
+`empty_content`, see Bucket 3 above) is recorded, and an agent that receives only the thread body
+has no way to know that body might be a stale fallback rather than confirmed latest activity.
+`isResolved` is needed for Bucket 3's `last_comment_unavailable` + `isResolved == true` "worth a
+second look" case — without it, nothing downstream can apply that tie-break.
 
 Each agent returns:
 ```json
@@ -969,9 +971,9 @@ if (persona1Id.isEmpty() || persona2Id.isEmpty()) {
 ### Derive DIRECTIONAL_COUNT (before moving to Step 4.5)
 
 Now that this round's fixes are implemented, compute `DIRECTIONAL_COUNT` — needed by Step 7's
-commit and Step 8's re-request decision. It's the count of `triage.json` entries classified
-`directional` whose issues you actually fixed this round (not deferred, not declined, not
-won't-fixed):
+commit and Step 8's re-request decision. Re-derive `$WORKSPACE_DIR` per Step 1's shorthand note
+if resuming. It's the count of `triage.json` entries classified `directional` whose issues you
+actually fixed this round (not deferred, not declined, not won't-fixed):
 
 ```bash
 # List the issue_ids you actually fixed this round, one per line, e.g.:
@@ -1101,6 +1103,9 @@ hotspots reviewed.
 **If new issues found**: Fix them before committing (iterate Step 4.1, then re-run Step 5).
 
 ## Step 6: Resolve Conversations (BEFORE Commit)
+
+Re-derive `$THREADS_FILE`/`$CHECKLIST_FILE` if this is a new shell/session (see the shorthand
+note in Step 1) before running any snippet below that references them.
 
 **CRITICAL**: Resolve GitHub conversations BEFORE pushing commit. This keeps the PR clean and shows reviewers what you've addressed.
 
@@ -1243,7 +1248,8 @@ threads accounted for.`) is enough.
 
 ### Pre-Push Checklist (MANDATORY - Automated)
 
-**NEW**: Use checklist state file to track progress:
+**NEW**: Use checklist state file to track progress. Re-derive `$CHECKLIST_FILE`/`$ROUND` if
+this is a new shell/session (see the shorthand note in Step 1):
 
 ```bash
 # Update checklist as you complete each step
@@ -1292,7 +1298,7 @@ history):
 # Stage changes first
 git add <files>
 
-# Generate commit; pass DIRECTIONAL_COUNT (from Step 2/4's classification) so it's persisted to
+# Generate commit; pass DIRECTIONAL_COUNT (from Step 2/4.1's classification) so it's persisted to
 # fixes.json — Step 8 reads it back from disk instead of relying on conversation memory
 ./scripts/commit-pr-fixes.sh $PR_NUMBER "$DIRECTIONAL_COUNT"
 ```
@@ -1530,6 +1536,10 @@ curl -u "$SONAR_TOKEN:" -X POST \
 ```
 
 ## State Management & Fix History
+
+This section is often run in total isolation — e.g. a post-mortem days after merge, in a fresh
+session. Re-derive `$WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"` and `$FIXES_FILE` per Step 1's
+shorthand note before running anything below; don't assume they're still set.
 
 `$FIXES_FILE` (per-round commit/files history) and `$THREADS_FILE.before-round-N` snapshots
 (saved in Step 8) are plain JSON — query them with `jq` for whatever view you need. Two
