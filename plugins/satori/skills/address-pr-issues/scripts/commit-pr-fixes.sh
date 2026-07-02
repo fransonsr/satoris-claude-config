@@ -46,7 +46,7 @@ if git diff --cached --quiet; then
   # already succeeded on a prior run of this script and only the fixes.json tracking write
   # failed afterward — a bare re-run would otherwise hit "nothing to commit" and abort without
   # ever retrying the tracking write. Recover case (b) by tracking the existing HEAD instead.
-  if git log -1 --format=%s 2>/dev/null | grep -qF "Round ${ROUND})"; then
+  if git log -1 --format=%s 2>/dev/null | grep -qF "PR #${PR_NUMBER} review feedback (Round ${ROUND})"; then
     echo "ℹ️  Nothing staged, but HEAD is already this round's commit — recovering fixes.json tracking for it instead of creating a new commit."
     COMMIT_SHA=$(git rev-parse HEAD)
     CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD | jq -R . | jq -s .)
@@ -92,7 +92,7 @@ fi
 mv "$FIXES_FILE.tmp" "$FIXES_FILE"
 
 if [[ "$DIRECTIONAL_COUNT" -gt 0 ]]; then
-  echo "✅ Recorded $DIRECTIONAL_COUNT directional fix(es) this round. Step 8 will re-request Copilot review unless the re-review cap (review #3+) has already been reached, in which case it escalates to /plan instead."
+  echo "✅ Recorded $DIRECTIONAL_COUNT directional fix(es) this round. Step 8 will decide whether to re-request Copilot review, skip because this round already re-requested, or escalate to /plan because the re-review cap (review #3+) was reached."
 fi
 
 echo "✅ Fix tracking updated"

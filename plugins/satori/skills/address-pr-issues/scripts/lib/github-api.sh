@@ -96,7 +96,7 @@ fetch_pr_threads() {
       isOutdated,
       path: .firstComment.nodes[0].path,
       line: .firstComment.nodes[0].line,
-      bodySummary: (.firstComment.nodes[0].body | split("\n")[0] | .[0:100]),
+      bodySummary: ((.firstComment.nodes[0].body // "") | split("\n")[0] | .[0:100]),
       bodyFull: .firstComment.nodes[0].body,
       createdAt: .firstComment.nodes[0].createdAt,
       lastCommentId: .lastComment.nodes[0].databaseId,

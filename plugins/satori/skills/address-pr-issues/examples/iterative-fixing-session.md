@@ -148,25 +148,15 @@ sonar-scanner
 
 ### Commit
 
+Use the script rather than a hand-written commit message — it generates the message,
+persists `directional_count` to `fixes.json`, and updates fix tracking in one step (see
+`scripts/README.md` for the exact message format, which is deliberately minimal and doesn't
+support won't-fix/Resolves footers):
+
 ```bash
 git add spark-jobs/bulk-export/src/main/java/...
-git commit -m "fix: Address PR code quality issues
-
-- Fix resource leak with try-with-resources (SonarQube PROJ-123, Copilot #2)
-- Add null check for record ID (Copilot #3)
-- Extract processRecord() into smaller methods (Copilot #1, SonarQube PROJ-124)
-  - validateRecord() handles validation logic
-  - transformRecord() handles data transformation
-- Extract BATCH_SIZE constant (SonarQube PROJ-125)
-- Make validateRecord() static per SonarQube analysis
-- Extract duplicate string literal to constant
-
-Accepted issues (won't-fix):
-- PROJ-789: Constants class refactoring deferred to DPF-1234
-
-Resolves: Copilot threads #1, #2, #3; SonarQube PROJ-123, PROJ-124, PROJ-125"
-
-git push origin feature/bulk-export-stage4
+./scripts/commit-pr-fixes.sh $PR_NUMBER "$DIRECTIONAL_COUNT"
+git push -u origin feature/bulk-export-stage4
 ```
 
 ---

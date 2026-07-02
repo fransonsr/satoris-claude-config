@@ -414,7 +414,9 @@ the label, don't have the agent infer it from the body text. When `true`, the ag
 assess severity from whatever body text it received, but Step 3 treats the result as a
 **candidate for human confirmation**, not an auto-fixable CRITICAL/HIGH finding, since the
 severity itself was judged from data the classifier could not verify was actually the thread's
-latest content.
+latest content. **If an agent's returned JSON omits `unverifiable_provenance` or returns a
+non-boolean value, treat it as `true`** — fail closed, the same principle Bucket 3 applies to
+the underlying labels, rather than silently trusting a malformed result as verified.
 
 **`classification`** (NEW) is a separate axis from `severity` — it answers "does fixing this
 change what the PR does?", not "how bad is it":
@@ -1207,9 +1209,12 @@ status table:
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
 - `kept-unverifiable` — Step 1.6's Bucket 3 with a degraded-data label
   (`stale_cache_schema` / `last_comment_unavailable` / `empty_content`), presented per
-  "Present Questionable Issues to User" above and resolved only after a human confirmed the
-  content directly on GitHub — do not fold these into `replied-and-resolved`; the whole point
-  of this row is that the original triage severity was never trustworthy on its own
+  "Present Questionable Issues to User" above, where the user **explicitly confirmed** the
+  content directly on GitHub. Do not fold these into `replied-and-resolved`; the whole point
+  of this row is that the original triage severity was never trustworthy on its own. **If the
+  user does not explicitly confirm** — declines, defers, or the round ends before follow-up —
+  classify the thread as `skipped` instead, subject to the same hard stop below; a thread
+  only counts as `kept-unverifiable` once confirmation has actually happened.
 
 Format: `file:line — outcome`.
 
@@ -1328,39 +1333,45 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   re-review count **first**, before re-requesting. Re-requesting unconditionally on every
   directional round is exactly the "just keep fixing what Copilot flags" anti-pattern the
   Convergence Criterion below warns against — the gate belongs here, at the point of the
-  action it gates, not several sections later where it's easy to skip in practice:
+  action it gates, not several sections later where it's easy to skip in practice. Three
+  outcomes, checked as one if/elif/else chain (not as separate steps — the ordering matters):
   ```bash
   COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
   LAST_REREQUEST_ROUND_FILE="$WORKSPACE_DIR/last_rerequest_round.txt"
   # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
   [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
-  ```
-  - **If `$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)` already equals `$ROUND`**: Step 8 is
-    being re-entered for a round it already re-requested on (e.g. after a context compaction or
-    a resumed session) — skip re-requesting and skip incrementing the counter. State so and
-    move on; re-requesting again would double-count a single round's request.
-  - **Elif `$(cat "$COUNT_FILE") -ge 2`** (this re-request would be review #3 or beyond):
-    **stop** — do not re-request. Follow "Numeric /plan Escalation" under Convergence Criterion
-    below: draft an actual `/plan` prompt naming this PR's recurring themes and wait for the user.
-  - **Otherwise**, actively re-request review — don't wait for Copilot to notice the push on
-    its own, and capture `gh`'s own error output rather than assuming why it failed:
-    ```bash
-    if ! GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
+
+  if [[ "$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)" == "$ROUND" ]]; then
+    # Step 8 is being re-entered for a round that already re-requested successfully (e.g.
+    # after a context compaction or a resumed session) — re-requesting again would
+    # double-count a single round's request.
+    echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
+  elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
+    # This re-request would be review #3 or beyond — stop. Follow "Numeric /plan Escalation"
+    # under Convergence Criterion below: draft an actual /plan prompt naming this PR's
+    # recurring themes and wait for the user, instead of blindly re-requesting again.
+    echo "🛑 This would be Copilot review #3+ — escalating to /plan instead of re-requesting."
+  else
+    # Capture gh's own error output rather than assuming why it failed. Use exact spelling
+    # @copilot; no REST fallback.
+    if GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
+      # Only advance the counter and the round marker on a CONFIRMED successful re-request —
+      # advancing them on failure would record a re-request that never happened, which both
+      # blocks a legitimate retry this round (the check above would then falsely think this
+      # round is done) and inflates the /plan-escalation count past actual review activity.
+      echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
+      echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
+    else
       echo "⚠️  Copilot re-review couldn't be triggered via CLI (gh reported: $GH_ERR)."
       echo "    If this is 422/user-not-found, use the 'Re-request review' button next to"
       echo "    Copilot in the Reviewers panel. If this is an auth/permission error"
       echo "    (401/403), the UI button will fail too — check 'gh auth status' and your"
       echo "    repo write access before retrying either path."
+      echo "    Neither the counter nor the round marker advanced — a retry this round is"
+      echo "    still permitted once the underlying problem is fixed."
     fi
-    ```
-    Use exact spelling `@copilot`; no REST fallback.
-
-    Then record that this round's re-request happened (same pattern as `round.txt`, so it
-    survives a context compaction like every other cross-round counter in this doc):
-    ```bash
-    echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
-    echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
-    ```
+  fi
+  ```
 
   `address-pr-issues` has no PR-description-generation tool, so unlike a fully automated
   refresh, surface a one-line manual nudge: "N directional fix(es) this round — consider
@@ -1376,11 +1387,18 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
 # Check CI/CD status (typically 15-30 minutes)
 gh run watch
 
-# OR: Check manually after waiting — reuse $CURRENT_BRANCH from the Protected-Branch Guard
-# above rather than re-deriving it; a re-derivation in detached HEAD silently passes an
-# empty --branch value and returns zero runs with no error, which reads as "no CI runs found"
-# instead of "you aren't on a branch"
-gh run list --branch "$CURRENT_BRANCH" --limit 1
+# OR: Check manually after waiting. Re-derive the branch name here rather than assuming
+# $CURRENT_BRANCH from the Protected-Branch Guard above is still set — it's a plain shell
+# variable from a separate command invocation, likely a separate shell process by the time
+# this runs, so it will NOT reliably persist across the push/wait gap. Re-deriving is cheap
+# (unlike DIRECTIONAL_COUNT, this needs no stateful computation) and the same detached-HEAD
+# empty-value gap applies here, so the guard is repeated rather than assumed already handled:
+CURRENT_BRANCH=$(git branch --show-current)
+if [[ -z "$CURRENT_BRANCH" ]]; then
+  echo "⚠️  Detached HEAD — not on any branch, can't look up its CI runs." >&2
+else
+  gh run list --branch "$CURRENT_BRANCH" --limit 1
+fi
 ```
 
 ### Check for New Copilot Comments (Update Cache)

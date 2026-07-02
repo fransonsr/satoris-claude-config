@@ -19,7 +19,7 @@ because it reads entire files, not just diffs. Fixed all of it in one batch:
   generic `Co-Authored-By: Claude` — model names go stale, this shouldn't need updating again.
 - **SKILL.md/README.md**: renamed the duplicate "Step 3.5" (adversarial review gate → "Step
   2.5") and duplicate "Step 4" (execute fixes → "Step 4.1") headings; fixed the Workflow
-  Overview's wrong numbers (1.5→1.6, 3.5→3.7 for pre-fix sweep, "return to step 5"→"step 4");
+  Overview's wrong numbers (1.5→1.6, 3.5→3.7 for pre-fix sweep, "return to step 5"→"step 4.1");
   added the missing DIRECTIONAL_COUNT derivation (persist Step 2's triage to `triage.json`,
   compute the count from it after Step 4.1 — this was referenced at Step 7/8 but never
   actually shown); gave the Step 8 re-review counter a real persistence file

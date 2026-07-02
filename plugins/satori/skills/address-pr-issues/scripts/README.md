@@ -208,21 +208,15 @@ Generate structured commit message with round tracking. `directional_count` (def
 persisted into `fixes.json` so Step 8 can read back how many directional-classified fixes
 landed this round without depending on conversation memory.
 
-**Example** (see `commit-pr-fixes.sh` itself for the exact commit-message template — not
-reproduced verbatim here, so this example can't drift from the script per Class 11):
+**Example** (see `commit-pr-fixes.sh` itself for the exact commit-message template and
+confirmation/tracking output — not reproduced verbatim here, so this example can't drift from
+the script per Class 11):
 ```bash
 ./commit-pr-fixes.sh 68 2
-# Output:
-# Commit message:
-# ---
-# <the script's commit message, with round number filled in>
-# ---
-#
-# Create commit with this message? (y/n) y
-# ✅ Commit created
-# ✅ Fix tracking updated
-# ✅ Recorded 2 directional fix(es) — Step 8 should re-request Copilot review
 ```
+Prints the generated commit message, prompts for confirmation, creates the commit, updates
+`fixes.json`, and — when `directional_count > 0` — a line describing what Step 8 will do with
+that count (re-request, skip because already re-requested this round, or escalate to `/plan`).
 
 ## Library Functions
 

@@ -387,21 +387,29 @@ Apply this workflow whenever editing `plugins/satori/skills/**`.
 `~/.claude/plugins/cache/satoris-claude-config/satori/<version>/`, keyed by the version string in
 `plugin.json`/`marketplace.json`. Editing skill content alone does **not** invalidate this cache —
 confirmed empirically: the cache sat 5 days stale despite several intervening commits. Before
-running a skill you just edited, bump the version in both files and push to origin (or run
-`/reload-plugins` + `/reload-skills`, though a plain content push with no version bump has been
-observed to leave `reload-skills` reporting no changes).
+running a skill you just edited via `Skill()`/`/slash-command`, bump the version in both files and
+push to origin (or run `/reload-plugins` + `/reload-skills`, though a plain content push with no
+version bump has been observed to leave `reload-skills` reporting no changes). Note this only
+matters when a **skill invocation** will read the changed content — a session doing several
+iterative fix-and-verify rounds by editing files directly and running `/adversarial-review`'s
+own multi-agent sweep (which reads files straight off disk, not through a cached `Skill()` copy)
+can reasonably batch the version bump once at the end of the session, right before the skill is
+next invoked by name.
 
 **2. Preserve a diffable baseline while still pushing.** `/adversarial-review`'s diff step always
 runs `git diff origin/$BASE_BRANCH...$CURRENT_BRANCH` — this requires a real
 remote-tracking branch, not a bare commit SHA or a local-only tag. To snapshot "before this
 session's changes" while remaining free to push interim work to `master`:
 ```bash
-git tag pre-review-baseline-<date> origin/master
-git branch pre-review-baseline pre-review-baseline-<date>
-git push origin pre-review-baseline-<date> pre-review-baseline
+git tag <any-scratch-name> origin/master
+git branch pre-review-baseline <any-scratch-name>
+git push origin <any-scratch-name> pre-review-baseline
 ```
-Then pass `--base-branch pre-review-baseline` to `/adversarial-review` / `/pre-pr-audit` for every
-round in the session, so all rounds diff against the same fixed point.
+Only the **branch name** (`pre-review-baseline` above) matters — it's what gets passed to
+`--base-branch`. The tag is a disposable pointer used once to create that branch; its name is
+not load-bearing and does not need to follow any particular convention. Then pass
+`--base-branch pre-review-baseline` to `/adversarial-review` / `/pre-pr-audit` for every round in
+the session, so all rounds diff against the same fixed point.
 
 **3. Expect the first run on a given skill to surface pre-existing debt, not just diff-caused
 issues.** `/pre-pr-audit`'s whole-document coherence walk (Steps 4.8/4.9) reads entire files, not
