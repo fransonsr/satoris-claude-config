@@ -195,8 +195,10 @@ Collect all agent outputs. Deduplicate findings by `(file, line_range)`:
 
 Then compute this round's **cross-file yield**: the count of `cross_file` findings that do not
 match (by `(file, line_range)`) any finding surfaced in any prior round of this review run.
-`local` findings never count toward yield. Record the yield with the round's results — Phase E
-uses it as the termination signal.
+Maintain a running record of every `(file, line_range)` and `blast_radius` seen across all
+rounds this review run — yield compares against that full history, not just the immediately
+preceding round. `local` findings never count toward yield. Record the yield with the round's
+results — Phase E uses it as the termination signal.
 
 ### Phase C — Review-Pause (human decision)
 
@@ -239,6 +241,9 @@ Output for human disposition and move on.
 **Terminate as CONVERGED when:**
 - Cross-file yield == 0 — no new `cross_file` finding this round, even if `local` findings remain open
 
+Otherwise (cross-file yield > 0 and the round limit has not yet been reached), continue to the
+next round.
+
 A zero-yield round is one sample from a non-deterministic reviewer, not a proof of correctness.
 Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
 findings and accepted-risk items" — never as "clean" or unconditionally "safe".
@@ -246,6 +251,9 @@ findings and accepted-risk items" — never as "clean" or unconditionally "safe"
 **If cross-file yield > 0 when the round limit (`--rounds`) is reached**, do NOT terminate
 quietly and do NOT recommend another broad round — the generic per-class sweep has stopped paying
 off. Signal **"NOT converged — escalate to targeted deep-dive on <theme>"**:
+- Present this as a recommendation to the user and wait for their go-ahead — do not spawn the
+  deep-dive agent unilaterally; this escalation gets the same human-in-the-loop bar Phase C
+  applies to fixes
 - Name the recurring theme or cluster in the still-yielding `cross_file` findings
 - Recommend spawning **one narrowly-scoped deep-dive agent** aimed at that theme (e.g., "trace
   every caller of `parseX` across the module", "audit every site that restates rule Y") — or hand
@@ -294,7 +302,9 @@ Return to the calling session (or present to the user if run standalone):
 |--------------|----------|-------|------|
 | cross_file | | | |
 | local | | | |
-<Open local findings are listed here for human disposition — they did not block termination.>
+<Open = not fixed in code, regardless of why (accepted risk, false positive, contradicts
+design, or still pending) — Findings = Fixed + Open by construction. Open local findings are
+listed here for human disposition — they did not block termination.>
 
 ### Known Limitations (for PR Description)
 <List of findings classified as "accepted risk" — these MUST appear in the PR description.>

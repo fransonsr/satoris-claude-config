@@ -1491,8 +1491,10 @@ Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class i
 ### Convergence Criterion
 
 Convergence is measured by cross-file yield, not zero findings. A round's yield is the count
-of NEW cross-file findings — issues that span files, affect callsites outside the diff, or
-restate a rule defined elsewhere (`/adversarial-review`'s `cross_file` blast radius). Stop
+of NEW cross-file findings — see `/adversarial-review`'s `blast_radius` schema for the exact
+local-vs-cross_file criteria. Classifying a live Copilot thread this way is a manual judgment
+call, not a computed field — `/adversarial-review` tags blast radius on its own agents'
+findings automatically; here, you apply the same definition by eye to each new thread. Stop
 iterating when yield hits zero; local findings (one file or callsite, diagnosable live if
 they ever fired) get fixed or documented but do not block convergence. Supporting signals
 that yield has dried up:

@@ -641,7 +641,7 @@ The `/adversarial-review` skill handles the full protocol:
 - Per-round review-pause (Step 5 below receives findings from each round)
 - Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/restore)
 - Up to 3 rounds, terminating when a round yields zero new cross-file findings (local findings are reported for disposition but do not block convergence)
-- Escalation at the round cap: if cross-file findings are still surfacing after round 3, the skill recommends a targeted deep-dive agent scoped to the recurring theme
+- Escalation at the round cap: if cross-file findings are still surfacing after round 3, the skill recommends a targeted deep-dive agent scoped to the recurring theme (or surfaces the theme to you for a judgment call)
 
 The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), known-limitations list (accepted-risk items) for the PR description, a residual-risk statement (never a "clean" claim — a zero-finding round is one sample, not proof), and any escalation recommendation.
 
@@ -985,7 +985,8 @@ After all checks complete:
 - Rounds completed: R / 3
 - Findings: N found, M fixed, K accepted-risk, J false-positives
 - By class: [State Machine: N1, Operator Observability: N2, ...]
-- Clean: ✅ all classes / ⚠️ N findings remain
+- By blast radius: cross_file N1, local N2
+- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme>
 
 **Known Limitations** (for PR description):
 > _(List findings classified as "accepted risk" — must appear verbatim in the PR description

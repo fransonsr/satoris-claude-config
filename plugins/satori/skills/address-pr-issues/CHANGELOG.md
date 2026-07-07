@@ -1,5 +1,19 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-07-07 - v1.7.3: Cross-File Yield Convergence Vocabulary
+
+**Context**: `/adversarial-review` replaced its boolean `is_clean` termination gate with a
+`blast_radius` (local vs cross_file) tag per finding and a "cross-file yield" convergence
+signal — local findings no longer force another round, and hitting the round cap with
+cross-file findings still open now escalates to a targeted deep-dive instead of a vague
+"PR too large" signal. Realigned this skill's Convergence Criterion, Pattern Class
+Recurrence, and Numeric /plan Escalation sections to the same vocabulary: Copilot's own
+review behavior has no principled convergence point either (it scans until it finds enough
+issues, not until impact is exhausted), so a Copilot round finding nothing is one noisy
+sample, not proof the PR is done — the rewritten Convergence Criterion says so explicitly.
+
+See commit `d4e8401` for the vocabulary realignment across all three satori review skills.
+
 ## 2026-07-01 - v1.7.2: Adversarial-Review Convergence Rounds 2-6
 
 **Context**: Per the dogfooding discipline (`~/.claude/CLAUDE.md`'s dogfooding section) of
