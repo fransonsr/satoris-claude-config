@@ -161,6 +161,8 @@ classes are added, renamed, or reordered in the patterns file; names are the sta
   "findings": [
     {
       "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "blast_radius": "local|cross_file",
+      "blast_radius_justification": "grepped for other callers of parseX — none found",
       "file": "path/to/file.py:lineNumber",
       "pattern_class": "State Machine / Control Flow Logic",
       "description": "...",
@@ -174,12 +176,27 @@ classes are added, renamed, or reordered in the patterns file; names are the sta
 
 Return `"is_clean": true` (with an empty `findings` array) if the class is fully clear.
 
+Classify `blast_radius` structurally, never by severity or gut feel: `local` = confined to one
+file/callsite, something the current session could diagnose and fix in-context if it ever
+manifested; `cross_file` = spans multiple files, affects call sites outside the diff, or restates
+a rule defined elsewhere (e.g., a doc restating a code constant). `blast_radius_justification`
+must cite structural evidence the agent actually checked — a grep for other callers, the other
+file that restates the rule; a `local` tag with no evidence is invalid, and `local` is never a
+reason to down-rank a real bug.
+
 ### Phase B — Synthesize
 
 Collect all agent outputs. Deduplicate findings by `(file, line_range)`:
 - When two agents flag the same location, keep the **more specific** recommendation
 - Record **both** `pattern_class` values in the merged finding (a finding can belong to two classes)
+- When merged findings disagree on `blast_radius`, keep `cross_file` (the wider radius wins) and
+  carry its justification into the merged finding
 - Sort remaining findings: CRITICAL → HIGH → MEDIUM → LOW
+
+Then compute this round's **cross-file yield**: the count of `cross_file` findings that do not
+match (by `(file, line_range)`) any finding surfaced in any prior round of this review run.
+`local` findings never count toward yield. Record the yield with the round's results — Phase E
+uses it as the termination signal.
 
 ### Phase C — Review-Pause (human decision)
 
@@ -215,13 +232,27 @@ before proceeding — do not continue to the next round with a red test suite.
 The next round's Phase A agents will self-diff the now-modified working tree when they start —
 the orchestrator does not need to re-read or re-pass file contents between rounds.
 
-**Terminate the loop when:**
-- All agents returned `"is_clean": true` and the synthesizer finds no new findings, OR
-- The round limit (`--rounds`) has been reached
+Termination is driven by the round's **cross-file yield** (computed in Phase B), not by
+`is_clean` flags. Open `local` findings never force another round — report them in the Summary
+Output for human disposition and move on.
 
-**If not clean at the round limit**, signal:
-- The PR may be too large — consider splitting it
-- Or a new failure mode has appeared that doesn't fit any existing class — prompt the user to add a classification to `~/.claude/copilot-review-patterns.md` and refresh the bundled `references/` copy
+**Terminate as CONVERGED when:**
+- Cross-file yield == 0 — no new `cross_file` finding this round, even if `local` findings remain open
+
+A zero-yield round is one sample from a non-deterministic reviewer, not a proof of correctness.
+Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
+findings and accepted-risk items" — never as "clean" or unconditionally "safe".
+
+**If cross-file yield > 0 when the round limit (`--rounds`) is reached**, do NOT terminate
+quietly and do NOT recommend another broad round — the generic per-class sweep has stopped paying
+off. Signal **"NOT converged — escalate to targeted deep-dive on <theme>"**:
+- Name the recurring theme or cluster in the still-yielding `cross_file` findings
+- Recommend spawning **one narrowly-scoped deep-dive agent** aimed at that theme (e.g., "trace
+  every caller of `parseX` across the module", "audit every site that restates rule Y") — or hand
+  the theme to the user for a judgment call
+- Possible underlying causes, mentioned only after the escalation: the PR may be too large
+  (consider splitting it), or a new failure mode has appeared that doesn't fit any existing
+  class — draft it per the Pattern-File Update Hook below
 
 ---
 
@@ -250,20 +281,27 @@ Return to the calling session (or present to the user if run standalone):
 **Rounds completed**: <N> / <max>
 
 ### Per-Round Breakdown
-| Round | Found | Fixed | Known Limitations | False Positives |
-|-------|-------|-------|-------------------|-----------------|
+| Round | Found | Fixed | Known Limitations | False Positives | Cross-File Yield |
+|-------|-------|-------|-------------------|-----------------|------------------|
 
 ### By Pattern Class
 | Class | Findings | Fixed |
 |-------|----------|-------|
 ...
 
+### By Blast Radius
+| Blast Radius | Findings | Fixed | Open |
+|--------------|----------|-------|------|
+| cross_file | | | |
+| local | | | |
+<Open local findings are listed here for human disposition — they did not block termination.>
+
 ### Known Limitations (for PR Description)
 <List of findings classified as "accepted risk" — these MUST appear in the PR description.>
 
 ### Outcome
-✅ All classes clean — safe to open PR
-⚠️  N findings remain after N rounds — see Known Limitations above
+✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above
+⚠️  NOT converged — cross-file yield N at round limit; escalate to targeted deep-dive on <theme> (see Phase E)
 ❌  Test failures after fix application — do not push until resolved
 ```
 
@@ -281,3 +319,7 @@ Return to the calling session (or present to the user if run standalone):
 - **Known limitations are public commitments**: Accepted-risk findings in the PR description
   are explicit design acknowledgments, not silent omissions. An operator reading the PR can
   understand what was left in and why.
+- **Local findings don't block termination**: A `local` finding is confined to one file or
+  callsite — if it ever manifests, the session can diagnose and fix it reactively in-context,
+  which costs less than another full broad round. `cross_file` findings are the ones a session
+  cannot cheaply recover from, so only they drive the yield signal and force more rounds.

@@ -1481,23 +1481,34 @@ you already fixed that gap elsewhere.
 5. **Run Step 4.5 post-fix sweep** to confirm exhaustion before pushing.
 6. **State the outcome**: "Pattern class exhausted — N total sites fixed across M rounds."
 
+This widen-and-exhaust response is what `/adversarial-review` calls a **targeted deep-dive**:
+a sweep scoped to one known theme, not a broad re-run of all review classes.
+
 **Example**: Copilot flags `git rev-list` failure path missing stdout fallback (Round 3),
 after you already fixed `git fetch` in Round 1. Widen from PR-changed-files to full file.
 Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class is closed.
 
 ### Convergence Criterion
 
-Stop iterating when a round produces only issues you are choosing not to fix. Signs that
-the PR has converged:
+Convergence is measured by cross-file yield, not zero findings. A round's yield is the count
+of NEW cross-file findings — issues that span files, affect callsites outside the diff, or
+restate a rule defined elsewhere (`/adversarial-review`'s `cross_file` blast radius). Stop
+iterating when yield hits zero; local findings (one file or callsite, diagnosable live if
+they ever fired) get fixed or documented but do not block convergence. Supporting signals
+that yield has dried up:
 
 - Every new thread is style-only, doc-wording, or a design choice you disagree with.
 - No new bug classes have appeared since the last two rounds.
 - Your Step 2.5 gate would rate every new thread as "skip adversarial review."
 - The thread severity trend is declining (Critical/High → Medium → Low → doc-only).
 
-When converged: document won't-fix rationale on each remaining thread, resolve all threads,
-and present the PR to the user as ready for merge review. Do not keep iterating hoping
-Copilot will eventually stop — the convergence criterion ends the loop, not a round cap.
+A round where Copilot finds nothing is one sample from a noisy process — Copilot scans until
+it has found enough issues, not until impact is exhausted — so treat it as evidence, not
+proof. When converged: document won't-fix rationale on each remaining thread, resolve all
+threads, and present the PR to the user as ready for merge review, stating residual risk
+("no new cross-file findings in the last N rounds") rather than certainty. Do not keep
+iterating hoping Copilot will eventually stop — the convergence criterion ends the loop,
+not a round cap.
 
 ### Numeric /plan Escalation (NEW)
 
@@ -1509,7 +1520,10 @@ recommend a `/plan` cycle instead: draft the actual `/plan` prompt — not a pla
 this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check gaps in
 the export module"), with thread IDs and affected scope where available. Present it to the user
 and wait for their response before continuing. This turns "just keep fixing what Copilot flags"
-into a deliberate checkpoint once a PR has clearly outgrown reactive rounds.
+into a deliberate checkpoint once a PR has clearly outgrown reactive rounds. A recurring theme
+across rounds is exactly what the Convergence Criterion's cross-file yield measures — this
+escalation is the same move as `/adversarial-review`'s round-cap escalation, applied to live
+Copilot rounds instead of its internal review rounds.
 
 ## SonarQube Issue Resolution
 
