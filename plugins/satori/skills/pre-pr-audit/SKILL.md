@@ -643,7 +643,7 @@ The `/adversarial-review` skill handles the full protocol:
 - Up to 3 rounds, terminating when a round yields zero new cross-file findings (local findings are reported for disposition but do not block convergence)
 - Escalation at the round cap: if cross-file findings are still surfacing after round 3, the skill recommends a targeted deep-dive agent scoped to the recurring theme (or surfaces the theme to you for a judgment call)
 
-The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), known-limitations list (accepted-risk items) for the PR description, a residual-risk statement (never a "clean" claim — a zero-finding round is one sample, not proof), and any escalation recommendation.
+The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), known-limitations list (accepted-risk items) for the PR description, a residual-risk statement (never a "clean" claim — a zero-yield round is one sample, not proof), and any escalation recommendation.
 
 ## Step 4.8: Spec-Completeness Review (Conditional: procedural spec/doc files in diff)
 

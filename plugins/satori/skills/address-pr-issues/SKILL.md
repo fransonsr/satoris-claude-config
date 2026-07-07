@@ -1508,7 +1508,7 @@ A round where Copilot finds nothing is one sample from a noisy process — Copil
 it has found enough issues, not until impact is exhausted — so treat it as evidence, not
 proof. When converged: document won't-fix rationale on each remaining thread, resolve all
 threads, and present the PR to the user as ready for merge review, stating residual risk
-("no new cross-file findings in the last N rounds") rather than certainty. Do not keep
+("no new cross-file findings this round") rather than certainty. Do not keep
 iterating hoping Copilot will eventually stop — the convergence criterion ends the loop,
 not a round cap.
 

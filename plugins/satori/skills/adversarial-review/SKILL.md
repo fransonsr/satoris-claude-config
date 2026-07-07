@@ -193,12 +193,12 @@ Collect all agent outputs. Deduplicate findings by `(file, line_range)`:
   carry its justification into the merged finding
 - Sort remaining findings: CRITICAL → HIGH → MEDIUM → LOW
 
-Then compute this round's **cross-file yield**: the count of `cross_file` findings that do not
-match (by `(file, line_range)`) any finding surfaced in any prior round of this review run.
-Maintain a running record of every `(file, line_range)` and `blast_radius` seen across all
-rounds this review run — yield compares against that full history, not just the immediately
-preceding round. `local` findings never count toward yield. Record the yield with the round's
-results — Phase E uses it as the termination signal.
+Then compute this round's **provisional cross-file yield**: the count of `cross_file` findings
+that do not match (by `(file, line_range)`) any finding surfaced in any prior round of this
+review run. Maintain a running record of every `(file, line_range)` and `blast_radius` seen
+across all rounds this review run — yield compares against that full history, not just the
+immediately preceding round. `local` findings never count toward yield. This count is
+provisional — Phase C's human disposition can still remove findings from it (see Phase C).
 
 ### Phase C — Review-Pause (human decision)
 
@@ -210,6 +210,13 @@ Present the synthesized findings to the calling session. For each finding, the u
 | **Contradicts design** | Override — no fix; do not flag as "missed" |
 | **Accepted risk** | Record as a known limitation; include in the Summary Output's Known Limitations section and PR description. Do NOT silently drop — the absence of a finding in the summary is a claim that it was addressed |
 | **False positive** | Skip; note the reason in the round summary |
+
+**Finalize the round's cross-file yield** after disposition: subtract any `cross_file` finding
+dispositioned as **False positive** or **Contradicts design** from Phase B's provisional count
+— those are not confirmed bugs, so they should not read as evidence the sweep is still finding
+real issues. **Fix** and **Accepted risk** dispositions both count (an accepted-risk finding is
+a real, confirmed issue the human chose not to fix yet). This finalized number is what Phase E
+reads.
 
 ### Phase D — Apply Fixes
 
@@ -234,9 +241,9 @@ before proceeding — do not continue to the next round with a red test suite.
 The next round's Phase A agents will self-diff the now-modified working tree when they start —
 the orchestrator does not need to re-read or re-pass file contents between rounds.
 
-Termination is driven by the round's **cross-file yield** (computed in Phase B), not by
-`is_clean` flags. Open `local` findings never force another round — report them in the Summary
-Output for human disposition and move on.
+Termination is driven by the round's **finalized cross-file yield** (provisional in Phase B,
+finalized in Phase C), not by `is_clean` flags. Open `local` findings never force another round
+— report them in the Summary Output for human disposition and move on.
 
 **Terminate as CONVERGED when:**
 - Cross-file yield == 0 — no new `cross_file` finding this round, even if `local` findings remain open
@@ -248,9 +255,10 @@ A zero-yield round is one sample from a non-deterministic reviewer, not a proof 
 Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
 findings and accepted-risk items" — never as "clean" or unconditionally "safe".
 
-**If cross-file yield > 0 when the round limit (`--rounds`) is reached**, do NOT terminate
-quietly and do NOT recommend another broad round — the generic per-class sweep has stopped paying
-off. Signal **"NOT converged — escalate to targeted deep-dive on <theme>"**:
+**If cross-file yield > 0 when the round limit (`--rounds`) is reached AND more than one round
+has actually run**, do NOT terminate quietly and do NOT recommend another broad round — the
+generic per-class sweep has stopped paying off. Signal **"NOT converged — escalate to targeted
+deep-dive on <theme>"**:
 - Present this as a recommendation to the user and wait for their go-ahead — do not spawn the
   deep-dive agent unilaterally; this escalation gets the same human-in-the-loop bar Phase C
   applies to fixes
@@ -261,6 +269,13 @@ off. Signal **"NOT converged — escalate to targeted deep-dive on <theme>"**:
 - Possible underlying causes, mentioned only after the escalation: the PR may be too large
   (consider splitting it), or a new failure mode has appeared that doesn't fit any existing
   class — draft it per the Pattern-File Update Hook below
+
+**If cross-file yield > 0 at the round limit but only one round ever ran** (e.g., a single-round
+caller like `/address-pr-issues`'s `--rounds 1` invocation), there is no multi-round trend to
+act on — a single round finding and fixing real cross-file issues is normal, not a failure
+signal. Report **"Found and fixed N confirmed cross-file findings this round; convergence
+unconfirmed — a single round cannot show yield trending to zero"** instead of the deep-dive
+escalation.
 
 ---
 
@@ -311,7 +326,8 @@ listed here for human disposition — they did not block termination.>
 
 ### Outcome
 ✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above
-⚠️  NOT converged — cross-file yield N at round limit; escalate to targeted deep-dive on <theme> (see Phase E)
+⚠️  NOT converged — cross-file yield N at round limit after M>1 rounds; escalate to targeted deep-dive on <theme> (see Phase E)
+🔵 Single round only — found & fixed N confirmed cross-file findings; convergence unconfirmed (see Phase E)
 ❌  Test failures after fix application — do not push until resolved
 ```
 
