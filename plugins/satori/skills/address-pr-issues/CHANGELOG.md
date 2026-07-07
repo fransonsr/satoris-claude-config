@@ -12,7 +12,9 @@ review behavior has no principled convergence point either (it scans until it fi
 issues, not until impact is exhausted), so a Copilot round finding nothing is one noisy
 sample, not proof the PR is done — the rewritten Convergence Criterion says so explicitly.
 
-See commit `d4e8401` for the vocabulary realignment across all three satori review skills.
+See commit `d4e8401` for the vocabulary realignment across all three satori review skills, and
+`d6ca3a6` for round-1 dogfood-review fixes (a cascading miss in pre-pr-audit's Step 8 summary
+template, a human-approval gap in the escalation path, and this changelog entry itself).
 
 ## 2026-07-01 - v1.7.2: Adversarial-Review Convergence Rounds 2-6
 
