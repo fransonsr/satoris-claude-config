@@ -215,20 +215,23 @@ const FINDING_SCHEMA = {
 const { classes, priorFindings = [] } = typeof args === 'string' ? JSON.parse(args) : args
 
 phase('Review')
-// agent() resolves to null on a terminal failure (exhausted retries) — it does not reject/throw,
-// so `!results[i]` below is a safe falsy check, not an unhandled-rejection risk.
-const results = await parallel(classes.map(c => () =>
-  agent(c.prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
-    ...(c.model ? { model: c.model } : {}) })))
+// agent() resolves to null on a terminal failure (exhausted retries) — it does not reject/throw.
+// Pair each result with its class name explicitly rather than relying on parallel() preserving
+// input order — correct either way, and removes an assumption this file can't itself verify.
+const responses = await parallel(classes.map(c => async () => ({
+  name: c.name,
+  result: await agent(c.prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
+    ...(c.model ? { model: c.model } : {}) }),
+})))
 
-const missingClasses = classes.map(c => c.name).filter((_, i) => !results[i])
+const missingClasses = responses.filter(r => !r.result).map(r => r.name)
 if (missingClasses.length) {
   log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.join(', ')}`)
 }
 
 phase('Synthesize')
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
-const raw = results.filter(Boolean).flatMap(r => r.findings)
+const raw = responses.filter(r => r.result).flatMap(r => r.result.findings)
 
 // Shared by every free-text field below so "dedupe against the full accumulated set, not just
 // the last value" is implemented once — not re-derived (and re-forgotten) per field.
@@ -273,13 +276,17 @@ return { findings, provisionalYield, missingClasses }
 Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS } })`.
 Dedup keys on the `file` string (already `path:line` or `path:startLine-endLine`, as agents
 report it). On a collision: `severity` escalates to whichever is worse; `blast_radius` escalates
-to `cross_file` if either finding says so (wider radius wins); and `description`,
-`blast_radius_justification`, and `recommendation` all **list distinct values side by side
-(`| ALSO:`) rather than guessing which is "more specific"** — the same `mergeStrings` rule
-applies to all three so a fix for one can't leave the others behind. `pattern_class` is replaced
-by a deduped `pattern_classes` array (every class that flagged this location; downstream
-consumers, including the Summary Output's "By Pattern Class" table, read the plural field). This
-is all deterministic JS, not an LLM judgment call — leave the actual disposition to Phase C.
+to `cross_file` if either finding says so (wider radius wins); `description` and `recommendation`
+**always list distinct values side by side (`| ALSO:`) rather than guessing which is "more
+specific"** via the shared `mergeStrings` helper, so a fix for one can't leave the other behind.
+`blast_radius_justification` uses the same helper, but only once *both* sides already agree the
+location is `cross_file` — that reasoning is worth preserving in full since it can gate
+convergence. A `local`+`local` collision keeps whichever justification was recorded first rather
+than merging both: a `local` verdict never blocks anything, so its reasoning isn't
+decision-critical the way a `cross_file` verdict's is. `pattern_class` is replaced by a deduped
+`pattern_classes` array (every class that flagged this location; downstream consumers, including
+the Summary Output's "By Pattern Class" table, read the plural field). This is all deterministic
+JS, not an LLM judgment call — leave the actual disposition to Phase C.
 
 **Yield only excludes a *prior cross-file* sighting at the same location.** A location first
 seen as `local` (and dismissed) that a later round's different lens re-flags as `cross_file` is
@@ -372,13 +379,20 @@ converged").
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
      passing the same `PRIOR_FINDINGS` used this round — the script needs both fields). **This
      retry does not count as an additional round** for the ">1 round has actually run" test
-     below — it completes this round's incomplete data rather than starting a fresh sweep. Fold
-     its findings into this same round's finalized yield and update this round's Per-Round
-     Breakdown row in place (don't add a new row) — including Phase D for any **Fix**
-     disposition the retry produces; a retry-recovered finding is not applied to code until it
-     goes through Phase D like any other. If that retry still comes back missing, retry at most
-     once more; if that second retry also comes back missing, force **Accept** or **Abandon** —
-     don't loop indefinitely on a class that keeps failing
+     below — it completes this round's incomplete data rather than starting a fresh sweep. Treat
+     the retry's raw findings exactly like a late-arriving Phase A/B response: merge them into
+     this round's existing `findings` via the same dedup logic (so a retry-recovered finding
+     colliding with an already-flagged location correctly escalates severity/blast_radius and
+     unions `pattern_classes`/`cascade_siblings`, instead of becoming a duplicate row), send the
+     merged result back through **Phase C** for disposition like any other finding, then
+     recompute finalized yield and update this round's Per-Round Breakdown row in place (don't
+     add a new row) — a retry-recovered finding is not applied to code until an approved **Fix**
+     disposition goes through Phase D like any other, and append it to `PRIOR_FINDINGS` the same
+     way Phase C does. If the retry closes the gap cleanly (`missingClasses` now empty, yield
+     still 0), **re-run the CONVERGED check** — a fully successful retry can promote the round's
+     verdict to CONVERGED rather than leaving it stuck on INCOMPLETE. If that retry still comes
+     back missing, retry at most once more; if that second retry also comes back missing, force
+     **Accept** or **Abandon** — don't loop indefinitely on a class that keeps failing
    - Accept the gap as a known limitation. A missing class produced no finding, so don't force
      it into the finding shape (there's no real `severity` or `blast_radius` to report) —
      record a distinct coverage-gap entry instead: `{type: 'coverage_gap', class: '<class
@@ -389,12 +403,15 @@ converged").
    - **Abandon the round**: by the time Phase E is reached, Phase D has already applied any
      approved fixes from this round's Phase C — those are independent, confirmed fixes and stay
      in the tree; "abandon" does not undo them. It means: don't retry the missing class, record
-     it as a coverage-gap entry (same shape as Accept, above), and don't start another round —
-     hand the review back to the user as unresolved rather than looping further.
+     it as a coverage-gap entry (same shape as Accept, above), skip item 2 below entirely (the
+     human has already asked to stop; don't also compute or show a deep-dive escalation), and
+     don't start another round — hand the review back to the user as unresolved rather than
+     looping further.
 2. **If cross-file yield > 0** (check this regardless of whether `missingClasses` is also
-   non-empty — do not skip it just because item 1 already fired), see the NOT-converged /
-   single-round-only outcomes below. Both can fire together; see the Summary Output's combined
-   badges.
+   non-empty — do not skip it just because item 1 already fired, *unless* item 1's outcome was
+   Abandon, which skips this item entirely — see above), see the NOT-converged / single-round-only
+   outcomes below. Both can fire together with INCOMPLETE's Retry or Accept outcomes; see the
+   Summary Output's combined badges.
 
 A zero-yield round is one sample from a non-deterministic reviewer, not a proof of correctness.
 Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
@@ -476,7 +493,8 @@ design, or still pending) — Findings = Fixed + Open by construction. Open loca
 listed here for human disposition — they did not block termination.>
 
 ### Known Limitations (for PR Description)
-<List of findings classified as "accepted risk" — these MUST appear in the PR description.>
+<List of findings classified as "accepted risk", plus any `coverage_gap` entries from Phase E
+(visually distinct from the accepted-risk findings) — both MUST appear in the PR description.>
 
 ### Outcome
 ✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above

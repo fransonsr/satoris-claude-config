@@ -987,11 +987,12 @@ After all checks complete:
 - Findings: N found, M fixed, K accepted-risk, J false-positives
 - By class: [State Machine: N1, Operator Observability: N2, ...]
 - By blast radius: cross_file N1, local N2
-- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list)
+- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds
 
 **Known Limitations** (for PR description):
-> _(List findings classified as "accepted risk" — must appear verbatim in the PR description
-> so reviewers understand what was deliberately left in and why.)_
+> _(List findings classified as "accepted risk", plus any `coverage_gap` entries from a
+> Phase E Accept/Abandon decision (visually distinct) — all MUST appear verbatim in the PR
+> description so reviewers understand what was deliberately left in and why.)_
 
 **SonarQube**: Quality Gate {PASSED|FAILED}
 - New issues: N

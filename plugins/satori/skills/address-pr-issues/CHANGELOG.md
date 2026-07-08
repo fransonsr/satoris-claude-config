@@ -17,10 +17,19 @@ without it" instead, a materially different instruction, fixed in a follow-up ro
 
 See commits `1f56d89` (Workflow-ification), `ce0e2d6` (round-1 dogfood fixes), `36aa744`
 (round-2 dogfood fixes), `50db93e` (round-3 dogfood fixes — Phase D routing for retried
-findings, a stale dedup-key phrase in copilot-review-patterns.md, merge-loop dedup gaps), and
-this round's commit (round-4 dogfood fixes — severity/justification reconciliation on merge,
+findings, a stale dedup-key phrase in copilot-review-patterns.md, merge-loop dedup gaps),
+`3da773b` (round-4 dogfood fixes — severity/justification reconciliation on merge,
 cascade_siblings reaching Phase D, PRIOR_FINDINGS tracking every disposition, INCOMPLETE and
-NOT-converged evaluated independently, Abandon given a defined outcome) for the full change.
+NOT-converged evaluated independently, Abandon given a defined outcome), `27edc33` (round-5
+comprehensive audit — a CRITICAL bug where PRIOR_FINDINGS excluded a location from yield
+regardless of blast_radius rather than only on a prior cross_file sighting, a shared
+`mergeStrings()` helper replacing four inconsistent ad-hoc merge implementations, the
+missing-class record redefined as its own `coverage_gap` type instead of a fake finding, and
+the Abandon/Phase-D-ordering contradiction fixed), and this round's commit (round-6 dogfood
+fixes — Known Limitations legends updated for coverage_gap entries, pre-pr-audit's missing
+ABANDONED badge, the retry path routed through Phase C/PRIOR_FINDINGS/a CONVERGED re-check,
+Abandon short-circuiting the yield check, and a `parallel()` ordering assumption removed) for
+the full change.
 
 ## 2026-07-07 - v1.7.3: Cross-File Yield Convergence Vocabulary
 
