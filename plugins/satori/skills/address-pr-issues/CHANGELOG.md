@@ -1,5 +1,23 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-07-08 - v1.7.4: Workflow-ified Adversarial Review, INCOMPLETE Outcome
+
+**Context**: `/adversarial-review`'s per-class review agents were spawned via the ad-hoc
+mailbox/teammate system, which had no barrier — agents could go idle for up to an hour without
+delivering a result, or never deliver at all, and nothing stopped the orchestrating session from
+declaring a round "converged" on partial results. Phase A/B now runs as a single `Workflow` call
+per round: `parallel()` is a hard barrier that can't advance to synthesis until every class
+resolves or is retried to a terminal `null`, and `schema`-forced structured output replaces
+asking agents to comply with a "return ONLY this JSON" text instruction. A class that never
+returns a result is tracked as `missingClasses` and surfaces as a new INCOMPLETE outcome — since
+this skill always invokes with `--rounds 1`, round 1 is always the round cap, so INCOMPLETE fires
+immediately rather than waiting for a later round; the disposition options are retry, accept the
+gap as a known limitation, or **abandon the round** (this skill's Step 3.5 briefly said "proceed
+without it" instead, a materially different instruction, fixed in a follow-up round).
+
+See commits `1f56d89` (Workflow-ification), `ce0e2d6` (round-1 dogfood fixes), and this round's
+commit (round-2 dogfood fixes) for the full change.
+
 ## 2026-07-07 - v1.7.3: Cross-File Yield Convergence Vocabulary
 
 **Context**: `/adversarial-review` replaced its boolean `is_clean` termination gate with a

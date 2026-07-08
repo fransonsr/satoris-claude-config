@@ -215,6 +215,8 @@ const FINDING_SCHEMA = {
 const { classes, priorFindings = [] } = typeof args === 'string' ? JSON.parse(args) : args
 
 phase('Review')
+// agent() resolves to null on a terminal failure (exhausted retries) — it does not reject/throw,
+// so `!results[i]` below is a safe falsy check, not an unhandled-rejection risk.
 const results = await parallel(classes.map(c => () =>
   agent(c.prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
     ...(c.model ? { model: c.model } : {}) })))
@@ -240,6 +242,7 @@ for (const f of raw) {
   if (existing.recommendation !== f.recommendation) {
     existing.recommendation = `${existing.recommendation} | ALSO: ${f.recommendation}`
   }
+  existing.cascade_siblings = [...new Set([...(existing.cascade_siblings || []), ...(f.cascade_siblings || [])])]
 }
 const findings = [...merged.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
@@ -327,7 +330,11 @@ outcomes apply, in this order:
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
-     passing the same `PRIOR_FINDINGS` used this round — the script needs both fields)
+     passing the same `PRIOR_FINDINGS` used this round — the script needs both fields). This
+     retry is exempt from `--rounds` (it targets a coverage gap, not a fresh sweep) and its
+     result re-enters this same Phase C → Phase E evaluation. If the retry still comes back
+     missing, retry at most once more, then force **Accept** or **Abandon** — don't loop
+     indefinitely on a class that keeps failing
    - Accept the gap as a known limitation — a missing class has no `file`/`severity`/
      `recommendation` to reuse, so record it as `{file: '<class name> (unreviewed)', severity:
      'N/A', blast_radius: 'local', recommendation: 'retry in a future round'}` alongside the

@@ -637,7 +637,7 @@ Skill(adversarial-review, args="--rounds 3 --base-branch <BASE_BRANCH> --intent-
 The `/adversarial-review` skill handles the full protocol:
 - One review agent per pattern class (parallel, dynamic enumeration from the pattern file)
 - Cascade sweep within each class (every callsite, not just changed lines)
-- Synthesizer deduplication by (file, line_range) across classes
+- Synthesizer deduplication keyed on the `file` string (`path:line` or `path:startLine-endLine`) across classes — colliding recommendations are concatenated with "| ALSO:", not reduced to "the more specific one"
 - Per-round review-pause (Step 5 below receives findings from each round)
 - Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/restore)
 - Up to 3 rounds, terminating when a round yields zero new cross-file findings (local findings are reported for disposition but do not block convergence)
@@ -670,7 +670,7 @@ invocation is needed in Step 4.8. This separation is deliberate: priming one age
 patterns instead of reading naively), and adversarial-review's per-class parallel agents never see
 each other's findings, which preserves the walk's independence. Overlap between Pattern #9 findings
 (here) and Pattern #10 findings (Step 4.7) is expected; the adversarial-review synthesizer
-deduplicates by (file, line_range).
+deduplicates by the `file` string.
 
 Spawn a review agent with the full content of each changed spec/doc file and these five Pattern
 #9 checks:
