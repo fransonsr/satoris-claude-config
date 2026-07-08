@@ -620,6 +620,10 @@ for review-pause (Step 3's categorize-and-prioritize loop serves as the disposit
 applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, commit, stash,
 restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
 
+If a class's review agent never returns a result (a terminal error even after retries), the
+single round comes back INCOMPLETE rather than a clean pass — treat it the same as any other
+finding needing a decision: retry that class, accept the gap, or proceed without it.
+
 Use the returned findings to drive the implementation step (Step 4/4.1) and the
 commit-and-push step (Step 7).
 

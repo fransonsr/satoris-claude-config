@@ -92,7 +92,7 @@ git diff origin/$BASE_BRANCH...$CURRENT_BRANCH
 git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
   | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"
 
-# List changed doc files (for doc/spec lenses — see Phase A)
+# List changed doc files (for doc/spec lenses — see Setup Step 5)
 #   (1) doc files changed directly in the PR
 git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
   | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)"
@@ -106,24 +106,20 @@ git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
 
 Each agent runs the diff **once at the start of its review**, before applying its lens. An agent
 must not re-diff after Phase D fixes begin. Within a round the tree is frozen until Phase D, so
-every Phase A agent sees the same state — consistent across all agents in the round — without
+every review agent sees the same state — consistent across all agents in the round — without
 the orchestrator needing to hold or pass file contents itself.
 
----
+### 5. Build per-class review prompts (run once — reused by every round)
 
-## Per-Round Loop
+For **each entry in `PATTERN_CLASSES`**, build one complete review-agent prompt. The prompt text
+is round-invariant (it references `$BASE_BRANCH`/`$CURRENT_BRANCH` and tells the agent to diff
+and read files itself) — build it once here, then pass the same prompt into every round's
+Workflow call in the Per-Round Loop below.
 
-Repeat up to `--rounds` times. After each round, check the termination condition (Phase E) before
-deciding whether to continue.
-
-### Phase A — Parallel Review (one agent per class)
-
-Spawn one review agent for **each entry in `PATTERN_CLASSES`**. Run them concurrently.
-
-**Every review agent prompt MUST include:**
+**Every prompt MUST include:**
 
 1. The relevant pattern class section (cut from `$PATTERNS_FILE`)
-2. The pinned `BASE_BRANCH`, `CURRENT_BRANCH`, and the enumeration commands from Setup Step 4
+2. The pinned `BASE_BRANCH`, `CURRENT_BRANCH`, and the enumeration commands from Step 4
 3. Instruction to the agent: *run the diff once (orientation), enumerate changed files, and read
    the **full contents** of the files your lens needs:*
    - **Code lenses** (State Machine / Control Flow Logic, Defensive Guards, Operator
@@ -138,71 +134,123 @@ Spawn one review agent for **each entry in `PATTERN_CLASSES`**. Run them concurr
      files — a rule can be restated across a doc and a code file (this lens is not in either
      bucket above; it needs everything)
 4. The Intent Brief
+5. The **cascade sweep rule** (embed verbatim):
+
+   > When you find a bug, state its specific failure mode in one sentence (e.g., "subprocess
+   > returncode used before checking stdout"). Then scan *every other callsite of the same kind*
+   > in the entire changed source — every subprocess call, every JSON read, every branch exit —
+   > for the same failure mode before reporting. Report all instances together as a cluster.
+   > Do NOT hold back and expect later rounds to catch siblings. A missed sibling is a miss.
+
+6. The `blast_radius` classification rule: classify structurally, never by severity or gut feel —
+   `local` = confined to one file/callsite, something the current session could diagnose and fix
+   in-context if it ever manifested; `cross_file` = spans multiple files, affects call sites
+   outside the diff, or restates a rule defined elsewhere (e.g., a doc restating a code
+   constant). Justification must cite structural evidence actually checked — a grep for other
+   callers, the other file that restates the rule; a `local` tag with no evidence is invalid,
+   and `local` is never a reason to down-rank a real bug.
 
 Reference classes by name only, as `PATTERN_CLASSES` does — never by number. Numbers drift as
 classes are added, renamed, or reordered in the patterns file; names are the stable identifier.
 
-**Model selection:**
+**Model selection** (used as the `model` override when the Workflow script below calls `agent()`;
+omit for Sonnet — it's the default):
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
 - **Sonnet**: all other classes
 
-**Cascade sweep rule — embed this verbatim in every review agent prompt:**
+Store the result as `CLASSES`: a list of `{ name, prompt, model? }`, one entry per pattern class.
+Reused verbatim by every round's Workflow call in the Per-Round Loop below.
 
-> When you find a bug, state its specific failure mode in one sentence (e.g., "subprocess
-> returncode used before checking stdout"). Then scan *every other callsite of the same kind*
-> in the entire changed source — every subprocess call, every JSON read, every branch exit —
-> for the same failure mode before reporting. Report all instances together as a cluster.
-> Do NOT hold back and expect later rounds to catch siblings. A missed sibling is a miss.
+---
 
-**Output schema per agent (JSON):**
+## Per-Round Loop
 
-```json
-{
-  "findings": [
-    {
-      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
-      "blast_radius": "local|cross_file",
-      "blast_radius_justification": "grepped for other callers of parseX — none found",
-      "file": "path/to/file.py:lineNumber",
-      "pattern_class": "State Machine / Control Flow Logic",
-      "description": "...",
-      "recommendation": "...",
-      "cascade_siblings": ["path/to/file.py:otherLine"]
-    }
-  ],
-  "is_clean": true
+Repeat up to `--rounds` times. After each round, check the termination condition (Phase E) before
+deciding whether to continue. Maintain `PRIOR_FINDINGS` across rounds — empty at round 1,
+appended to at the end of each round's Phase C (see below).
+
+### Phase A/B — Parallel Review + Synthesize (Workflow)
+
+Run per-class review and synthesis as a single `Workflow` call. `parallel()` is a hard barrier —
+the script cannot advance to synthesis until every class has resolved or been retried to a
+terminal failure, and `schema` forces structured output instead of relying on an agent to comply
+with a text instruction. This replaces spawning per-class review agents directly.
+
+```js
+export const meta = {
+  name: 'adversarial-review-phase-ab',
+  description: 'One round: parallel per-class review + synthesis',
+  phases: [{ title: 'Review' }, { title: 'Synthesize' }],
 }
+
+const FINDING_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: { type: 'array', items: { type: 'object', properties: {
+      severity: { enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] },
+      blast_radius: { enum: ['local', 'cross_file'] },
+      blast_radius_justification: { type: 'string' },
+      file: { type: 'string' },
+      pattern_class: { type: 'string' },
+      description: { type: 'string' },
+      recommendation: { type: 'string' },
+      cascade_siblings: { type: 'array', items: { type: 'string' } },
+    }, required: ['severity', 'blast_radius', 'blast_radius_justification', 'file', 'pattern_class', 'description', 'recommendation'] } },
+    is_clean: { type: 'boolean' },
+  },
+  required: ['findings', 'is_clean'],
+}
+
+phase('Review')
+const results = await parallel(args.classes.map(c => () =>
+  agent(c.prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
+    ...(c.model ? { model: c.model } : {}) })))
+
+const missingClasses = args.classes.map(c => c.name).filter((_, i) => !results[i])
+if (missingClasses.length) {
+  log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.join(', ')}`)
+}
+
+phase('Synthesize')
+const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
+const raw = results.filter(Boolean).flatMap(r => r.findings)
+
+const merged = new Map()
+for (const f of raw) {
+  const existing = merged.get(f.file)
+  if (!existing) { merged.set(f.file, { ...f, pattern_classes: [f.pattern_class] }); continue }
+  existing.pattern_classes.push(f.pattern_class)
+  if (f.blast_radius === 'cross_file') {
+    existing.blast_radius = 'cross_file'
+    existing.blast_radius_justification = f.blast_radius_justification
+  }
+  if (existing.recommendation !== f.recommendation) {
+    existing.recommendation = `${existing.recommendation} | ALSO: ${f.recommendation}`
+  }
+}
+const findings = [...merged.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
+
+const priorKeys = new Set(args.priorFindings.map(f => f.file))
+const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorKeys.has(f.file)).length
+
+return { findings, provisionalYield, missingClasses }
 ```
 
-Return `"is_clean": true` (with an empty `findings` array) if the class is fully clear.
+Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS } })`.
+Dedup keys on the `file` string (already `path:line` or `path:startLine-endLine`, as agents
+report it) — merges `pattern_class` into a list, keeps `cross_file` on a `blast_radius`
+disagreement (wider radius wins), and **lists both recommendations side by side (`| ALSO:`)
+rather than guessing which is "more specific"** when two lenses collide on the same location.
+This is deterministic JS, not an LLM judgment call — leave the actual disposition to Phase C.
 
-Classify `blast_radius` structurally, never by severity or gut feel: `local` = confined to one
-file/callsite, something the current session could diagnose and fix in-context if it ever
-manifested; `cross_file` = spans multiple files, affects call sites outside the diff, or restates
-a rule defined elsewhere (e.g., a doc restating a code constant). `blast_radius_justification`
-must cite structural evidence the agent actually checked — a grep for other callers, the other
-file that restates the rule; a `local` tag with no evidence is invalid, and `local` is never a
-reason to down-rank a real bug.
-
-### Phase B — Synthesize
-
-Collect all agent outputs. Deduplicate findings by `(file, line_range)`:
-- When two agents flag the same location, keep the **more specific** recommendation
-- Record **both** `pattern_class` values in the merged finding (a finding can belong to two classes)
-- When merged findings disagree on `blast_radius`, keep `cross_file` (the wider radius wins) and
-  carry its justification into the merged finding
-- Sort remaining findings: CRITICAL → HIGH → MEDIUM → LOW
-
-Then compute this round's **provisional cross-file yield**: the count of `cross_file` findings
-that do not match (by `(file, line_range)`) any finding surfaced in any prior round of this
-review run. Maintain a running record of every `(file, line_range)` and `blast_radius` seen
-across all rounds this review run — yield compares against that full history, not just the
-immediately preceding round. `local` findings never count toward yield. This count is
-provisional — Phase C's human disposition can still remove findings from it (see Phase C).
+**`missingClasses` is not "that class was clean."** A class whose agent never returned a result
+(terminal API error after retries) means that lens genuinely didn't run this round. Carry
+`missingClasses` forward into Phase C and Phase E — it blocks a CONVERGED verdict (see Phase E).
 
 ### Phase C — Review-Pause (human decision)
 
-Present the synthesized findings to the calling session. For each finding, the user classifies it:
+Present the synthesized findings **and any `missingClasses`** to the calling session. For each
+finding, the user classifies it:
 
 | Disposition | Action |
 |-------------|--------|
@@ -212,11 +260,15 @@ Present the synthesized findings to the calling session. For each finding, the u
 | **False positive** | Skip; note the reason in the round summary |
 
 **Finalize the round's cross-file yield** after disposition: subtract any `cross_file` finding
-dispositioned as **False positive** or **Contradicts design** from Phase B's provisional count
+dispositioned as **False positive** or **Contradicts design** from Phase A/B's provisional count
 — those are not confirmed bugs, so they should not read as evidence the sweep is still finding
 real issues. **Fix** and **Accepted risk** dispositions both count (an accepted-risk finding is
 a real, confirmed issue the human chose not to fix yet). This finalized number is what Phase E
 reads.
+
+**Append to `PRIOR_FINDINGS`** before the next round: every finding dispositioned **Fix** or
+**Accepted risk** this round, as `{file, blast_radius}`. Next round's Phase A/B call passes this
+updated list so its yield computation compares against the full history, not just this round.
 
 ### Phase D — Apply Fixes
 
@@ -238,18 +290,33 @@ before proceeding — do not continue to the next round with a red test suite.
 
 ### Phase E — Check Termination
 
-The next round's Phase A agents will self-diff the now-modified working tree when they start —
-the orchestrator does not need to re-read or re-pass file contents between rounds.
+The next round's Phase A/B Workflow call will self-diff the now-modified working tree when it
+starts — the orchestrator does not need to re-read or re-pass file contents between rounds.
 
-Termination is driven by the round's **finalized cross-file yield** (provisional in Phase B,
-finalized in Phase C), not by `is_clean` flags. Open `local` findings never force another round
-— report them in the Summary Output for human disposition and move on.
+Termination is driven by the round's **finalized cross-file yield** (provisional in Phase A/B,
+finalized in Phase C) and `missingClasses`, not by `is_clean` flags. Open `local` findings never
+force another round — report them in the Summary Output for human disposition and move on.
 
 **Terminate as CONVERGED when:**
 - Cross-file yield == 0 — no new `cross_file` finding this round, even if `local` findings remain open
+- AND `missingClasses` is empty — every class returned a definitive result this round
 
-Otherwise (cross-file yield > 0 and the round limit has not yet been reached), continue to the
-next round.
+**If rounds remain below `--rounds`** and the round didn't converge (either yield > 0, or yield
+== 0 but `missingClasses` is non-empty), continue to the next round — the next round's Workflow
+call reuses the full `CLASSES` list, so a class that failed this round gets a natural retry
+alongside everything else. Don't force a human decision about a missing class while rounds are
+still available; that's premature friction the round loop already resolves on its own.
+
+**Only once the round limit (`--rounds`) is reached without converging** do the remaining
+outcomes apply, in this order:
+
+1. **If `missingClasses` is non-empty**, a class nobody ever reviewed is not evidence it's
+   clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
+   **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
+   - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those)
+   - Accept the gap as a known limitation (record it like an accepted-risk finding)
+   - Abandon the round
+2. **Else if cross-file yield > 0**, see the NOT-converged / single-round-only outcomes below.
 
 A zero-yield round is one sample from a non-deterministic reviewer, not a proof of correctness.
 Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
@@ -304,8 +371,8 @@ Return to the calling session (or present to the user if run standalone):
 **Rounds completed**: <N> / <max>
 
 ### Per-Round Breakdown
-| Round | Found | Fixed | Known Limitations | False Positives | Cross-File Yield |
-|-------|-------|-------|-------------------|-----------------|------------------|
+| Round | Found | Fixed | Known Limitations | False Positives | Cross-File Yield | Missing Classes |
+|-------|-------|-------|-------------------|-----------------|------------------|------------------|
 
 ### By Pattern Class
 | Class | Findings | Fixed |
@@ -328,6 +395,7 @@ listed here for human disposition — they did not block termination.>
 ✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above
 ⚠️  NOT converged — cross-file yield N at round limit after M>1 rounds; escalate to targeted deep-dive on <theme> (see Phase E)
 🔵 Single round only — found & fixed N confirmed cross-file findings; convergence unconfirmed (see Phase E)
+🟡 INCOMPLETE — N class(es) unreviewed: <names>; retry, accept as known limitation, or abandon (see Phase E)
 ❌  Test failures after fix application — do not push until resolved
 ```
 
@@ -349,3 +417,6 @@ listed here for human disposition — they did not block termination.>
   callsite — if it ever manifests, the session can diagnose and fix it reactively in-context,
   which costs less than another full broad round. `cross_file` findings are the ones a session
   cannot cheaply recover from, so only they drive the yield signal and force more rounds.
+- **A missing class is never silently "clean"**: `parallel()`'s barrier means a class that never
+  returns is caught, not swallowed — Phase E's INCOMPLETE outcome is a distinct verdict from
+  CONVERGED specifically so a review gap can never be mistaken for a clean pass.
