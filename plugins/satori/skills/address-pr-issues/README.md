@@ -621,8 +621,10 @@ applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, comm
 restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
 
 If a class's review agent never returns a result (a terminal error even after retries), the
-single round comes back INCOMPLETE rather than a clean pass — treat it the same as any other
-finding needing a decision: retry that class, accept the gap, or proceed without it.
+single round comes back INCOMPLETE rather than a clean pass — since round 1 is always the round
+cap here, this fires immediately rather than waiting for a later round. Treat it the same as any
+other finding needing a decision: retry that class, accept the gap as a known limitation, or
+abandon the round.
 
 Use the returned findings to drive the implementation step (Step 4/4.1) and the
 commit-and-push step (Step 7).

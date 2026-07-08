@@ -149,6 +149,11 @@ Workflow call in the Per-Round Loop below.
    constant). Justification must cite structural evidence actually checked — a grep for other
    callers, the other file that restates the rule; a `local` tag with no evidence is invalid,
    and `local` is never a reason to down-rank a real bug.
+7. The finding-schema conventions the Phase A/B script below relies on: report `file` as
+   `path:line` or `path:startLine-endLine` (the synthesis script dedupes by matching this string
+   exactly — an inconsistent format silently breaks the dedup); populate `cascade_siblings` with
+   every sibling location found via the cascade sweep rule (item 5); return `is_clean: true` with
+   an empty `findings` array if the class is fully clear, `false` otherwise.
 
 Reference classes by name only, as `PATTERN_CLASSES` does — never by number. Numbers drift as
 classes are added, renamed, or reordered in the patterns file; names are the stable identifier.
@@ -171,10 +176,14 @@ appended to at the end of each round's Phase C (see below).
 
 ### Phase A/B — Parallel Review + Synthesize (Workflow)
 
-Run per-class review and synthesis as a single `Workflow` call. `parallel()` is a hard barrier —
-the script cannot advance to synthesis until every class has resolved or been retried to a
-terminal failure, and `schema` forces structured output instead of relying on an agent to comply
-with a text instruction. This replaces spawning per-class review agents directly.
+Run per-class review and synthesis as a single call to the `Workflow` tool (Claude Code's
+multi-agent orchestration primitive). `parallel()` is a hard barrier — the script cannot advance
+to synthesis until every class has resolved or been retried to a terminal failure, and `schema`
+forces structured output instead of relying on an agent to comply with a text instruction. This
+replaces spawning per-class review agents directly. `agent`, `parallel`, `phase`, `log`, and
+`args` below are pre-bound globals the Workflow tool provides inside the script it executes —
+not something this file defines. `agent()` retries a failed call internally before giving up;
+`missingClasses` (below) reflects only classes that exhausted those retries.
 
 ```js
 export const meta = {
@@ -201,12 +210,16 @@ const FINDING_SCHEMA = {
   required: ['findings', 'is_clean'],
 }
 
+// `args` has been observed arriving as a raw JSON string rather than a parsed object,
+// regardless of how the caller passed it — parse defensively rather than trust the docs here.
+const { classes, priorFindings = [] } = typeof args === 'string' ? JSON.parse(args) : args
+
 phase('Review')
-const results = await parallel(args.classes.map(c => () =>
+const results = await parallel(classes.map(c => () =>
   agent(c.prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
     ...(c.model ? { model: c.model } : {}) })))
 
-const missingClasses = args.classes.map(c => c.name).filter((_, i) => !results[i])
+const missingClasses = classes.map(c => c.name).filter((_, i) => !results[i])
 if (missingClasses.length) {
   log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.join(', ')}`)
 }
@@ -230,7 +243,7 @@ for (const f of raw) {
 }
 const findings = [...merged.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
-const priorKeys = new Set(args.priorFindings.map(f => f.file))
+const priorKeys = new Set(priorFindings.map(f => f.file))
 const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorKeys.has(f.file)).length
 
 return { findings, provisionalYield, missingClasses }
@@ -313,8 +326,12 @@ outcomes apply, in this order:
 1. **If `missingClasses` is non-empty**, a class nobody ever reviewed is not evidence it's
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
-   - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those)
-   - Accept the gap as a known limitation (record it like an accepted-risk finding)
+   - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
+     passing the same `PRIOR_FINDINGS` used this round — the script needs both fields)
+   - Accept the gap as a known limitation — a missing class has no `file`/`severity`/
+     `recommendation` to reuse, so record it as `{file: '<class name> (unreviewed)', severity:
+     'N/A', blast_radius: 'local', recommendation: 'retry in a future round'}` alongside the
+     real accepted-risk findings
    - Abandon the round
 2. **Else if cross-file yield > 0**, see the NOT-converged / single-round-only outcomes below.
 

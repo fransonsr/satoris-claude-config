@@ -642,7 +642,7 @@ The `/adversarial-review` skill handles the full protocol:
 - Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/restore)
 - Up to 3 rounds, terminating when a round yields zero new cross-file findings (local findings are reported for disposition but do not block convergence)
 - Escalation at the round cap: if cross-file findings are still surfacing after round 3, the skill recommends a targeted deep-dive agent scoped to the recurring theme (or surfaces the theme to you for a judgment call)
-- If a class's review agent never returns a result even after retries, that's a distinct "INCOMPLETE" outcome, not a clean pass — the skill will not claim convergence with an unreviewed class outstanding, and asks you to retry it, accept the gap, or abandon the round
+- If a class's review agent never returns a result even after retries, that lens is silently retried next round while rounds remain — only once round 3 (the cap) is reached without every class returning a result does the skill signal a distinct "INCOMPLETE" outcome instead of a clean pass, asking you to retry it, accept the gap, or abandon the round (INCOMPLETE takes precedence over the NOT-converged escalation above if both apply at the cap)
 
 The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), known-limitations list (accepted-risk items) for the PR description, a residual-risk statement (never a "clean" claim — a zero-yield round is one sample, not proof), and any escalation or incomplete-review recommendation.
 
