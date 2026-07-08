@@ -233,18 +233,24 @@ const raw = results.filter(Boolean).flatMap(r => r.findings)
 const merged = new Map()
 for (const f of raw) {
   const existing = merged.get(f.file)
-  if (!existing) { merged.set(f.file, { ...f, pattern_classes: [f.pattern_class] }); continue }
-  existing.pattern_classes.push(f.pattern_class)
+  if (!existing) {
+    const { pattern_class, ...rest } = f
+    merged.set(f.file, { ...rest, pattern_classes: new Set([pattern_class]) })
+    continue
+  }
+  existing.pattern_classes.add(f.pattern_class)
   if (f.blast_radius === 'cross_file') {
     existing.blast_radius = 'cross_file'
     existing.blast_radius_justification = f.blast_radius_justification
   }
-  if (existing.recommendation !== f.recommendation) {
-    existing.recommendation = `${existing.recommendation} | ALSO: ${f.recommendation}`
+  if (!existing.recommendation.split(' | ALSO: ').includes(f.recommendation)) {
+    existing.recommendation += ` | ALSO: ${f.recommendation}`
   }
   existing.cascade_siblings = [...new Set([...(existing.cascade_siblings || []), ...(f.cascade_siblings || [])])]
 }
-const findings = [...merged.values()].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
+const findings = [...merged.values()]
+  .map(f => ({ ...f, pattern_classes: [...f.pattern_classes] }))
+  .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
 const priorKeys = new Set(priorFindings.map(f => f.file))
 const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorKeys.has(f.file)).length
@@ -254,8 +260,10 @@ return { findings, provisionalYield, missingClasses }
 
 Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS } })`.
 Dedup keys on the `file` string (already `path:line` or `path:startLine-endLine`, as agents
-report it) — merges `pattern_class` into a list, keeps `cross_file` on a `blast_radius`
-disagreement (wider radius wins), and **lists both recommendations side by side (`| ALSO:`)
+report it) — replaces each finding's singular `pattern_class` with a deduped `pattern_classes`
+array (every class that flagged this location; downstream consumers, including the Summary
+Output's "By Pattern Class" table, read the plural field), keeps `cross_file` on a `blast_radius`
+disagreement (wider radius wins), and **lists distinct recommendations side by side (`| ALSO:`)
 rather than guessing which is "more specific"** when two lenses collide on the same location.
 This is deterministic JS, not an LLM judgment call — leave the actual disposition to Phase C.
 
@@ -265,7 +273,9 @@ This is deterministic JS, not an LLM judgment call — leave the actual disposit
 
 ### Phase C — Review-Pause (human decision)
 
-Present the synthesized findings **and any `missingClasses`** to the calling session. For each
+Present the synthesized findings **and any `missingClasses`** to the calling session. `missingClasses`
+is surfaced here for visibility only while rounds remain below `--rounds` — do not solicit a
+disposition for it yet; Phase E decides when a missing class actually requires one. For each
 finding, the user classifies it:
 
 | Disposition | Action |
@@ -332,8 +342,10 @@ outcomes apply, in this order:
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
      passing the same `PRIOR_FINDINGS` used this round — the script needs both fields). This
      retry is exempt from `--rounds` (it targets a coverage gap, not a fresh sweep) and its
-     result re-enters this same Phase C → Phase E evaluation. If the retry still comes back
-     missing, retry at most once more, then force **Accept** or **Abandon** — don't loop
+     result re-enters this same Phase C → Phase D → Phase E flow — including Phase D for any
+     **Fix** disposition; a retry-recovered finding is not applied to code until it goes through
+     Phase D like any other. If that retry still comes back missing, retry at most once more; if
+     that second retry also comes back missing, force **Accept** or **Abandon** — don't loop
      indefinitely on a class that keeps failing
    - Accept the gap as a known limitation — a missing class has no `file`/`severity`/
      `recommendation` to reuse, so record it as `{file: '<class name> (unreviewed)', severity:
@@ -397,6 +409,8 @@ Return to the calling session (or present to the user if run standalone):
 ### Per-Round Breakdown
 | Round | Found | Fixed | Known Limitations | False Positives | Cross-File Yield | Missing Classes |
 |-------|-------|-------|-------------------|-----------------|------------------|------------------|
+<Missing Classes cell: comma-separated unreviewed class names for that round, blank if none —
+not a count, unlike its neighbor columns.>
 
 ### By Pattern Class
 | Class | Findings | Fixed |

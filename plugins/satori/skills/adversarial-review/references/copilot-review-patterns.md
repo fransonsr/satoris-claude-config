@@ -597,7 +597,8 @@ seeing another's findings, which naturally prevents this cross-contamination. So
 its own agent (Class 10), in parallel with the Class 9 heuristic agent. The two are **complementary,
 not overlapping**: Class 9 catches the failure modes we have already seen and named; Class 10
 catches what those named modes did not anticipate. Overlap between their findings is expected and
-fine — the synthesizer deduplicates by (file, line_range).
+fine — the synthesizer deduplicates by the `file` string (already formatted as `path:line` or
+`path:startLine-endLine`).
 
 **Boundary**: Provide the Class 10 agent the *domain context* above (what a procedural document
 is, what being an operator means) but **never** Class 9's failure-mode list. The known-failure-mode
