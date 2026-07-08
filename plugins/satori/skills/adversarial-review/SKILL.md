@@ -142,7 +142,7 @@ Workflow call in the Per-Round Loop below.
    > for the same failure mode before reporting. Report all instances together as a cluster.
    > Do NOT hold back and expect later rounds to catch siblings. A missed sibling is a miss.
 
-6. The `blast_radius` classification rule: classify structurally, never by severity or gut feel —
+6. The `blast_radius` classification rule (embed verbatim): classify structurally, never by severity or gut feel —
    `local` = confined to one file/callsite, something the current session could diagnose and fix
    in-context if it ever manifested; `cross_file` = spans multiple files, affects call sites
    outside the diff, or restates a rule defined elsewhere (e.g., a doc restating a code
@@ -230,6 +230,12 @@ phase('Synthesize')
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
 const raw = results.filter(Boolean).flatMap(r => r.findings)
 
+// Shared by every free-text field below so "dedupe against the full accumulated set, not just
+// the last value" is implemented once — not re-derived (and re-forgotten) per field.
+function mergeStrings(existing, incoming) {
+  return existing.split(' | ALSO: ').includes(incoming) ? existing : `${existing} | ALSO: ${incoming}`
+}
+
 const merged = new Map()
 for (const f of raw) {
   const existing = merged.get(f.file)
@@ -243,34 +249,42 @@ for (const f of raw) {
     existing.severity = f.severity
   }
   if (f.blast_radius === 'cross_file') {
-    existing.blast_radius_justification = existing.blast_radius === 'cross_file' && existing.blast_radius_justification !== f.blast_radius_justification
-      ? `${existing.blast_radius_justification} | ALSO: ${f.blast_radius_justification}`
+    existing.blast_radius_justification = existing.blast_radius === 'cross_file'
+      ? mergeStrings(existing.blast_radius_justification, f.blast_radius_justification)
       : f.blast_radius_justification
     existing.blast_radius = 'cross_file'
   }
-  if (!existing.recommendation.split(' | ALSO: ').includes(f.recommendation)) {
-    existing.recommendation += ` | ALSO: ${f.recommendation}`
-  }
+  existing.description = mergeStrings(existing.description, f.description)
+  existing.recommendation = mergeStrings(existing.recommendation, f.recommendation)
   existing.cascade_siblings = [...new Set([...(existing.cascade_siblings || []), ...(f.cascade_siblings || [])])]
 }
 const findings = [...merged.values()]
   .map(f => ({ ...f, pattern_classes: [...f.pattern_classes] }))
   .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
-const priorKeys = new Set(priorFindings.map(f => f.file))
-const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorKeys.has(f.file)).length
+// Only a PRIOR cross_file sighting excludes a location from this round's yield — a location
+// previously seen as local must still count as fresh yield if it now escalates to cross_file.
+const priorCrossFileKeys = new Set(priorFindings.filter(f => f.blast_radius === 'cross_file').map(f => f.file))
+const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorCrossFileKeys.has(f.file)).length
 
 return { findings, provisionalYield, missingClasses }
 ```
 
 Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS } })`.
 Dedup keys on the `file` string (already `path:line` or `path:startLine-endLine`, as agents
-report it) — replaces each finding's singular `pattern_class` with a deduped `pattern_classes`
-array (every class that flagged this location; downstream consumers, including the Summary
-Output's "By Pattern Class" table, read the plural field), keeps `cross_file` on a `blast_radius`
-disagreement (wider radius wins), and **lists distinct recommendations side by side (`| ALSO:`)
-rather than guessing which is "more specific"** when two lenses collide on the same location.
-This is deterministic JS, not an LLM judgment call — leave the actual disposition to Phase C.
+report it). On a collision: `severity` escalates to whichever is worse; `blast_radius` escalates
+to `cross_file` if either finding says so (wider radius wins); and `description`,
+`blast_radius_justification`, and `recommendation` all **list distinct values side by side
+(`| ALSO:`) rather than guessing which is "more specific"** — the same `mergeStrings` rule
+applies to all three so a fix for one can't leave the others behind. `pattern_class` is replaced
+by a deduped `pattern_classes` array (every class that flagged this location; downstream
+consumers, including the Summary Output's "By Pattern Class" table, read the plural field). This
+is all deterministic JS, not an LLM judgment call — leave the actual disposition to Phase C.
+
+**Yield only excludes a *prior cross-file* sighting at the same location.** A location first
+seen as `local` (and dismissed) that a later round's different lens re-flags as `cross_file` is
+new information the sweep exists to surface — it must count as fresh yield, not get silently
+absorbed because the file string was technically "seen before."
 
 **`missingClasses` is not "that class was clean."** A class whose agent never returned a result
 (terminal API error after retries) means that lens genuinely didn't run this round. Carry
@@ -356,24 +370,31 @@ converged").
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
-     passing the same `PRIOR_FINDINGS` used this round — the script needs both fields). This
-     retry is exempt from `--rounds` (it targets a coverage gap, not a fresh sweep) and its
-     result re-enters this same Phase C → Phase D → Phase E flow — including Phase D for any
-     **Fix** disposition; a retry-recovered finding is not applied to code until it goes through
-     Phase D like any other. If that retry still comes back missing, retry at most once more; if
-     that second retry also comes back missing, force **Accept** or **Abandon** — don't loop
-     indefinitely on a class that keeps failing
-   - Accept the gap as a known limitation — a missing class has no `file`/`severity`/
-     `recommendation` to reuse, so record it as `{file: '<class name> (unreviewed)', severity:
-     'N/A', blast_radius: 'local', recommendation: 'retry in a future round'}` alongside the
-     real accepted-risk findings
-   - **Abandon the round**: stop entirely — do not apply any of this round's already-approved
-     Phase D fixes either. Record the missing class using the same known-limitation shape as
-     Accept (above), report the round as abandoned in the Summary Output, and do not start
-     another round; hand the review back to the user as unresolved.
+     passing the same `PRIOR_FINDINGS` used this round — the script needs both fields). **This
+     retry does not count as an additional round** for the ">1 round has actually run" test
+     below — it completes this round's incomplete data rather than starting a fresh sweep. Fold
+     its findings into this same round's finalized yield and update this round's Per-Round
+     Breakdown row in place (don't add a new row) — including Phase D for any **Fix**
+     disposition the retry produces; a retry-recovered finding is not applied to code until it
+     goes through Phase D like any other. If that retry still comes back missing, retry at most
+     once more; if that second retry also comes back missing, force **Accept** or **Abandon** —
+     don't loop indefinitely on a class that keeps failing
+   - Accept the gap as a known limitation. A missing class produced no finding, so don't force
+     it into the finding shape (there's no real `severity` or `blast_radius` to report) —
+     record a distinct coverage-gap entry instead: `{type: 'coverage_gap', class: '<class
+     name>', note: 'never returned a result after retries this round'}`. List it in Known
+     Limitations alongside (but visually distinct from) real accepted-risk findings; it has no
+     `pattern_class`/`blast_radius` to bucket under, so it does not populate the By Pattern
+     Class or By Blast Radius tables — those describe findings, not coverage gaps.
+   - **Abandon the round**: by the time Phase E is reached, Phase D has already applied any
+     approved fixes from this round's Phase C — those are independent, confirmed fixes and stay
+     in the tree; "abandon" does not undo them. It means: don't retry the missing class, record
+     it as a coverage-gap entry (same shape as Accept, above), and don't start another round —
+     hand the review back to the user as unresolved rather than looping further.
 2. **If cross-file yield > 0** (check this regardless of whether `missingClasses` is also
    non-empty — do not skip it just because item 1 already fired), see the NOT-converged /
-   single-round-only outcomes below.
+   single-round-only outcomes below. Both can fire together; see the Summary Output's combined
+   badges.
 
 A zero-yield round is one sample from a non-deterministic reviewer, not a proof of correctness.
 Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
@@ -399,7 +420,8 @@ caller like `/address-pr-issues`'s `--rounds 1` invocation), there is no multi-r
 act on — a single round finding and fixing real cross-file issues is normal, not a failure
 signal. Report **"Found and fixed N confirmed cross-file findings this round; convergence
 unconfirmed — a single round cannot show yield trending to zero"** instead of the deep-dive
-escalation.
+escalation. If `missingClasses` was also non-empty this same round, report both — see the
+Summary Output's combined "INCOMPLETE + Single round only" badge.
 
 ---
 
@@ -430,10 +452,14 @@ Return to the calling session (or present to the user if run standalone):
 ### Per-Round Breakdown
 | Round | Found | Fixed | Known Limitations | False Positives | Cross-File Yield | Missing Classes |
 |-------|-------|-------|-------------------|-----------------|------------------|------------------|
-| 1     | 3     | 2     | 0                  | 1               | 2                |                  |
-| 2     | 1     | 1     | 0                  | 0               | 0                | Test Integrity   |
+| 1 (example) | 3 | 2 | 0 | 1 | 2 | |
+| 2 (example) | 1 | 1 | 0 | 0 | 0 | Test Integrity |
 <Missing Classes cell: comma-separated unreviewed class names for that round, blank if none —
-not a count, unlike its neighbor columns.>
+not a count, unlike its neighbor columns. A missing-class retry (Phase E) folds into the round
+that surfaced it — update that row in place, don't add a new one, since the retry isn't itself
+a round. Found = Fixed + Known Limitations + False Positives + Contradicts Design (add a column
+for the last if any findings get that disposition) — the row's arithmetic should reconcile the
+same way By Blast Radius's does, below.>
 
 ### By Pattern Class
 | Class | Findings | Fixed |
@@ -458,6 +484,7 @@ listed here for human disposition — they did not block termination.>
 🔵 Single round only — found & fixed N confirmed cross-file findings; convergence unconfirmed (see Phase E)
 🟡 INCOMPLETE — N class(es) unreviewed: <names>; retry, accept as known limitation, or abandon (see Phase E)
 🟡+⚠️ INCOMPLETE + NOT converged — both a coverage gap and a confirmed finding cluster; resolve the missing class(es) AND still escalate to targeted deep-dive on <theme> (see Phase E)
+🟡+🔵 INCOMPLETE + Single round only — a coverage gap and confirmed cross-file findings from the one round that ran; resolve the missing class(es) and treat convergence as unconfirmed (see Phase E)
 🟠 ABANDONED — round stopped at the human's request; N class(es) never reviewed: <names>; no further rounds (see Phase E)
 ❌  Test failures after fix application — do not push until resolved
 ```
