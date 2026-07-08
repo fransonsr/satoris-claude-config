@@ -15,8 +15,12 @@ immediately rather than waiting for a later round; the disposition options are r
 gap as a known limitation, or **abandon the round** (this skill's Step 3.5 briefly said "proceed
 without it" instead, a materially different instruction, fixed in a follow-up round).
 
-See commits `1f56d89` (Workflow-ification), `ce0e2d6` (round-1 dogfood fixes), and this round's
-commit (round-2 dogfood fixes) for the full change.
+See commits `1f56d89` (Workflow-ification), `ce0e2d6` (round-1 dogfood fixes), `36aa744`
+(round-2 dogfood fixes), `50db93e` (round-3 dogfood fixes — Phase D routing for retried
+findings, a stale dedup-key phrase in copilot-review-patterns.md, merge-loop dedup gaps), and
+this round's commit (round-4 dogfood fixes — severity/justification reconciliation on merge,
+cascade_siblings reaching Phase D, PRIOR_FINDINGS tracking every disposition, INCOMPLETE and
+NOT-converged evaluated independently, Abandon given a defined outcome) for the full change.
 
 ## 2026-07-07 - v1.7.3: Cross-File Yield Convergence Vocabulary
 

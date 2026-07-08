@@ -239,9 +239,14 @@ for (const f of raw) {
     continue
   }
   existing.pattern_classes.add(f.pattern_class)
+  if (SEVERITY_ORDER[f.severity] < SEVERITY_ORDER[existing.severity]) {
+    existing.severity = f.severity
+  }
   if (f.blast_radius === 'cross_file') {
+    existing.blast_radius_justification = existing.blast_radius === 'cross_file' && existing.blast_radius_justification !== f.blast_radius_justification
+      ? `${existing.blast_radius_justification} | ALSO: ${f.blast_radius_justification}`
+      : f.blast_radius_justification
     existing.blast_radius = 'cross_file'
-    existing.blast_radius_justification = f.blast_radius_justification
   }
   if (!existing.recommendation.split(' | ALSO: ').includes(f.recommendation)) {
     existing.recommendation += ` | ALSO: ${f.recommendation}`
@@ -292,14 +297,21 @@ real issues. **Fix** and **Accepted risk** dispositions both count (an accepted-
 a real, confirmed issue the human chose not to fix yet). This finalized number is what Phase E
 reads.
 
-**Append to `PRIOR_FINDINGS`** before the next round: every finding dispositioned **Fix** or
-**Accepted risk** this round, as `{file, blast_radius}`. Next round's Phase A/B call passes this
-updated list so its yield computation compares against the full history, not just this round.
+**Append to `PRIOR_FINDINGS`** before the next round: **every** finding synthesized this round,
+regardless of disposition, as `{file, blast_radius}`. This is deliberately not filtered to
+Fix/Accepted-risk — `PRIOR_FINDINGS` tracks what has already been *seen* at a location, not
+whether it's a *confirmed bug* (that distinction is what finalized yield, above, already
+handles). If a False-positive- or Contradicts-design-dismissed finding were dropped from this
+list, the same non-deterministic reviewer re-flagging that exact spot next round would count as
+fresh cross-file yield — re-litigating something a human already resolved.
 
 ### Phase D — Apply Fixes
 
 For each approved finding, apply the fix. The fix agent receives:
 - The approved finding + its recommendation
+- The finding's `cascade_siblings` — the fix is not complete until it's applied at the primary
+  `file` location **and** every sibling location; a fix that only patches the reported instance
+  leaves the cascade sweep's whole purpose unmet
 - The Intent Brief
 - These **git guardrails** (embed verbatim in every fix agent prompt):
 
@@ -334,7 +346,11 @@ alongside everything else. Don't force a human decision about a missing class wh
 still available; that's premature friction the round loop already resolves on its own.
 
 **Only once the round limit (`--rounds`) is reached without converging** do the remaining
-outcomes apply, in this order:
+outcomes apply. Evaluate both independently — they are not mutually exclusive. A coverage gap
+(some class never reviewed) and a confirmed finding cluster (real cross-file bugs the classes
+that *did* report already found) are different problems; resolving one does not make the other
+disappear, and both can appear together in the same Summary Output (e.g. "INCOMPLETE + NOT
+converged").
 
 1. **If `missingClasses` is non-empty**, a class nobody ever reviewed is not evidence it's
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
@@ -351,8 +367,13 @@ outcomes apply, in this order:
      `recommendation` to reuse, so record it as `{file: '<class name> (unreviewed)', severity:
      'N/A', blast_radius: 'local', recommendation: 'retry in a future round'}` alongside the
      real accepted-risk findings
-   - Abandon the round
-2. **Else if cross-file yield > 0**, see the NOT-converged / single-round-only outcomes below.
+   - **Abandon the round**: stop entirely — do not apply any of this round's already-approved
+     Phase D fixes either. Record the missing class using the same known-limitation shape as
+     Accept (above), report the round as abandoned in the Summary Output, and do not start
+     another round; hand the review back to the user as unresolved.
+2. **If cross-file yield > 0** (check this regardless of whether `missingClasses` is also
+   non-empty — do not skip it just because item 1 already fired), see the NOT-converged /
+   single-round-only outcomes below.
 
 A zero-yield round is one sample from a non-deterministic reviewer, not a proof of correctness.
 Report convergence as "no new cross-file findings surfaced; residual risk remains in open local
@@ -409,6 +430,8 @@ Return to the calling session (or present to the user if run standalone):
 ### Per-Round Breakdown
 | Round | Found | Fixed | Known Limitations | False Positives | Cross-File Yield | Missing Classes |
 |-------|-------|-------|-------------------|-----------------|------------------|------------------|
+| 1     | 3     | 2     | 0                  | 1               | 2                |                  |
+| 2     | 1     | 1     | 0                  | 0               | 0                | Test Integrity   |
 <Missing Classes cell: comma-separated unreviewed class names for that round, blank if none —
 not a count, unlike its neighbor columns.>
 
@@ -434,6 +457,8 @@ listed here for human disposition — they did not block termination.>
 ⚠️  NOT converged — cross-file yield N at round limit after M>1 rounds; escalate to targeted deep-dive on <theme> (see Phase E)
 🔵 Single round only — found & fixed N confirmed cross-file findings; convergence unconfirmed (see Phase E)
 🟡 INCOMPLETE — N class(es) unreviewed: <names>; retry, accept as known limitation, or abandon (see Phase E)
+🟡+⚠️ INCOMPLETE + NOT converged — both a coverage gap and a confirmed finding cluster; resolve the missing class(es) AND still escalate to targeted deep-dive on <theme> (see Phase E)
+🟠 ABANDONED — round stopped at the human's request; N class(es) never reviewed: <names>; no further rounds (see Phase E)
 ❌  Test failures after fix application — do not push until resolved
 ```
 
