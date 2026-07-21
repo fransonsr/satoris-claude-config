@@ -32,6 +32,9 @@ Agent(model="opus", ...)    # reserve for hard reasoning; omit to inherit
 - WSL home from Windows: `\\wsl.localhost\Ubuntu\home\fransonsr`
 - Use this path format to open files in Windows browser or applications
 - Example: `file:///\\wsl.localhost\Ubuntu\home\fransonsr\file.md`
+- `~/.claude/CLAUDE.md` is itself a symlink → `~/github/satoris-claude-config/CLAUDE.md` (this
+  file, in this repo). Tools that refuse to write through symlinks (e.g. Claude Code's Edit tool)
+  need the resolved target path passed explicitly — use `readlink -f ~/.claude/CLAUDE.md` to get it.
 
 **Installed Tools**:
 - `wslu` - WSL utilities package installed (v3.2.3)
@@ -40,6 +43,14 @@ Agent(model="opus", ...)    # reserve for hard reasoning; omit to inherit
   - **Note**: Original `wslview` uses old WSL1 paths (`\\wsl$`) which don't work in WSL2
   - **Fix**: Created `~/bin/wslview2` wrapper that uses correct WSL2 paths (`\\wsl.localhost`)
   - Aliased `wslview` → `wslview2` in `~/.bashrc` so it "just works"
+- `session-generator` - FamilySearch (not AWS) access-token CLI (`~/github/session-generator`,
+  installed on PATH via `~/.local/bin`)
+  - Get a bare token: `session-generator -p -u <username> -q | grep "^prod:" | cut -d: -f3`
+    (swap `-p`/`prod:` for `-b`/`beta:` or `-i`/`integration:` for other environments)
+  - **Gotcha**: `-q` (quiet mode) prints `env:user:token` per line, NOT a bare token — capturing
+    the raw line as a bearer credential produces a malformed token that fails downstream auth
+    (e.g. CAS) with the same generic error a garbage string would, easy to misdiagnose as a real
+    outage rather than a parsing mistake
 
 **Task Handoff System**:
 - Handoff documents location: `~/.claude/handoff/`
