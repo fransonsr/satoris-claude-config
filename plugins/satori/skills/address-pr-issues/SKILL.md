@@ -91,6 +91,10 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 - **Resolve conversations BEFORE pushing** to keep PR clean and show reviewers what's been addressed
 - **Adversarial review**: For complex bugs with edge cases, spawn reviewer agent to challenge completeness BEFORE implementing fixes (reduces rounds from 5+ to 1-2)
 - **Directional vs. polish (NEW)**: not every fix warrants a fresh Copilot review — only fixes that shift what the PR does
+- **Retroactive `/pre-pr-audit` check (NEW)**: If this is round 1 with few or no prior review
+  comments, and Step 2.5's gate below would fire on the underlying changes, note to the user that
+  `/pre-pr-audit` normally runs before opening a PR like this. Reactive fixing proceeds either
+  way — this is a visibility nudge for the *next* similarly complex PR, not a blocker on this one.
 
 ## Key Features (2026-04-24 Update)
 
@@ -548,11 +552,22 @@ These patterns consistently hide edge cases - always use adversarial review:
 - Legacy code issues (not touched in this PR)
 - Debatable design patterns
 
+**Already Decided** (no fix — a disposition, not a severity tier): the finding restates a design
+tradeoff already made and documented in an earlier round's commit message or code comment (e.g.,
+"accept some over-matching here because under-matching a real case is worse"). Reply citing the
+existing decision and resolve the thread — do not re-litigate it as a fresh MEDIUM/LOW. This
+mirrors `/adversarial-review`'s own "Contradicts design → Override" disposition for its internal
+findings, applied here to a live Copilot comment. If you're not certain the earlier decision
+covers this exact case, tag it `[already decided?]` and present it to the user instead of
+silently closing it (see the template below).
+
 ### Present Questionable Issues to User
 
 For any MEDIUM or LOW severity issues, or issues you're uncertain about. Carry forward any
-`[outdated]` / `[resolved + new activity]` label from Step 1.6's Bucket 3 in the item header,
-right after the severity tag. **Also always present any issue where the triage agent returned
+`[outdated]` / `[resolved + new activity]` label from Step 1.6's Bucket 3, or `[already decided?]`
+when you're not certain an earlier round's decision covers this exact case (see Already Decided
+above), in the item header, right after the severity tag. **Also always present any issue where
+the triage agent returned
 `unverifiable_provenance: true`**, regardless of its severity — a CRITICAL/HIGH finding on
 unverifiable data does not get auto-fixed like a normal CRITICAL/HIGH would; it goes here
 instead, tagged `[unverifiable: stale cache]` / `[unverifiable: last comment unknown]` /
@@ -581,7 +596,14 @@ I found the following issues that need your input:
    - Impact: The flagged line may have already changed since this comment was posted
    - **Decision needed**: Still applicable, or safe to resolve as stale?
 
-5. **[HIGH] Copilot [unverifiable: last comment unknown]**: Severity assessed from a comment
+5. **[MEDIUM] Copilot [already decided?]**: Re-flags a tradeoff that looks like the one decided
+   in Round 2's commit, but the code shape has since changed slightly
+   - File: `MarkerScanner.java:64`
+   - Impact: May be the same accepted tradeoff, or a genuinely new gap in the same area
+   - **Decision needed**: Confirm this is covered by the earlier decision (reply + resolve as
+     Already Decided) or treat as new
+
+6. **[HIGH] Copilot [unverifiable: last comment unknown]**: Severity assessed from a comment
    body whose author field came back null (deleted/suspended account) — classify-threads.sh
    could not confirm this was the thread's actual latest activity
    - File: `PaymentValidator.java:88`
@@ -915,22 +937,46 @@ void shouldHandleNullAccumulator() {
 - Multiple valid design approaches need discussion
 - High-risk code requiring design oversight
 
-**Example**:
+**Example** (real invocation syntax, matching Step 3.5's `Skill(adversarial-review, ...)` pattern
+rather than a placeholder):
 ```
 I'll use xp-pair for Issue 1 (significant refactoring with unclear best approach):
 
-[Invoke xp-pair skill with specific task]
-
-Task: Extract and refactor complex validation logic in RecordProcessor
+Skill(xp-pair, args="Task: Extract and refactor complex validation logic in RecordProcessor
 Acceptance Criteria:
-- [ ] Extract validation into separate, testable methods
-- [ ] Maintain existing behavior (all tests pass)
-- [ ] Improve readability and maintainability
-- [ ] No new SonarQube issues introduced
-- [ ] Tests cover happy path + edge cases + errors
+- Extract validation into separate, testable methods
+- Maintain existing behavior (all tests pass)
+- Improve readability and maintainability
+- No new SonarQube issues introduced
+- Tests cover happy path + edge cases + errors")
 ```
 
+**Caveat**: `xp-pair`'s own Step 5 commits and shuts down its team as part of finishing a session
+— invoking it here **replaces** this round's Step 7 commit, it doesn't precede it. Don't also run
+Step 7's `commit-pr-fixes.sh` for a round whose only fix went through xp-pair; treat xp-pair's
+commit as this round's commit and resume at Step 8.
+
 **Note**: For simpler issues (obvious bugs, straightforward refactoring), handle directly without xp-pair.
+
+### For Context-Constrained Multi-Round Sessions (Delegate to Background `Agent`)
+
+**When to use**: a PR has already run several rounds directly in this session and continuing to
+implement every fix inline is consuming context faster than the PR is converging — a third named
+option alongside Direct Implementation and xp-pair, not a replacement for either.
+
+Write a self-contained `Agent` prompt per fix (or per cohesive theme/file-set), then run it in
+the background so the orchestrating session's context holds only the result, not the
+implementation work:
+- The exact finding text plus file/line pointers — don't make the agent re-derive what was flagged
+- Which existing test class to extend (never create a new one — same convention as
+  `adversarial-review`'s "do not create new test classes" rule)
+- The exact test/build command to run and the baseline pass count, so the agent can self-verify
+- Explicit constraints: don't commit, don't push, don't touch GitHub (resolve/reply/re-request)
+
+**After the agent reports back**: read the full resulting diff and re-run the test suite
+yourself before committing — an agent's own "done" report is not verification. This mirrors the
+"never trust an agent's own summary without checking the diff" discipline that applies to any
+delegated work, not something specific to this skill.
 
 ### Mandate Test-First for Critical Bugs
 
@@ -1346,6 +1392,17 @@ git push -u origin "$CURRENT_BRANCH"
 
 ### Active Copilot Re-Request (NEW — replaces passive waiting)
 
+**Some repos auto-review on every push, not just PR open.** The counter below only increments on
+a *confirmed explicit* re-request — it does not know whether this repo also triggers a fresh
+Copilot review automatically after every push. The tell: new Copilot comments show up in "Check
+for New Copilot Comments" below on a round where this counter was **not** incremented (no
+re-request sent that round). If you observe that pattern, say so once — "this repo appears to
+auto-review Copilot on every push; the count below reflects explicit re-requests only, so the
+true review-cycle count is higher" — since it changes how the numeric gate just below should be
+read: such a repo can reach real review #3+ well before the explicit counter does. Either way,
+run "Check for New Copilot Comments" after every push regardless of whether this round sent an
+explicit re-request — don't gate it behind the re-request branch.
+
 Re-derive `$ROUND` and `$FIXES_FILE` if this is a new shell/session (see the shorthand note in
 Step 1 — they don't persist from an earlier command invocation any more than `$CURRENT_BRANCH`
 does below): `ROUND=$(cat "$WORKSPACE_DIR/round.txt")`,
@@ -1374,10 +1431,19 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
     # double-count a single round's request.
     echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
   elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
-    # This re-request would be review #3 or beyond — stop. Follow "Numeric /plan Escalation"
-    # under Convergence Criterion below: draft an actual /plan prompt naming this PR's
-    # recurring themes and wait for the user, instead of blindly re-requesting again.
-    echo "🛑 This would be Copilot review #3+ — escalating to /plan instead of re-requesting."
+    # This re-request would be review #3 or beyond. Before recommending escalation, pair the
+    # raw count with a one-line severity trend of the last 1-2 rounds — a high count with a
+    # DECLINING trend (Critical/High → Medium → Low → doc-only) supports escalating; a high
+    # count where recent rounds are still surfacing genuinely new Critical/High bugs does NOT,
+    # and the user needs to see that to make an informed override (see "Numeric /plan
+    # Escalation" under Convergence Criterion below). Derive the trend from disk, not
+    # conversation memory: the pre-round thread snapshots this same Step 8 already saves each
+    # round (`${THREADS_FILE}.before-round-N` under "Check for New Copilot Comments") hold what
+    # each recent round found — diff the last 1-2 of them and summarize severities, don't rely
+    # on recalling earlier rounds from context.
+    echo "🛑 This would be Copilot review #3+."
+    echo "   Severity trend, last 1-2 rounds: <summarize from \${THREADS_FILE}.before-round-N snapshots>"
+    echo "   Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
   else
     # Capture gh's own error output rather than assuming why it failed. Use exact spelling
     # @copilot; no REST fallback.
@@ -1493,6 +1559,30 @@ a sweep scoped to one known theme, not a broad re-run of all review classes.
 **Example**: Copilot flags `git rev-list` failure path missing stdout fallback (Round 3),
 after you already fixed `git fetch` in Round 1. Widen from PR-changed-files to full file.
 Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class is closed.
+
+### Mechanism-Level Diminishing Returns
+
+This is a different signal from Pattern Class Recurrence above — that section covers the same
+*bug shape* recurring at a new callsite. This one covers a single detection/heuristic
+**mechanism** that keeps needing new, structurally different extensions, each one closing a
+different *kind* of gap rather than a new instance of the same gap.
+
+**How to recognize it**: a regex, string-matching, or other non-parser heuristic your PR relies
+on (e.g., a hand-rolled scanner for a code pattern) has needed 3+ structurally distinct
+extensions within this PR — not "the same missing guard at a new file," but "a new *kind* of
+input shape the heuristic didn't anticipate" (e.g., bare identifier → dotted reference → inline
+call → cross-file declaration → symlinked path → negative count). Each round's fix is correct in
+isolation, yet the underlying grammar the mechanism is trying to express is unbounded, so new
+shapes keep surfacing.
+
+**Response**: don't just keep extending it. Ask whether the codebase already has, or should
+build, a more robust replacement — a real parser/AST tool, or an existing library already used
+elsewhere in the repo — instead of continuing to patch the current heuristic round after round.
+Surface this explicitly to the user rather than silently taking a 9th pass at the same scanner;
+it's a design conversation, not another fix to implement. This mirrors
+`/adversarial-review`'s own Phase E escalation guidance about possible underlying causes at its
+round cap — see that skill's Phase E for the same signal viewed from its internal round-cap
+angle.
 
 ### Convergence Criterion
 

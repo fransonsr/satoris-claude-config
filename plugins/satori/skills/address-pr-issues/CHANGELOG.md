@@ -1,5 +1,25 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-08-02 - v1.7.5: Process Hardening from PR #171 Retrospective
+
+**Context**: `fs-eng/cc-plugins-java-stack#171` (a `logging-migration` regex-based completeness
+gate) ran ~10 reactive `address-pr-issues` rounds without ever running `/pre-pr-audit` first,
+surfacing six gaps in this skill's own process logic. Added a reverse cross-reference to
+`/pre-pr-audit` (Step 1) for PRs that skipped it; accounted for repos that auto-review Copilot on
+every push, not just PR open, and required checking for new comments after every push regardless
+of whether an explicit re-request fired (Step 8); paired the numeric re-request-count escalation
+gate with a qualitative severity-trend summary of the last 1-2 rounds, since this PR's count
+crossed the escalation threshold while still surfacing genuinely new Critical/High bugs each
+round — the user correctly overrode the bare-count recommendation multiple times based on trend,
+not count alone; added an explicit "Already Decided" disposition (Step 3) for findings that
+re-flag a design tradeoff already made and documented in an earlier round, mirroring
+`/adversarial-review`'s own "Contradicts design → Override" category; added a "Mechanism-Level
+Diminishing Returns" signal (Step 8), distinct from Pattern Class Recurrence, for when a single
+detection heuristic (not a single bug class) needs 3+ structurally distinct extensions and may
+warrant replacing rather than continuing to patch; and documented delegating fix implementation
+to a background `Agent` call (Step 4.1) as a third named option alongside Direct Implementation
+and xp-pair, validated across ~7 delegated fixes in this PR's later rounds.
+
 ## 2026-07-08 - v1.7.4: Workflow-ified Adversarial Review, INCOMPLETE Outcome
 
 **Context**: `/adversarial-review`'s per-class review agents were spawned via the ad-hoc

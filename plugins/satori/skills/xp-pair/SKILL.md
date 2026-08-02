@@ -120,17 +120,40 @@ Spawn these agents simultaneously, each receiving the task description and relev
 - **Codebase patterns agent**: What similar patterns exist in the current codebase that the implementation should follow?
 - **Handoff/docs agent**: What do handoff documents, READMEs, and inline comments say about constraints or decisions?
 
-Each agent returns a brief findings summary. Synthesize into the architecture discussion with the user.
+Each agent returns a brief findings summary.
 
 **Why this matters**: Assumptions discovered to be wrong during implementation require rework and wasted TDD cycles. Five minutes of parallel verification saves thirty minutes of pivot.
 
-**Example synthesis:**
+**Generative Design Guidance (Fable)**
+
+The discovery agents above only gather facts — nothing yet turns those facts into an actual
+design recommendation; historically the navigator did that synthesis directly, at whatever model
+the session happens to be running. Once the discovery agents return, spawn one more agent —
+sequential, not parallel with them, since it consumes their output — with `model: 'fable'` for
+increased reasoning depth on the design decision itself. It receives:
+- The task description
+- Every discovery agent's findings summary
+- The text of any `~/.claude/copilot-review-patterns.md` pattern class whose "how to recognize"
+  language matches this task's characteristics (e.g., a task involving string/prefix parsing
+  pulls the String Splitting and Prefix/Suffix Stripping classes) — read the file directly inside
+  this agent's own prompt/context, not pre-loaded by the navigator, for the same context-cost
+  reason `adversarial-review` reads its pattern file per-agent rather than per-orchestrator (see
+  that skill's Setup Step 5)
+
+It returns a design recommendation with explicit tradeoffs, plus a "watch out for" list of edge
+cases sourced from the matching pattern classes — not just "what to build" but "what has broken
+in similar code before." The navigator presents this synthesis as the basis for the discussion
+with the user below — it augments, not replaces, the human sign-off this step already requires.
+
+**Example synthesis** (now produced by the design-synthesis agent, presented by the navigator):
 ```
 "Verification complete:
 - Legacy: Uses StringUtils.split(line, ",", 4) — limit param handles commas in data columns
 - Data format: S3 key pattern is {prefix}/{yyyy}/{MM}/{dd}/{recordId}.json (confirmed from sample)
 - Codebase: CollectionMetadataReader uses DataStorage abstraction — PartitionMetadataReader should match
 - Docs: Handoff says 'cross-account S3 access requires DataStorage, not S3Client directly'
+- Watch out for (String Splitting pattern class): delimiters appearing inside data columns,
+  trailing empty fields, and lines with fewer columns than expected
 
 Decision: Use StringUtils.split approach with DataStorage abstraction."
 ```
@@ -165,6 +188,10 @@ For a data processing task:
 ```
 
 This prevents the driver from making architectural decisions post-facto and ensures alignment upfront.
+
+**Model selection**: design-synthesis agent (above) → `fable`. The 4 discovery agents stay on the
+session default — omit a `model` override for them — pure fact-finding doesn't need the extra
+reasoning depth; only the step that turns facts into a decision does.
 
 ### Step 3: Spawn Driver
 

@@ -29,7 +29,8 @@ human disposition, applies approved fixes under strict git guardrails, then re-e
 
 If `--intent-brief` is not supplied by a caller, ask the user to provide it before proceeding.
 The Intent Brief is the single most important input: without it, fix agents cannot distinguish
-"intentional design decision" from "bug to fix."
+"intentional design decision" from "bug to fix." Store it as `INTENT_BRIEF` — referenced by that
+name in Setup Step 5 and the Phase A/B Workflow call below.
 
 ---
 
@@ -109,31 +110,60 @@ must not re-diff after Phase D fixes begin. Within a round the tree is frozen un
 every review agent sees the same state — consistent across all agents in the round — without
 the orchestrator needing to hold or pass file contents itself.
 
-### 5. Build per-class review prompts (run once — reused by every round)
+### 5. Build per-class agent metadata (run once — reused by every round)
 
-For **each entry in `PATTERN_CLASSES`**, build one complete review-agent prompt. The prompt text
-is round-invariant (it references `$BASE_BRANCH`/`$CURRENT_BRANCH` and tells the agent to diff
-and read files itself) — build it once here, then pass the same prompt into every round's
-Workflow call in the Per-Round Loop below.
+For **each entry in `PATTERN_CLASSES`**, build one lightweight metadata record — do **not** cut
+or read the pattern-class text into your own context here. The Phase A/B script (below) builds
+each agent's actual review prompt at call time, and every spawned per-class agent reads its own
+section of `$PATTERNS_FILE` directly, in its own isolated context — not the orchestrator's, and
+not the `Workflow` script's (the script itself has no filesystem access; only spawned agents do).
 
-**Every prompt MUST include:**
+The earlier approach — the orchestrating session `Read`-ing the pattern file itself to hand-cut
+each class's section for embedding directly into a prompt string — has been observed to burn
+~40,000 tokens on a single partial read, before the review itself had started: doing that per
+class means the full pattern file's text lands in the orchestrator's own context once per class,
+not once total. Passing a shell variable instead doesn't avoid this — the `Workflow` tool's
+`args` must be literal JSON authored directly in the tool call, so any text assigned to a shell
+variable would still have to pass through the orchestrator's context to be written out. The only
+way to keep the pattern-class prose out of the orchestrator's context entirely is to never build
+the per-class prompt there at all.
 
-1. The relevant pattern class section (cut from `$PATTERNS_FILE`)
-2. The pinned `BASE_BRANCH`, `CURRENT_BRANCH`, and the enumeration commands from Step 4
-3. Instruction to the agent: *run the diff once (orientation), enumerate changed files, and read
-   the **full contents** of the files your lens needs:*
-   - **Code lenses** (State Machine / Control Flow Logic, Defensive Guards, Operator
-     Observability / Error Message Accuracy, Provenance / Identity Discrimination,
-     Infrastructure / Environment Handling, Test Integrity): read the full contents of changed
-     **source** files
-   - **Doc/spec lenses** (Documentation Accuracy, Semantic Correctness / Logical Completeness,
-     Operator Spec Completeness, Spec Operator Walkthrough): read the full contents of changed
-     **doc** files; read source files only if the lens explicitly requires cross-referencing
-     code (e.g., Documentation Accuracy's doc-vs-code checks)
-   - **Cross-File Rule Consistency**: read full contents of **both** changed source and doc
-     files — a rule can be restated across a doc and a code file (this lens is not in either
-     bucket above; it needs everything)
-4. The Intent Brief
+Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
+
+- `name` — the pattern class name, exactly as `PATTERN_CLASSES` returns it. Reference classes by
+  name only, never by number — numbers drift as classes are added, renamed, or reordered in the
+  patterns file; names are the stable identifier.
+- `lensKind` — one of `code` | `doc` | `both`, telling the Phase A/B script which file-reading
+  instruction to embed for this class:
+  - `code`: State Machine / Control Flow Logic, Defensive Guards, Operator Observability / Error
+    Message Accuracy, Provenance / Identity Discrimination, Infrastructure / Environment
+    Handling, Test Integrity — read the full contents of changed **source** files
+  - `doc`: Documentation Accuracy, Semantic Correctness / Logical Completeness, Operator Spec
+    Completeness, Spec Operator Walkthrough — read the full contents of changed **doc** files;
+    read source files only if the lens explicitly requires cross-referencing code (e.g.,
+    Documentation Accuracy's doc-vs-code checks)
+  - `both`: Cross-File Rule Consistency — read full contents of **both** changed source and doc
+    files; this lens isn't in either bucket above since a rule can be restated across a doc and a
+    code file
+- `model?` — per Model Selection below
+
+**Model selection** (used as the `model` override when the Workflow script below calls `agent()`;
+omit for Sonnet — it's the default):
+- **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
+- **Sonnet**: all other classes
+
+`CLASSES` is reused verbatim by every round's Workflow call in the Per-Round Loop below, alongside
+`$PATTERNS_FILE`, `BASE_BRANCH`, `CURRENT_BRANCH`, and the Intent Brief (`INTENT_BRIEF`) — each
+passed once via `args`, not repeated per class. The Phase A/B script's `buildPrompt()` assembles
+each agent's actual prompt from this metadata, embedding the following — identical for every
+class, so written once in the script rather than once per class:
+
+1. An instruction to read `$PATTERNS_FILE` (passed as `args.patternFile`) and extract the section
+   for `name` (a `### N. <name>` heading) itself — the only pattern-file read this step requires,
+   and it happens inside the agent's own context
+2. `args.baseBranch`/`args.currentBranch` and the enumeration commands from Setup Step 4
+3. The `lensKind`-specific file-reading instruction above
+4. `args.intentBrief`
 5. The **cascade sweep rule** (embed verbatim):
 
    > When you find a bug, state its specific failure mode in one sentence (e.g., "subprocess
@@ -149,22 +179,11 @@ Workflow call in the Per-Round Loop below.
    constant). Justification must cite structural evidence actually checked — a grep for other
    callers, the other file that restates the rule; a `local` tag with no evidence is invalid,
    and `local` is never a reason to down-rank a real bug.
-7. The finding-schema conventions the Phase A/B script below relies on: report `file` as
-   `path:line` or `path:startLine-endLine` (the synthesis script dedupes by matching this string
-   exactly — an inconsistent format silently breaks the dedup); populate `cascade_siblings` with
-   every sibling location found via the cascade sweep rule (item 5); return `is_clean: true` with
-   an empty `findings` array if the class is fully clear, `false` otherwise.
-
-Reference classes by name only, as `PATTERN_CLASSES` does — never by number. Numbers drift as
-classes are added, renamed, or reordered in the patterns file; names are the stable identifier.
-
-**Model selection** (used as the `model` override when the Workflow script below calls `agent()`;
-omit for Sonnet — it's the default):
-- **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
-- **Sonnet**: all other classes
-
-Store the result as `CLASSES`: a list of `{ name, prompt, model? }`, one entry per pattern class.
-Reused verbatim by every round's Workflow call in the Per-Round Loop below.
+7. The finding-schema conventions the Phase A/B script relies on: report `file` as `path:line` or
+   `path:startLine-endLine` (the synthesis script dedupes by matching this string exactly — an
+   inconsistent format silently breaks the dedup); populate `cascade_siblings` with every sibling
+   location found via the cascade sweep rule (item 5); return `is_clean: true` with an empty
+   `findings` array if the class is fully clear, `false` otherwise.
 
 ---
 
@@ -173,6 +192,15 @@ Reused verbatim by every round's Workflow call in the Per-Round Loop below.
 Repeat up to `--rounds` times. After each round, check the termination condition (Phase E) before
 deciding whether to continue. Maintain `PRIOR_FINDINGS` across rounds — empty at round 1,
 appended to at the end of each round's Phase C (see below).
+
+**Each round's Phase A/B is a fresh `Workflow` call — never `resumeFromRunId` pointed at a prior
+round's run.** Every input `buildPrompt()` uses (`CLASSES`, `$PATTERNS_FILE`, `BASE_BRANCH`,
+`CURRENT_BRANCH`, `INTENT_BRIEF`) is round-invariant by construction — only `priorFindings`
+differs round to round, and `buildPrompt()` doesn't use it. That means each `agent()` call's
+actual prompt string is identical across rounds. The `Workflow` tool caches each `agent()` call by
+its `(prompt, opts)` pair, so resuming a prior round's run would replay that round's stale
+per-class results — from the now-superseded tree — instead of actually re-diffing the code as it
+stands after this round's fixes, even though the outer `args.priorFindings` value differs.
 
 ### Phase A/B — Parallel Review + Synthesize (Workflow)
 
@@ -212,7 +240,34 @@ const FINDING_SCHEMA = {
 
 // `args` has been observed arriving as a raw JSON string rather than a parsed object,
 // regardless of how the caller passed it — parse defensively rather than trust the docs here.
-const { classes, priorFindings = [] } = typeof args === 'string' ? JSON.parse(args) : args
+const { classes, priorFindings = [], patternFile, baseBranch, currentBranch, intentBrief } =
+  typeof args === 'string' ? JSON.parse(args) : args
+
+const LENS_INSTRUCTIONS = {
+  code: 'Read the full contents of the changed **source** files.',
+  doc: 'Read the full contents of the changed **doc** files; read source files only if this lens explicitly requires cross-referencing code.',
+  both: 'Read the full contents of **both** changed source and doc files — a rule can be restated across a doc and a code file.',
+}
+
+// Builds one class's review prompt at call time, so the pattern-class text itself is read by the
+// spawned agent in its own context — never by this script or the orchestrator (see Setup Step 5).
+// Every input here is round-invariant — identical text every round (see the resumeFromRunId note
+// above); only `priorFindings` differs round to round, and it isn't used here.
+function buildPrompt(c) {
+  const range = `origin/${baseBranch}...${currentBranch}`
+  return `Review the current diff against the "${c.name}" pattern class only.
+
+1. Read ${patternFile} and extract the section for pattern class "${c.name}" (a "### N. ${c.name}" heading) — that section defines what to look for.
+2. Run \`git diff ${range}\` once for orientation. Enumerate changed source files with
+   \`git diff --name-only ${range} | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"\`
+   and changed doc files with
+   \`git diff --name-only ${range} | grep -E "(\\.md|\\.rst|\\.adoc|CHANGELOG|README)"\`.
+3. ${LENS_INSTRUCTIONS[c.lensKind]}
+4. Intent Brief: ${intentBrief}
+5. Cascade sweep rule: when you find a bug, state its specific failure mode in one sentence (e.g., "subprocess returncode used before checking stdout"), then scan every other callsite of the same kind in the entire changed source for the same failure mode before reporting. Report all instances together as a cluster. Do NOT hold back and expect later rounds to catch siblings — a missed sibling is a miss.
+6. blast_radius rule: classify structurally, never by severity or gut feel. local = confined to one file/callsite, diagnosable in-context if it ever manifested. cross_file = spans multiple files, affects callsites outside the diff, or restates a rule defined elsewhere. Justification must cite structural evidence actually checked (e.g. a grep for other callers) — an unsupported local tag is invalid, and local is never a reason to down-rank a real bug.
+7. Report file as path:line or path:startLine-endLine exactly (dedup matches this string exactly). Populate cascade_siblings with every sibling location found via the cascade sweep rule. Return is_clean: true with an empty findings array if fully clear, false otherwise.`
+}
 
 phase('Review')
 // agent() resolves to null on a terminal failure (exhausted retries) — it does not reject/throw.
@@ -220,7 +275,7 @@ phase('Review')
 // input order — correct either way, and removes an assumption this file can't itself verify.
 const responses = await parallel(classes.map(c => async () => ({
   name: c.name,
-  result: await agent(c.prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
+  result: await agent(buildPrompt(c), { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
     ...(c.model ? { model: c.model } : {}) }),
 })))
 
@@ -273,7 +328,9 @@ const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' &&
 return { findings, provisionalYield, missingClasses }
 ```
 
-Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS } })`.
+Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS,
+patternFile: PATTERNS_FILE, baseBranch: BASE_BRANCH, currentBranch: CURRENT_BRANCH, intentBrief:
+INTENT_BRIEF } })`.
 Dedup keys on the `file` string (already `path:line` or `path:startLine-endLine`, as agents
 report it). On a collision: `severity` escalates to whichever is worse; `blast_radius` escalates
 to `cross_file` if either finding says so (wider radius wins); `description` and `recommendation`
@@ -328,11 +385,29 @@ fresh cross-file yield — re-litigating something a human already resolved.
 
 ### Phase D — Apply Fixes
 
+**Fix planning gate (complex/cascading findings only)**: before spawning the fix-implementation
+agent, check the approved finding against fields it already carries from Phase A/B — no new data
+required: non-empty `cascade_siblings`, OR `blast_radius == 'cross_file'`, OR `severity` is
+`CRITICAL`/`HIGH`. If any is true, spawn a **native** planning-only agent first — `model: 'fable'`
+for extra reasoning depth on a fix that spans multiple sites; it needs no Edit/Write access, only
+the inputs to reason over. It receives the finding + recommendation + `cascade_siblings` + Intent
+Brief + the relevant pattern-class text from `$PATTERNS_FILE`, and returns a structured fix plan
+(ordered steps, files touched, how each `cascade_sibling` is covered).
+
+This is a **native planning step, not an `xp-pair` invocation** — `xp-pair`'s own Step 5 commits
+and shuts down its team as part of finishing a session, which would violate the git guardrails
+below (no `git commit` inside a fix agent) and would drag a heavy, interactive team/driver session
+into what's meant to stay an automated per-round fix-apply step. Findings that don't meet the gate
+(simple, local, no siblings) skip planning entirely and go straight to the fix agent below, same
+as before — this keeps the common case cheap.
+
 For each approved finding, apply the fix. The fix agent receives:
 - The approved finding + its recommendation
 - The finding's `cascade_siblings` — the fix is not complete until it's applied at the primary
   `file` location **and** every sibling location; a fix that only patches the reported instance
   leaves the cascade sweep's whole purpose unmet
+- **The fix plan from the gate above, when the finding met it** — the fix agent follows this plan
+  rather than re-deriving the multi-site approach from scratch
 - The Intent Brief
 - These **git guardrails** (embed verbatim in every fix agent prompt):
 
@@ -429,8 +504,16 @@ deep-dive on <theme>"**:
   every caller of `parseX` across the module", "audit every site that restates rule Y") — or hand
   the theme to the user for a judgment call
 - Possible underlying causes, mentioned only after the escalation: the PR may be too large
-  (consider splitting it), or a new failure mode has appeared that doesn't fit any existing
-  class — draft it per the Pattern-File Update Hook below
+  (consider splitting it), a new failure mode has appeared that doesn't fit any existing
+  class — draft it per the Pattern-File Update Hook below — or the recurring findings all trace
+  back to a single fragile detection/heuristic **mechanism in the code under review** (e.g., a
+  regex-based scanner accumulating ad-hoc extensions round after round for each new input shape
+  it didn't anticipate), rather than a gap in the review's own pattern-class coverage. In that
+  last case, the deep-dive question is architectural, not "which callsite did we miss" — whether
+  the code should adopt a more robust mechanism (a proper parser/AST, an existing tool already in
+  the repo) instead of only ever extending the current one further. This mirrors
+  `/address-pr-issues`' "Mechanism-Level Diminishing Returns" signal, viewed here from the
+  round-cap escalation side instead of the reactive-round side.
 
 **If cross-file yield > 0 at the round limit but only one round ever ran** (e.g., a single-round
 caller like `/address-pr-issues`'s `--rounds 1` invocation), there is no multi-round trend to

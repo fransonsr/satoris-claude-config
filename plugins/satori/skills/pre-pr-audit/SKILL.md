@@ -14,6 +14,13 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 - User asks to "catch issues early", "avoid PR feedback", "pre-commit review"
 - After implementing a feature but before committing
 - This skill predicts what Copilot will flag BEFORE you push
+- **Self-check (NEW)**: run this even if the user never says a trigger phrase. Before invoking
+  `gh pr create` for a change, check it yourself against `/address-pr-issues`' own Step 2.5
+  complexity indicators (multiple execution paths, string/regex parsing, type resolution,
+  cross-module interactions, defensive/null-handling logic, unclear edge cases). If 2 or more
+  apply, run this skill proactively — a change complex enough to warrant it doesn't stop being
+  complex just because nobody named it. Keep this narrow: routine, low-complexity changes (0-1
+  indicators) should not trigger this on their own.
 
 ❌ **AFTER creating PR** (reactive):
 - Use `/address-pr-issues` instead
