@@ -44,7 +44,10 @@ PATTERNS_FILE=~/.claude/copilot-review-patterns.md
 if [ ! -f "$PATTERNS_FILE" ]; then
   PATTERNS_FILE=~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md
 fi
+echo "$PATTERNS_FILE"
 ```
+
+Echo the resolved path — it's the only observed record of which branch (global vs. bundled) fired, and it's what gets passed verbatim into the Phase A/B script's `patternFile` arg below.
 
 ### 2. Enumerate pattern classes dynamically
 
@@ -55,16 +58,25 @@ PATTERN_CLASSES=$(grep "^### [0-9]" "$PATTERNS_FILE" | sed 's/^### [0-9]*\. //')
 
 ### 3. Resolve the base branch
 
+**If the caller supplied `--base-branch` (see Inputs above), set `BASE_BRANCH_ARG` to that value
+before running this step; leave it unset otherwise.** The block below checks for it and uses it
+directly, skipping auto-detection entirely — auto-detect is the fallback for when no override was
+given, not a check that runs regardless:
+
 ```bash
-BASE_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | cut -d/ -f2-)
-if [ -z "$BASE_BRANCH" ]; then
-  if git show-ref --verify --quiet refs/heads/main; then
-    BASE_BRANCH=main
-  elif git show-ref --verify --quiet refs/heads/master; then
-    BASE_BRANCH=master
-  else
-    echo "Cannot detect base branch — supply --base-branch"
-    exit 1
+if [ -n "$BASE_BRANCH_ARG" ]; then
+  BASE_BRANCH="$BASE_BRANCH_ARG"
+else
+  BASE_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | cut -d/ -f2-)
+  if [ -z "$BASE_BRANCH" ]; then
+    if git show-ref --verify --quiet refs/heads/main; then
+      BASE_BRANCH=main
+    elif git show-ref --verify --quiet refs/heads/master; then
+      BASE_BRANCH=master
+    else
+      echo "Cannot detect base branch — supply --base-branch"
+      exit 1
+    fi
   fi
 fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -135,9 +147,10 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
   patterns file; names are the stable identifier.
 - `lensKind` — one of `code` | `doc` | `both`, telling the Phase A/B script which file-reading
   instruction to embed for this class:
-  - `code`: State Machine / Control Flow Logic, Defensive Guards, Operator Observability / Error
-    Message Accuracy, Provenance / Identity Discrimination, Infrastructure / Environment
-    Handling, Test Integrity — read the full contents of changed **source** files
+  - `code`: State Machine / Control Flow Logic, Defensive Guards (null / type / encoding),
+    Operator Observability / Error Message Accuracy, Provenance / Identity Discrimination,
+    Infrastructure / Environment Handling, Test Integrity — read the full contents of changed
+    **source** files
   - `doc`: Documentation Accuracy, Semantic Correctness / Logical Completeness, Operator Spec
     Completeness, Spec Operator Walkthrough — read the full contents of changed **doc** files;
     read source files only if the lens explicitly requires cross-referencing code (e.g.,
@@ -145,11 +158,18 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
   - `both`: Cross-File Rule Consistency — read full contents of **both** changed source and doc
     files; this lens isn't in either bucket above since a rule can be restated across a doc and a
     code file
+  - A class not named in any bucket above (e.g. one just added via the Pattern-File Update Hook)
+    defaults to `both` — the safe over-read — and `buildPrompt()` logs the class name plus its
+    unrecognized `lensKind` when this fires, so the bucket lists above get updated rather than
+    silently staying out of sync
 - `model?` — per Model Selection below
 
 **Model selection** (used as the `model` override when the Workflow script below calls `agent()`;
 omit for Sonnet — it's the default):
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
+- **Fable**: not used for per-class review agents — reserved for the Phase D fix-planning gate
+  (see below) and `xp-pair`'s generative design guidance step, both of which need deeper reasoning
+  on a synthesis/planning task rather than a per-class scan
 - **Sonnet**: all other classes
 
 `CLASSES` is reused verbatim by every round's Workflow call in the Per-Round Loop below, alongside
@@ -161,10 +181,15 @@ class, so written once in the script rather than once per class:
 1. An instruction to read `$PATTERNS_FILE` (passed as `args.patternFile`) and extract the section
    for `name` (a `### N. <name>` heading) itself — the only pattern-file read this step requires,
    and it happens inside the agent's own context
-2. `args.baseBranch`/`args.currentBranch` and the enumeration commands from Setup Step 4
+2. `args.baseBranch`/`args.currentBranch` and **all three** enumeration commands from Setup Step 4
+   — the orientation diff, the changed-source-files grep, and **both** doc-file commands (files
+   changed directly in the diff, and any README/CHANGELOG adjacent to a changed source file even
+   if untouched itself). A command added to Setup Step 4 must be added to `buildPrompt()` too —
+   they're two copies of the same list, kept in sync by hand, not derived from one source
 3. The `lensKind`-specific file-reading instruction above
 4. `args.intentBrief`
-5. The **cascade sweep rule** (embed verbatim):
+5. The **cascade sweep rule** (embedded below, condensed from the fuller prose in this section —
+   the meaning is unchanged, only the wording is shorter):
 
    > When you find a bug, state its specific failure mode in one sentence (e.g., "subprocess
    > returncode used before checking stdout"). Then scan *every other callsite of the same kind*
@@ -172,7 +197,7 @@ class, so written once in the script rather than once per class:
    > for the same failure mode before reporting. Report all instances together as a cluster.
    > Do NOT hold back and expect later rounds to catch siblings. A missed sibling is a miss.
 
-6. The `blast_radius` classification rule (embed verbatim): classify structurally, never by severity or gut feel —
+6. The `blast_radius` classification rule (embedded below, condensed the same way): classify structurally, never by severity or gut feel —
    `local` = confined to one file/callsite, something the current session could diagnose and fix
    in-context if it ever manifested; `cross_file` = spans multiple files, affects call sites
    outside the diff, or restates a rule defined elsewhere (e.g., a doc restating a code
@@ -255,14 +280,20 @@ const LENS_INSTRUCTIONS = {
 // above); only `priorFindings` differs round to round, and it isn't used here.
 function buildPrompt(c) {
   const range = `origin/${baseBranch}...${currentBranch}`
+  const lens = LENS_INSTRUCTIONS[c.lensKind] || LENS_INSTRUCTIONS.both
+  if (!LENS_INSTRUCTIONS[c.lensKind]) {
+    log(`class "${c.name}" has unrecognized lensKind "${c.lensKind}" — defaulting to 'both'. Update Setup Step 5's bucket list.`)
+  }
   return `Review the current diff against the "${c.name}" pattern class only.
 
 1. Read ${patternFile} and extract the section for pattern class "${c.name}" (a "### N. ${c.name}" heading) — that section defines what to look for.
 2. Run \`git diff ${range}\` once for orientation. Enumerate changed source files with
-   \`git diff --name-only ${range} | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"\`
-   and changed doc files with
-   \`git diff --name-only ${range} | grep -E "(\\.md|\\.rst|\\.adoc|CHANGELOG|README)"\`.
-3. ${LENS_INSTRUCTIONS[c.lensKind]}
+   \`git diff --name-only ${range} | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"\`,
+   changed doc files with
+   \`git diff --name-only ${range} | grep -E "(\\.md|\\.rst|\\.adoc|CHANGELOG|README)"\`,
+   and any README/CHANGELOG adjacent to a changed source file even if untouched itself with
+   \`git diff --name-only ${range} | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" | xargs -I{} dirname {} 2>/dev/null | sort -u | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \\( -name "README*" -o -name "CHANGELOG*" \\) 2>/dev/null' | sort -u\`.
+3. ${lens}
 4. Intent Brief: ${intentBrief}
 5. Cascade sweep rule: when you find a bug, state its specific failure mode in one sentence (e.g., "subprocess returncode used before checking stdout"), then scan every other callsite of the same kind in the entire changed source for the same failure mode before reporting. Report all instances together as a cluster. Do NOT hold back and expect later rounds to catch siblings — a missed sibling is a miss.
 6. blast_radius rule: classify structurally, never by severity or gut feel. local = confined to one file/callsite, diagnosable in-context if it ever manifested. cross_file = spans multiple files, affects callsites outside the diff, or restates a rule defined elsewhere. Justification must cite structural evidence actually checked (e.g. a grep for other callers) — an unsupported local tag is invalid, and local is never a reason to down-rank a real bug.
@@ -388,16 +419,26 @@ fresh cross-file yield — re-litigating something a human already resolved.
 **Fix planning gate (complex/cascading findings only)**: before spawning the fix-implementation
 agent, check the approved finding against fields it already carries from Phase A/B — no new data
 required: non-empty `cascade_siblings`, OR `blast_radius == 'cross_file'`, OR `severity` is
-`CRITICAL`/`HIGH`. If any is true, spawn a **native** planning-only agent first — `model: 'fable'`
-for extra reasoning depth on a fix that spans multiple sites; it needs no Edit/Write access, only
-the inputs to reason over. It receives the finding + recommendation + `cascade_siblings` + Intent
-Brief + the relevant pattern-class text from `$PATTERNS_FILE`, and returns a structured fix plan
-(ordered steps, files touched, how each `cascade_sibling` is covered).
+`CRITICAL`/`HIGH`. If any is true, spawn a top-level `Agent` call — not a `Workflow`/`agent()`
+stage, since Phase D runs in the orchestrating session, outside the Workflow script block above —
+with `model: 'fable'` for extra reasoning depth on a fix that spans multiple sites. It receives:
+- The finding + its recommendation + `cascade_siblings` + the Intent Brief
+- `$PATTERNS_FILE`'s path and the finding's `pattern_classes` array (plural — see Phase A/B's
+  synthesis step), with an instruction to read its own relevant sections itself. Never embed the
+  pattern-class text directly in this prompt — from the orchestrating session, that would require
+  `Read`-ing it into the orchestrator's own context first, exactly the cost Setup Step 5 exists to
+  avoid, and this gate can fire once per qualifying finding in a round, multiplying the cost
+- The same **git guardrails** as the fix agent below, minus the PERMITTED Edit/Write clause:
+  read-only — no Edit/Write at all; Bash only for reading files or grep/find
 
-This is a **native planning step, not an `xp-pair` invocation** — `xp-pair`'s own Step 5 commits
-and shuts down its team as part of finishing a session, which would violate the git guardrails
-below (no `git commit` inside a fix agent) and would drag a heavy, interactive team/driver session
-into what's meant to stay an automated per-round fix-apply step. Findings that don't meet the gate
+It returns a structured fix plan (ordered steps, files touched, how each `cascade_sibling` is
+covered). If it returns nothing usable, fall through to the fix agent with the finding and
+`cascade_siblings` alone, and note in the round summary that planning was skipped for that finding.
+
+This is a native planning step, not an `xp-pair` invocation — `xp-pair`'s own Step 5 commits and
+shuts down its team as part of finishing a session, which would violate the git guardrails below
+(no `git commit` inside a fix agent) and would drag a heavy, interactive team/driver session into
+what's meant to stay an automated per-round fix-apply step. Findings that don't meet the gate
 (simple, local, no siblings) skip planning entirely and go straight to the fix agent below, same
 as before — this keeps the common case cheap.
 
@@ -452,7 +493,10 @@ converged").
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
-     passing the same `PRIOR_FINDINGS` used this round — the script needs both fields). **This
+     and the same `priorFindings`, `patternFile`, `baseBranch`, `currentBranch`, and `intentBrief`
+     values used this round — `buildPrompt()` needs all five, not just `classes`/`priorFindings`;
+     omitting any of them renders literal "undefined" into every retried agent's prompt, which can
+     return a spuriously clean result and falsely promote this round to CONVERGED). **This
      retry does not count as an additional round** for the ">1 round has actually run" test
      below — it completes this round's incomplete data rather than starting a fresh sweep. Treat
      the retry's raw findings exactly like a late-arriving Phase A/B response: merge them into

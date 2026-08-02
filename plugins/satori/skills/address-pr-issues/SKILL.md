@@ -76,13 +76,13 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
 3.5. **Adversarial Review (Delegated)**: When the Step 2.5 gate says yes, run `/adversarial-review --rounds 1` against this round's changes before proceeding to fixes
 3.7. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
-4. **Plan & Execute**: Create implementation plan and fix issues using TDD / xp-pair for complex changes
+3.8. **Show Decision Summary**: Present process decisions (test approach, adversarial review, implementation mode) to the user before starting work
+4. **Plan & Execute**: Create implementation plan and fix issues using TDD; Direct implementation, xp-pair, or a delegated background Agent depending on complexity and session context (see Step 4.1)
 4.5. **Post-fix sweep**: Re-sweep fixes for cascading issues they may have introduced — add any hits to this round before committing
 5. **Validate**: Run local sonar-scanner to catch new issues before committing
 6. **Resolve Conversations**: Mark fixed GitHub threads as resolved, reconcile every thread's disposition (NEW)
 7. **Commit & Push**: Protected-branch check, then commit and push to PR branch
-8. **Monitor**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting)
-9. **Repeat**: If new significant issues appear, return to step 4.1; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
+8. **Monitor & Repeat**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting); if new significant issues appear, return to Step 4.1 — this repeat/escalate logic lives inside Step 8's own decision tree, not a separate step
 
 **IMPORTANT**: This is an **iterative process**. Expect multiple rounds:
 - Fixing code often introduces new SonarQube issues (e.g., extracted methods should be static)
@@ -446,7 +446,11 @@ change what the PR does?", not "how bad is it":
 **Persist the merged triage results** to `$WORKSPACE_DIR/triage.json` (an array of the per-issue
 JSON objects above, keyed by `issue_id`) before moving on — this is what Step 4.1 reads back to
 compute `DIRECTIONAL_COUNT`, so it survives a context compaction the same way `threads.json`/
-`fixes.json` do.
+`fixes.json` do. Also copy it to a round-stamped snapshot, `cp "$WORKSPACE_DIR/triage.json"
+"$WORKSPACE_DIR/triage.round-${ROUND}.json"` — `threads.json`'s own `before-round-N` snapshots
+carry thread metadata (`bucket`, `labels`) but never `severity`, so the round-stamped triage files
+are the only on-disk record of this round's severities; Step 8's severity-trend escalation (under
+"Active Copilot Re-Request") reads them back.
 
 Use the merged triage results to drive Step 3 categorization and the Step 2.5 adversarial review
 decision. **`DIRECTIONAL_COUNT`** is the count of `directional`-classified issues actually fixed
@@ -637,10 +641,13 @@ cost/coverage trade-off:
 Skill(adversarial-review, args="--rounds 1 --base-branch <base-branch> --intent-brief \"<intent-brief text>\"")
 ```
 
-The `/adversarial-review` skill runs one round of parallel per-class agents, returns findings
-for review-pause (Step 3's categorize-and-prioritize loop serves as the disposition point),
-applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, commit, stash,
-restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
+The `/adversarial-review` skill runs one round of parallel per-class agents and presents its own
+review-pause **live in this conversation**, using its own 4-way Phase C disposition (Fix /
+Contradicts design / Accepted risk / False positive) — not Step 3's severity-matrix template,
+which is a different vocabulary built for Copilot/SonarQube comments (fix now/defer, apply/
+ignore). It then applies approved fixes itself under git guardrails (PROHIBITED: git reset,
+rebase, commit, stash, restore; PERMITTED: Edit/Write, read-only bash, git diff/status), and
+returns a summary.
 
 If a class's review agent never returns a result (a terminal error even after retries), the
 single round comes back INCOMPLETE rather than a clean pass — since round 1 is always the round
@@ -648,8 +655,12 @@ cap here, this fires immediately rather than waiting for a later round. Treat it
 other finding needing a decision: retry that class, accept the gap as a known limitation, or
 abandon the round.
 
-Use the returned findings to drive the implementation step (Step 4/4.1) and the
-commit-and-push step (Step 7).
+**Adversarial review's own findings are already fixed by the time it returns — Step 4/4.1 does
+not re-implement them.** What Step 4/4.1 still handles is Step 2's *original* triaged issues (the
+ones whose complexity triggered the Step 2.5 gate in the first place); adversarial-review's
+summary (cascade siblings, known limitations) informs how you approach those, but the two skills
+aren't fixing the same list twice. Step 7 then commits both adversarial-review's already-applied
+fixes and whatever Step 4/4.1 adds this round, together.
 
 ### When to Skip (Rare — the gate decides)
 
@@ -789,8 +800,8 @@ Before implementing, present your process decisions to the user:
   - Reason: [why this choice]
 - Adversarial review: [Yes | Skipped]
   - Reason: [why this choice]
-- XP Pair: [Yes | No]
-  - Reason: [why this choice]
+- Implementation mode: [Direct | XP Pair | Delegated background Agent]
+  - Reason: [why this choice; if Delegated, note the round count and context pressure driving it]
 
 **If skipping recommended process steps, I need your approval.**
 
@@ -809,6 +820,10 @@ Based on confirmed issues, create a plan using TDD principles:
 - **Simple** (< 20 lines, obvious fix): Handle directly with test-after
 - **Moderate** (20-100 lines, clear design): Handle directly, choose test-first OR test-after based on clarity
 - **Complex** (> 100 lines OR unclear design): Use xp-pair skill
+- **Any complexity, multiple rounds already handled directly in this session**: consider
+  delegating to a background `Agent` instead (see Step 4.1's "For Context-Constrained Multi-Round
+  Sessions") — orthogonal to the complexity ladder above, driven by session context pressure
+  rather than the size of any single fix
 
 **TDD Decision** (per CLAUDE.md):
 - **Test-First**: When design needs thinking through
@@ -951,10 +966,28 @@ Acceptance Criteria:
 - Tests cover happy path + edge cases + errors")
 ```
 
-**Caveat**: `xp-pair`'s own Step 5 commits and shuts down its team as part of finishing a session
-— invoking it here **replaces** this round's Step 7 commit, it doesn't precede it. Don't also run
-Step 7's `commit-pr-fixes.sh` for a round whose only fix went through xp-pair; treat xp-pair's
-commit as this round's commit and resume at Step 8.
+**Caveat**: `xp-pair`'s own Step 5 commits (with an ad-hoc message, not this skill's round-tracked
+one) and shuts down its team — but that **only replaces Step 7's `commit-pr-fixes.sh` sub-step**,
+nothing else. Do not "resume at Step 8" — still run, in order: Step 4.5 (Post-Fix Cascade Sweep,
+MANDATORY), Step 5 (local sonar-scanner), Step 6 (Resolve Conversations — REQUIRED before
+pushing), then in Step 7:
+- Skip the `commit-pr-fixes.sh` invocation (xp-pair already committed) — but its recovery path
+  can't adopt that commit for you: it only fires when `HEAD`'s subject matches `PR #<n> review
+  feedback (Round <r>)`, which an xp-pair commit won't. Write the round's `fixes.json` entry
+  directly instead, so `directional_count` still reaches disk:
+  ```bash
+  jq --arg r "$ROUND" --arg sha "$(git rev-parse HEAD)" --argjson d "$DIRECTIONAL_COUNT" \
+    '. + {($r): {commit: $sha, files: [], directional_count: $d, timestamp: now|todate}}' \
+    "$FIXES_FILE" > "$FIXES_FILE.tmp" && mv "$FIXES_FILE.tmp" "$FIXES_FILE"
+  ```
+  Skipping this step leaves the round missing from `fixes.json`; Step 8 then reads `// 0` and
+  silently skips the Copilot re-request for what may be the most directional round in the PR.
+- Still run the Pre-Push Checklist, the Protected-Branch Guard, and
+  `git push -u origin "$CURRENT_BRANCH"` — xp-pair's Step 5 commits but never pushes.
+
+If only some of this round's fixes went through xp-pair, run xp-pair first and let the remaining
+direct fixes land as follow-up commits in the same round before Step 7's push, rather than mixing
+xp-pair's commit with an uncoordinated second one.
 
 **Note**: For simpler issues (obvious bugs, straightforward refactoring), handle directly without xp-pair.
 
@@ -1140,7 +1173,7 @@ times out or errors, proceed to manual dashboard review (Option B below).
 
 ### Step 5c: Review Results
 
-**Option A: API Access Available** (preferred) — use the same script as Step 2's fetch:
+**Option A: API Access Available** (preferred) — use the same script as Step 1's fetch:
 ```bash
 ./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
@@ -1210,6 +1243,15 @@ For issues you're not fixing, resolve with a reason instead of leaving the threa
 **Resolving threads is MANDATORY** — it signals to reviewers that you've acknowledged and
 addressed each issue, whether by fixing it or explaining why not.
 
+### Document Already-Decided Dispositions
+
+For Step 3's **Already Decided** findings (a finding that restates a design tradeoff already made
+in an earlier round), resolve citing that earlier decision rather than leaving the thread open:
+
+```bash
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Already decided: [cite the round/commit that made this call] — not re-litigating."
+```
+
 ### Look Up a Thread's IDs from Cache
 
 `THREADS_FILE` is a plain JSON cache — query it with `jq` for a specific thread's IDs, then hand
@@ -1271,6 +1313,12 @@ status table:
 - `resolved-silent` — handled in Step 1.6's Bucket 2 (Silent)
 - `replied-and-resolved` — fixed or explained in Step 4.1/6
 - `won't-fix-resolved` — documented won't-fix + resolved above
+- `already-decided-resolved` — Step 3's **Already Decided** disposition; replied citing the
+  earlier round's commit/comment and resolved above, with no code change this round. Do not fold
+  into `replied-and-resolved` — that row implies this round's work addressed it, whereas an
+  Already-Decided thread was closed by pointing at *prior* work. If the user resolved an
+  `[already decided?]`-tagged item as genuinely new instead, classify it by its actual outcome
+  (`replied-and-resolved` / `skipped`), not this bucket
 - `skipped` — user chose to skip during Step 3.8 approval
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
 - `kept-unverifiable` — Step 1.6's Bucket 3 with a degraded-data label
@@ -1394,14 +1442,19 @@ git push -u origin "$CURRENT_BRANCH"
 
 **Some repos auto-review on every push, not just PR open.** The counter below only increments on
 a *confirmed explicit* re-request — it does not know whether this repo also triggers a fresh
-Copilot review automatically after every push. The tell: new Copilot comments show up in "Check
-for New Copilot Comments" below on a round where this counter was **not** incremented (no
-re-request sent that round). If you observe that pattern, say so once — "this repo appears to
-auto-review Copilot on every push; the count below reflects explicit re-requests only, so the
-true review-cycle count is higher" — since it changes how the numeric gate just below should be
-read: such a repo can reach real review #3+ well before the explicit counter does. Either way,
-run "Check for New Copilot Comments" after every push regardless of whether this round sent an
-explicit re-request — don't gate it behind the re-request branch.
+Copilot review automatically after every push. One tell: new Copilot comments show up in "Check
+for New Copilot Comments" below on a round where this counter was **not** incremented. But rule
+out the other explanations for that same tell before concluding auto-review is the cause — the
+counter also doesn't increment when `DIRECTIONAL_COUNT == 0` (this skill deliberately skipped the
+re-request) or when the `gh pr edit` call failed (the `else` branch below intentionally leaves it
+unchanged) — and comments from a *previous* round's re-request can land late, during this round's
+wait. Only if none of those apply — no skip, no failed `gh` call, and the previous round's
+re-request was already answered before this round's comments appeared — say so once: "this repo
+appears to auto-review Copilot on every push; the count below reflects explicit re-requests only,
+so the true review-cycle count **may be** higher." That changes how the numeric gate just below
+should be read: such a repo can reach real review #3+ before the explicit counter does. Either
+way, run "Check for New Copilot Comments" after every push regardless of whether this round sent
+an explicit re-request — don't gate it behind the re-request branch.
 
 Re-derive `$ROUND` and `$FIXES_FILE` if this is a new shell/session (see the shorthand note in
 Step 1 — they don't persist from an earlier command invocation any more than `$CURRENT_BRANCH`
@@ -1422,31 +1475,13 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   ```bash
   COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
   LAST_REREQUEST_ROUND_FILE="$WORKSPACE_DIR/last_rerequest_round.txt"
+  OVERRIDE_FILE="$WORKSPACE_DIR/escalation_override.txt"
   # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
   [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
 
-  if [[ "$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)" == "$ROUND" ]]; then
-    # Step 8 is being re-entered for a round that already re-requested successfully (e.g.
-    # after a context compaction or a resumed session) — re-requesting again would
-    # double-count a single round's request.
-    echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
-  elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
-    # This re-request would be review #3 or beyond. Before recommending escalation, pair the
-    # raw count with a one-line severity trend of the last 1-2 rounds — a high count with a
-    # DECLINING trend (Critical/High → Medium → Low → doc-only) supports escalating; a high
-    # count where recent rounds are still surfacing genuinely new Critical/High bugs does NOT,
-    # and the user needs to see that to make an informed override (see "Numeric /plan
-    # Escalation" under Convergence Criterion below). Derive the trend from disk, not
-    # conversation memory: the pre-round thread snapshots this same Step 8 already saves each
-    # round (`${THREADS_FILE}.before-round-N` under "Check for New Copilot Comments") hold what
-    # each recent round found — diff the last 1-2 of them and summarize severities, don't rely
-    # on recalling earlier rounds from context.
-    echo "🛑 This would be Copilot review #3+."
-    echo "   Severity trend, last 1-2 rounds: <summarize from \${THREADS_FILE}.before-round-N snapshots>"
-    echo "   Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
-  else
-    # Capture gh's own error output rather than assuming why it failed. Use exact spelling
-    # @copilot; no REST fallback.
+  # Shared by the normal re-request (else, below) and an escalation override (elif, below) so
+  # the two paths can't drift into different counter-advance behavior.
+  do_rerequest() {
     if GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
       # Only advance the counter and the round marker on a CONFIRMED successful re-request —
       # advancing them on failure would record a re-request that never happened, which both
@@ -1464,6 +1499,45 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
       echo "    Neither the counter nor the round marker advanced — a retry this round is"
       echo "    still permitted once the underlying problem is fixed."
     fi
+  }
+
+  if [[ "$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)" == "$ROUND" ]]; then
+    # Step 8 is being re-entered for a round that already re-requested successfully (e.g.
+    # after a context compaction or a resumed session) — re-requesting again would
+    # double-count a single round's request.
+    echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
+  elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
+    # This re-request would be review #3 or beyond. Before recommending escalation, pair the
+    # raw count with a one-line severity trend of the last 1-2 rounds — a high count with a
+    # DECLINING trend (Critical/High → Medium → Low → doc-only) supports escalating; a high
+    # count where recent rounds are still surfacing genuinely new Critical/High bugs does NOT,
+    # and the user needs to see that to make an informed override (see "Numeric /plan
+    # Escalation" under Convergence Criterion below). Derive the trend from disk, not
+    # conversation memory: Step 2 snapshots this round's severities to
+    # $WORKSPACE_DIR/triage.round-${ROUND}.json — the ${THREADS_FILE}.before-round-N snapshots
+    # do NOT carry severity (only bucket/labels), so triage.round-*.json is the actual source.
+    PENDING_REVIEW_NUM=$(( $(cat "$COUNT_FILE") + 1 ))
+    TREND=""
+    for r in "$ROUND" "$((ROUND - 1))"; do
+      f="$WORKSPACE_DIR/triage.round-${r}.json"
+      [[ -f "$f" ]] || continue
+      TREND="${TREND}round ${r}: $(jq -r '[.[].severity] | group_by(.) | map("\(.[0]):\(length)") | join(", ")' "$f"); "
+    done
+    echo "🛑 This would be Copilot review #${PENDING_REVIEW_NUM} (counter=$(cat "$COUNT_FILE"))."
+    echo "   Severity trend, last rounds available: ${TREND:-no triage.round-*.json snapshots found yet}"
+    if [[ "$(cat "$OVERRIDE_FILE" 2>/dev/null)" == "$ROUND" ]]; then
+      echo "   Already overridden for round $ROUND — re-requesting instead of escalating."
+      do_rerequest
+    else
+      echo "   Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
+      echo "   Present both to the user now and wait for their decision:"
+      echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
+      echo "     - Override: record it — echo \"$ROUND\" > \"$OVERRIDE_FILE\" — then call do_rerequest"
+      echo "       (same counter-advance-on-success rule as a normal re-request). Recording the"
+      echo "       round means a resumed session won't re-prompt for the same round's override."
+    fi
+  else
+    do_rerequest
   fi
   ```
 
@@ -1613,15 +1687,28 @@ not a round cap.
 In addition to the qualitative signs above, Step 8's re-request gate (see "Active Copilot
 Re-Request") checks `$WORKSPACE_DIR/copilot_review_count.txt` inline, at the point of the
 re-request decision itself, rather than deferring the check here: `-ge 2` means the pending
-re-request would be review #3 or beyond, and Step 8 stops before sending it. When that happens,
-recommend a `/plan` cycle instead: draft the actual `/plan` prompt — not a placeholder — naming
-this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check gaps in
-the export module"), with thread IDs and affected scope where available. Present it to the user
-and wait for their response before continuing. This turns "just keep fixing what Copilot flags"
-into a deliberate checkpoint once a PR has clearly outgrown reactive rounds. A recurring theme
-across rounds is exactly what the Convergence Criterion's cross-file yield measures — this
-escalation is the same move as `/adversarial-review`'s round-cap escalation, applied to live
-Copilot rounds instead of its internal review rounds.
+re-request would be review #3 or beyond, and Step 8 stops before sending it. The count alone
+isn't the whole signal, though — Step 8 pairs it with a one-line severity trend read from
+`$WORKSPACE_DIR/triage.round-*.json` (persisted per round by Step 2) before recommending
+anything, since a high count with new Critical/High findings still surfacing supports overriding
+the escalation, not accepting it. Also account for repos that auto-review Copilot on every
+push (see Step 8's note above the re-request gate) — the explicit-re-request counter can
+understate the true review-cycle count there, so the gate can fire "late" relative to the real
+number of reviews.
+
+When escalation stands (no override, or the user declines one): recommend a `/plan` cycle
+instead: draft the actual `/plan` prompt — not a placeholder — naming this PR's recurring themes
+(e.g. "error handling across rounds," "repeated null-check gaps in the export module"), with
+thread IDs and affected scope where available. Present it to the user and wait for their response
+before continuing. This turns "just keep fixing what Copilot flags" into a deliberate checkpoint
+once a PR has clearly outgrown reactive rounds. A recurring theme across rounds is exactly what
+the Convergence Criterion's cross-file yield measures — this escalation is the same move as
+`/adversarial-review`'s round-cap escalation, applied to live Copilot rounds instead of its
+internal review rounds.
+
+When the user overrides instead: Step 8 records the round in `$WORKSPACE_DIR/escalation_override.txt`
+and re-requests through the same shared `do_rerequest` logic as a normal round, so the counter and
+`last_rerequest_round.txt` stay consistent either way.
 
 ## SonarQube Issue Resolution
 

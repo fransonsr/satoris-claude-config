@@ -14,13 +14,18 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 - User asks to "catch issues early", "avoid PR feedback", "pre-commit review"
 - After implementing a feature but before committing
 - This skill predicts what Copilot will flag BEFORE you push
-- **Self-check (NEW)**: run this even if the user never says a trigger phrase. Before invoking
-  `gh pr create` for a change, check it yourself against `/address-pr-issues`' own Step 2.5
-  complexity indicators (multiple execution paths, string/regex parsing, type resolution,
-  cross-module interactions, defensive/null-handling logic, unclear edge cases). If 2 or more
-  apply, run this skill proactively — a change complex enough to warrant it doesn't stop being
-  complex just because nobody named it. Keep this narrow: routine, low-complexity changes (0-1
-  indicators) should not trigger this on their own.
+- **Self-check (NEW)**: run this even if the user never says a trigger phrase, and even if this
+  skill already ran earlier for the current `HEAD` (compare `git rev-parse HEAD` against
+  `.git/pre-pr-audit-last-sha`, written at the end of a completed run per Step 8 below — skip if
+  unchanged; re-run only if new commits landed since). Before invoking `gh pr create` for a change, run
+  `/address-pr-issues`' own Step 2.5 checklist against it (Complexity Indicators + Decision
+  Rules — don't hand-copy a subset here; the two lists have drifted before and cite-by-name
+  avoids that). Run this skill proactively whenever Step 2.5's own **MUST spawn** rule fires (2+
+  complexity indicators checked, OR cannot enumerate 3+ specific edge cases, OR not confident
+  Copilot finds zero issues) — a change complex enough to warrant it doesn't stop being complex
+  just because nobody named it. Skip only when Step 2.5's own **MAY skip** rule is fully
+  satisfied (0-1 indicators AND 3+ edge cases enumerable AND confident AND the change is pure
+  style/config/docs/rename) — keep this narrow so routine, low-complexity changes don't trigger it.
 
 ❌ **AFTER creating PR** (reactive):
 - Use `/address-pr-issues` instead
@@ -98,25 +103,41 @@ fi
 - Record count validation
 ```
 
-## Step 4: Run Parallel Analysis (Workflow)
+## Step 4: Run Parallel Analysis (Workflow) + Adversarial Review (Direct)
 
-Steps 4, 4.5, 4.6, 4.7, 4.8, and 4.9 all run as parallel workflow agents — not sequentially in this session. This keeps the implementation session's context lean: only findings return, not the full analysis work.
+Steps 4, 4.5, 4.6, 4.8, and 4.9 run as parallel workflow agents — not sequentially in this
+session. This keeps the implementation session's context lean: only findings return, not the
+full analysis work. **Step 4.7 (Adversarial Pattern Review) is different and runs separately,
+NOT inside this Workflow batch** — it needs its own live, per-round human review-pause (Phase C)
+before applying fixes, and a `Workflow`-spawned agent runs to completion and returns a result; it
+cannot pause mid-execution to show the orchestrating session's user something and wait for a
+real decision. Only the orchestrating session itself can host that, the same way
+`/address-pr-issues`' Step 3.5 invokes `/adversarial-review` directly rather than through a
+spawned sub-agent.
 
-Use the `Workflow` tool (Claude Code's multi-agent orchestration primitive) to spawn these agents simultaneously. Pass each agent the git diff output, changed file contents, and project patterns from CLAUDE.md. Step 4.7's entry in this batch is the `Workflow` tool's own agent making the `Skill(adversarial-review, ...)` call described in Step 4.7 below — it is not a separate, second invocation outside this parallel batch:
+**Workflow batch** (Pattern Checks, Consistency Checks, Maven Plugin Checks, Spec-Completeness
+Review, Whole-Document Coherence Walk): use the `Workflow` tool (Claude Code's multi-agent
+orchestration primitive) to spawn these agents simultaneously. Pass each agent the git diff
+output, changed file contents, and project patterns from CLAUDE.md:
 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
 - **Maven Plugin Checks** (skip if no `@Mojo` annotation or `maven-plugin` packaging detected) — checks in Step 4.6 below
 - **Spec-Completeness Review** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.8 below; returns findings for review-pause in Step 5
 - **Whole-Document Coherence Walk** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.9 below; single pass, non-repeating; returns findings for review-pause in Step 5
-- **Adversarial Pattern Review** — delegates to /adversarial-review (see Step 4.7); returns per-round findings for review-pause in Step 5
 
-Each agent returns findings as a list:
+Each agent in this batch returns findings as a list:
 ```json
 [{"severity": "CRITICAL|HIGH|MEDIUM|LOW", "file": "path:line", "description": "...", "recommendation": "..."}]
 ```
+Merge all findings by severity, then present them interactively (Step 5).
 
-Merge all findings by severity, then proceed to Step 5 to present interactively.
+**Adversarial Pattern Review** (Step 4.7): invoke `Skill(adversarial-review, ...)` directly —
+nothing stops issuing this call in the same turn as the `Workflow` batch above (they don't depend
+on each other's results), but it is its own top-level invocation, not an entry inside the
+Workflow's `parallel()` call. Its own Phase C presents findings and waits for disposition live,
+round by round, as each round completes — this can happen before, during, or after the Workflow
+batch above returns; the two aren't synchronized. See Step 4.7 below for the full invocation.
 
 The detailed check instructions for each agent follow below.
 
@@ -649,7 +670,15 @@ The `/adversarial-review` skill handles the full protocol:
 - Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/restore)
 - Up to 3 rounds, terminating when a round yields zero new cross-file findings (local findings are reported for disposition but do not block convergence)
 - Escalation at the round cap: if cross-file findings are still surfacing after round 3, the skill recommends a targeted deep-dive agent scoped to the recurring theme (or surfaces the theme to you for a judgment call)
-- If a class's review agent never returns a result even after retries, that lens is silently retried next round while rounds remain — only once round 3 (the cap) is reached without every class returning a result does the skill signal a distinct "INCOMPLETE" outcome instead of a clean pass, asking you to retry it, accept the gap, or abandon the round. INCOMPLETE and the NOT-converged escalation above are evaluated independently and can both fire at the cap — see /adversarial-review's Summary Output for the combined "INCOMPLETE + NOT converged" badge covering that case
+- If a class's review agent never returns a result even after retries, `/adversarial-review` logs
+  it visibly (`N class(es) returned no result and are excluded from this round: ...`) and that
+  lens gets a natural retry next round while rounds remain — this is visible in the round's
+  output, not silent, though no disposition is solicited from you yet. Only once round 3 (the
+  cap) is reached without every class returning a result does the skill signal a distinct
+  "INCOMPLETE" outcome instead of a clean pass, asking you to retry it, accept the gap, or abandon
+  the round. INCOMPLETE and the NOT-converged escalation above are evaluated independently and can
+  both fire at the cap — see /adversarial-review's Summary Output for the combined "INCOMPLETE +
+  NOT converged" badge covering that case
 
 The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), known-limitations list (accepted-risk items) for the PR description, a residual-risk statement (never a "clean" claim — a zero-yield round is one sample, not proof), and any escalation or incomplete-review recommendation.
 
@@ -659,25 +688,27 @@ The skill returns a summary containing: per-round breakdown, findings by class s
 CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, or DESIGN.md changed — same trigger as Step 4.9,
 since both target procedural/spec documents, not just Claude Code skill files).
 
-This step runs the **heuristic checks of Pattern #9 (Operator Spec Completeness)** from
-`copilot-review-patterns.md` — the five *known* failure modes (scope sweep, rename cascade,
-operator executability, branch completeness, term definition) that Copilot finds one at a time
-across many rounds. Running them proactively in one pass eliminates those rounds. These five
-checks treat the changed documents as *operator specifications* — executable, complete, and
-internally consistent. This applies to any procedural document (a runbook, a migration guide,
-an onboarding doc, a SKILL.md), not just Claude Code skills.
+This step runs the **heuristic checks of the Operator Spec Completeness pattern class** (named,
+not numbered — `adversarial-review`'s own rule is to reference classes by name only, since
+numbers drift as classes are added/reordered in `copilot-review-patterns.md`) — the five *known*
+failure modes (scope sweep, rename cascade, operator executability, branch completeness, term
+definition) that Copilot finds one at a time across many rounds. Running them proactively in one
+pass eliminates those rounds. These five checks treat the changed documents as *operator
+specifications* — executable, complete, and internally consistent. This applies to any procedural
+document (a runbook, a migration guide, an onboarding doc, a SKILL.md), not just Claude Code
+skills.
 
 **Complementary lens handled elsewhere — do NOT duplicate here**: the holistic operator
-walkthrough (Pattern #10, "Spec Operator Walkthrough") is the judgment-based complement to these
-heuristics — a reviewer reads the changed spec linearly as a first-time operator and flags where
-they would get stuck, with *no* foreknowledge of the five failure modes above. It runs
+walkthrough (the **Spec Operator Walkthrough** pattern class) is the judgment-based complement to
+these heuristics — a reviewer reads the changed spec linearly as a first-time operator and flags
+where they would get stuck, with *no* foreknowledge of the five failure modes above. It runs
 **automatically as a parallel class agent inside `/adversarial-review` (Step 4.7)** — no separate
-invocation is needed in Step 4.8. This separation is deliberate: priming one agent with Pattern
-#9's failure-mode list would contaminate the fresh-eyes walk (it would hunt for those five
-patterns instead of reading naively), and adversarial-review's per-class parallel agents never see
-each other's findings, which preserves the walk's independence. Overlap between Pattern #9 findings
-(here) and Pattern #10 findings (Step 4.7) is expected; the adversarial-review synthesizer
-deduplicates by the `file` string.
+invocation is needed in Step 4.8. This separation is deliberate: priming one agent with Operator
+Spec Completeness's failure-mode list would contaminate the fresh-eyes walk (it would hunt for
+those five patterns instead of reading naively), and adversarial-review's per-class parallel
+agents never see each other's findings, which preserves the walk's independence. Overlap between
+Operator Spec Completeness findings (here) and Spec Operator Walkthrough findings (Step 4.7) is
+expected; the adversarial-review synthesizer deduplicates by the `file` string.
 
 Spawn a review agent with the full content of each changed spec/doc file and these five Pattern
 #9 checks:
@@ -746,7 +777,7 @@ Return findings as:
 
 **This step runs once, pre-PR. It does not repeat in the adversarial-review fix cycle.**
 
-The narrow-scope Pattern #10 agent in adversarial-review reads only the changed sections of a spec and fires on every fix round. This step is its complement: it reads the **entire document** as a first-time reader, once, before the PR opens. Its specific purpose is to catch integration breaks between changed and unchanged content — issues that only appear when the whole document is read in sequence and the changed sections must cohere with the sections around them.
+The narrow-scope Spec Operator Walkthrough agent in adversarial-review reads only the changed sections of a spec and fires on every fix round. This step is its complement: it reads the **entire document** as a first-time reader, once, before the PR opens. Its specific purpose is to catch integration breaks between changed and unchanged content — issues that only appear when the whole document is read in sequence and the changed sections must cohere with the sections around them.
 
 ### Agent mandate
 
@@ -757,7 +788,7 @@ Spawn a fresh-eyes agent with the full content of each changed spec file. The ag
 Do **not** give the agent:
 - The git diff or any indication of which sections changed
 - The implementation session's intent or PR description
-- Pattern #9's or Pattern #10's failure-mode lists
+- The Operator Spec Completeness or Spec Operator Walkthrough classes' failure-mode lists
 
 ### What to look for
 
@@ -770,27 +801,38 @@ The agent reads linearly and flags:
 
 ### Output format
 
+The agent was deliberately given no diff, so `changed_section`/`affected_section` below are its
+own **best-guess** identification of which side of an inconsistency looks newer — inferred from
+context (a "(NEW)" marker, more specific/current-sounding language, an orphaned reference pointing
+*at* one side and not the other) — not ground truth read from a diff it never saw. Say so if it's
+genuinely unclear which side changed; a correctly-identified inconsistency with an uncertain
+`changed_section` guess is still a valid, actionable finding.
+
 ```json
 [{
   "severity": "HIGH|MEDIUM|LOW",
   "location": "section or step description",
   "description": "what fails to cohere and why",
-  "changed_section": "the section that changed",
-  "affected_section": "the unchanged section affected by the integration break"
+  "changed_section": "best guess at the section that changed (or \"unclear\" if not inferable)",
+  "affected_section": "the other section involved in the inconsistency"
 }]
 ```
 
-## Step 5: Present Findings Interactively (Per-Round Review-Pause)
+## Step 5: Present Findings Interactively
 
-This step is the **review-pause** between each adversarial-review round. For findings from Step 4.7, the `/adversarial-review` skill returns them here and waits for disposition before applying any fix.
+This step presents findings from the **Workflow batch** in Step 4 (Pattern Checks, Consistency
+Checks, Maven Plugin Checks, Spec-Completeness Review, Whole-Document Coherence Walk) — **not**
+adversarial-review findings. `/adversarial-review`'s own Phase C is its own live, per-round
+review-pause, presented and disposed of entirely within the `Skill(adversarial-review, ...)` call
+itself, using its own four-way disposition (Fix / Contradicts design / Accepted risk / False
+positive) — it doesn't hand findings back here for a second presentation in this step's format.
 
-For each issue found (pattern-check findings and adversarial-review findings), present:
+For each issue found in the Workflow batch, present:
 
 ```markdown
 ## Issue #1: Resource Leak (CRITICAL)
 
 **File**: `FullExportJob.java:159`
-**Pattern class**: Infrastructure / Environment Handling  ← for adversarial-review findings
 **Pattern**: `.broadcast()` without `.destroy()`
 
 **Code**:
@@ -814,7 +856,10 @@ Would you like me to:
 5. Show me the proposed fix first
 ```
 
-**Accepted-risk items MUST be recorded in the adversarial-review summary** and surfaced in the PR description (Step 8). Silently dropping them is not acceptable — the absence of a finding in the summary is a claim that it was addressed.
+**Accepted-risk items MUST be recorded in this step's own summary** (Step 8's per-check findings)
+and surfaced in the PR description — same principle `/adversarial-review` applies to its own
+Known Limitations, applied here to Workflow-batch findings. Silently dropping them is not
+acceptable — the absence of a finding in the summary is a claim that it was addressed.
 
 Wait for user input before proceeding to the next issue.
 
@@ -915,7 +960,19 @@ Options:
 3. Show me the command to run it myself
 ```
 
-If user chooses option 1:
+If user chooses option 1, resolve this repo's own project key first — never assume a specific
+one:
+
+```bash
+if [ -f "sonar-project.properties" ]; then
+  SONAR_PROJECT_KEY=$(grep -m1 '^sonar.projectKey=' sonar-project.properties | cut -d= -f2-)
+fi
+if [ -z "$SONAR_PROJECT_KEY" ]; then
+  echo "No sonar-project.properties found (or no sonar.projectKey line) — what's this repo's SonarQube project key?"
+fi
+```
+
+Then run the analysis against that key:
 
 ```bash
 # Build first (skip tests for speed)
@@ -924,7 +981,7 @@ mvn clean install -DskipTests
 # Run SonarQube analysis
 mvn sonar:sonar \
   -Dsonar.host.url=https://sonarqube.churchofjesuschrist.org/ \
-  -Dsonar.projectKey=fs-eng_cds-sls-bulk-export_maven-build \
+  -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
   -Dsonar.token=$SONAR_TOKEN
 
 # Wait for analysis to complete
@@ -933,7 +990,7 @@ sleep 10
 
 # Check quality gate
 QUALITY_GATE=$(curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-  "https://sonarqube.churchofjesuschrist.org/api/qualitygates/project_status?projectKey=fs-eng_cds-sls-bulk-export_maven-build" \
+  "https://sonarqube.churchofjesuschrist.org/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
   | jq -r '.projectStatus.status')
 
 if [ "$QUALITY_GATE" = "OK" ]; then
@@ -942,7 +999,7 @@ else
   echo "❌ Quality Gate: FAILED"
   # Fetch and display issues
   curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-    "https://sonarqube.churchofjesuschrist.org/api/issues/search?componentKeys=fs-eng_cds-sls-bulk-export_maven-build&resolved=false&inNewCodePeriod=true&impactSeverities=MEDIUM,HIGH,CRITICAL" \
+    "https://sonarqube.churchofjesuschrist.org/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&inNewCodePeriod=true&impactSeverities=MEDIUM,HIGH,CRITICAL" \
     | jq -r '.issues[] | "[\(.impacts[0].severity)] \(.component | split(":")[-1]):\(.line // "N/A") - \(.message)"'
 fi
 ```
@@ -1022,6 +1079,11 @@ OR
 3. Commit: `git commit -m "..."`
 4. Push: `git push`
 ```
+
+**Record the audited commit** — `git rev-parse HEAD > .git/pre-pr-audit-last-sha` — so the
+self-check in "When to Use This Skill" can tell a genuinely new change from a re-trigger on a
+`HEAD` this skill already audited (re-invoking a mandatory `/adversarial-review --rounds 3` sweep
+is the most expensive thing either skill does; don't pay that cost twice for the same commit).
 
 ## Important Notes
 

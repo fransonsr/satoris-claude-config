@@ -1,7 +1,7 @@
 ---
 name: xp-pair
 description: XP pair programming with navigator (design oversight) and driver (implementation). Use for complex features requiring design oversight, TDD coaching, or high-quality code with continuous review.
-argument-hint: [task-description]
+argument-hint: [task-description | "Task: ... Acceptance Criteria: ..."]
 ---
 
 # XP Pair Programming
@@ -9,6 +9,23 @@ argument-hint: [task-description]
 Creates a two-person XP pairing team:
 - **Navigator** (you): Design oversight, architectural decisions, code review, TDD enforcement
 - **Driver** (subagent): Implementation, coding, following TDD discipline
+
+## Inputs
+
+`args` is either a bare task description, or a structured payload of the form:
+```
+Task: <one-line summary of what to build>
+Acceptance Criteria:
+- <criterion>
+- <criterion>
+...
+```
+When the `Acceptance Criteria:` block is present, its first line's `Task:` text becomes the
+`TaskCreate` subject in Step 1 below, and the criteria become that task's description checklist
+verbatim — skip re-deriving them. When `args` is only a bare description (no `Acceptance
+Criteria:` block), the navigator derives the acceptance criteria itself in Step 1, same as before
+this structured form existed. `address-pr-issues`' Step 4.1 is the caller that sends the
+structured form, via `Skill(xp-pair, args="Task: ...\nAcceptance Criteria:\n- ...")`.
 
 ## When to Use
 
@@ -133,27 +150,34 @@ sequential, not parallel with them, since it consumes their output — with `mod
 increased reasoning depth on the design decision itself. It receives:
 - The task description
 - Every discovery agent's findings summary
-- The text of any `~/.claude/copilot-review-patterns.md` pattern class whose "how to recognize"
-  language matches this task's characteristics (e.g., a task involving string/prefix parsing
-  pulls the String Splitting and Prefix/Suffix Stripping classes) — read the file directly inside
-  this agent's own prompt/context, not pre-loaded by the navigator, for the same context-cost
-  reason `adversarial-review` reads its pattern file per-agent rather than per-orchestrator (see
-  that skill's Setup Step 5)
+- An instruction to resolve and read the pattern file itself: prefer
+  `~/.claude/copilot-review-patterns.md`; if absent, fall back to the bundled
+  `plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md` snapshot
+  (mirroring `adversarial-review`'s own Setup Step 1). Enumerate class names with
+  `grep "^### [0-9]" <file>`, pick the classes whose names or `**How to find**` sections match
+  this task's characteristics, and read only those sections — the navigator passes the task
+  description and discovery findings, never the pattern text itself; the agent selects and reads
+  its own sections, for the same context-cost reason `adversarial-review` reads its pattern file
+  per-agent rather than per-orchestrator (see that skill's Setup Step 5)
 
 It returns a design recommendation with explicit tradeoffs, plus a "watch out for" list of edge
 cases sourced from the matching pattern classes — not just "what to build" but "what has broken
 in similar code before." The navigator presents this synthesis as the basis for the discussion
 with the user below — it augments, not replaces, the human sign-off this step already requires.
 
-**Example synthesis** (now produced by the design-synthesis agent, presented by the navigator):
+**Example synthesis** (now produced by the design-synthesis agent, presented by the navigator —
+using two of the real classes in `copilot-review-patterns.md`, not the informal "Things That SEEM
+Simple But AREN'T" list above):
 ```
 "Verification complete:
 - Legacy: Uses StringUtils.split(line, ",", 4) — limit param handles commas in data columns
 - Data format: S3 key pattern is {prefix}/{yyyy}/{MM}/{dd}/{recordId}.json (confirmed from sample)
 - Codebase: CollectionMetadataReader uses DataStorage abstraction — PartitionMetadataReader should match
 - Docs: Handoff says 'cross-account S3 access requires DataStorage, not S3Client directly'
-- Watch out for (String Splitting pattern class): delimiters appearing inside data columns,
-  trailing empty fields, and lines with fewer columns than expected
+- Watch out for (Defensive Guards (null / type / encoding) pattern class): delimiters appearing
+  inside data columns, trailing empty fields, and lines with fewer columns than expected —
+  also (Semantic Correctness / Logical Completeness): confirm the split's limit parameter still
+  matches the schema if the column count ever changes
 
 Decision: Use StringUtils.split approach with DataStorage abstraction."
 ```
