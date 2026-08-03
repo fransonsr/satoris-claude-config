@@ -18,7 +18,9 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
   skill already ran earlier for the current tree (compare the same audited-tree hash **and base
   branch** Step 8 below derives — HEAD plus any uncommitted tracked changes via `git stash
   create`, falling back to `git rev-parse HEAD^{tree}` only when the tree is already clean, plus a
-  fingerprint of untracked files, plus `$BASE_BRANCH` — against the marker Step 8 writes at
+  fingerprint of untracked files, plus `$BASE_BRANCH` (derived the same way Step 1 below does —
+  this self-check only applies once Step 1 has already run at least once in the current session)
+  — against the marker Step 8 writes at
   `"$(git rev-parse --git-dir)/pre-pr-audit-last-audit"`; skip only if **both** the tree and the
   base branch match **and** the recorded outcome is `CLEAN` — re-run on any other outcome, if the
   tree has changed, or if the base branch differs). A plain `HEAD^{tree}` comparison is NOT
@@ -82,6 +84,10 @@ if [ -z "$BASE_BRANCH" ]; then
   BASE_SOURCE="origin-fallback"
 fi
 echo "BASE_BRANCH=$BASE_BRANCH (resolved via $BASE_SOURCE)"
+# Persist immediately — Step 8 reads this back several fenced blocks later, and shell variables
+# do NOT survive across this document's separate bash invocations (same reason Step 4.7's
+# ADVERSARIAL_OUTCOME/TESTS_GREEN are persisted to disk rather than trusted as shell state).
+printf '%s\n' "$BASE_BRANCH" > "$(git rev-parse --git-dir)/pre-pr-audit-base-branch"
 
 # A resolved name is not the same as one that actually exists on origin — fail loudly here instead
 # of letting a later git command's fatal error get silently swallowed downstream.
@@ -109,10 +115,15 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' (resolved via $BASE_SOURCE) — refusing to audit an empty diff. Supply the correct branch above." >&2
   exit 1
 fi
-MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD) || {
+MB_ERR=$(git merge-base "origin/$BASE_BRANCH" HEAD 2>&1); MB_RC=$?
+if [ "$MB_RC" -eq 1 ]; then
   echo "🛑 git merge-base origin/$BASE_BRANCH HEAD found no common ancestor (shallow clone? unrelated histories? run 'git fetch --unshallow origin $BASE_BRANCH') — no diff range can be computed." >&2
   exit 1
-}
+elif [ "$MB_RC" -ne 0 ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD failed (exit $MB_RC): $MB_ERR" >&2
+  exit 1
+fi
+MERGE_BASE="$MB_ERR"
 if [ -z "$MERGE_BASE" ]; then
   echo "🛑 git merge-base origin/$BASE_BRANCH HEAD returned nothing — no diff range can be computed." >&2
   exit 1
@@ -763,7 +774,10 @@ here, so its "INCOMPLETE + NOT converged" combined outcome is reachable):
 ```bash
 ADVERSARIAL_OUTCOME=<bare token derived from the skill's Outcome badge: CONVERGED|NOT_CONVERGED|INCOMPLETE|INCOMPLETE_NOT_CONVERGED|ABANDONED|TEST_FAILURES>
 TESTS_GREEN=<true unless the skill's own Phase D test run reported "Test failures after fix application", in which case false>
-printf '%s %s\n' "$ADVERSARIAL_OUTCOME" "$TESTS_GREEN" > "$(git rev-parse --git-dir)/pre-pr-audit-adversarial-outcome"
+printf '%s %s\n' "$ADVERSARIAL_OUTCOME" "$TESTS_GREEN" > "$(git rev-parse --git-dir)/pre-pr-audit-adversarial-outcome" || {
+  echo "🛑 Failed to write the outcome marker — Step 8 will not be able to read it back." >&2
+  exit 1
+}
 ```
 
 Only `CONVERGED` maps to a potentially-clean run at Step 8 — every other token (including the
@@ -1120,13 +1134,13 @@ elif [ -z "$QUALITY_GATE" ] || [ "$QUALITY_GATE" = "null" ]; then
   echo "⚠️  Could not read quality gate for key '$SONAR_PROJECT_KEY' at $SONAR_HOST — this is NOT necessarily a gate failure; check the key/host/\$SONAR_TOKEN before reporting FAILED."
 else
   # SonarQube's projectStatus.status is one of OK/WARN/ERROR/NONE — name the actual value and the
-  # state actually reached, rather than asserting FAILED for any non-OK, non-empty status.
-  echo "❌ Quality Gate: $QUALITY_GATE (not OK)"
+  # state actually reached, rather than asserting FAILED for any non-OK, non-empty status. Use a
+  # per-status marker, not an unconditional ❌ — WARN/NONE are not failures.
   case "$QUALITY_GATE" in
-    ERROR) echo "   Gate failed — blocking issues below." ;;
-    WARN) echo "   Warning threshold breached — not a hard failure." ;;
-    NONE) echo "   No quality gate conditions are configured for '$SONAR_PROJECT_KEY' — there is nothing to pass or fail." ;;
-    *) echo "   Unrecognized status '$QUALITY_GATE' — treat as not-necessarily-failed and verify manually." ;;
+    ERROR) echo "❌ Quality Gate: ERROR — blocking issues below." ;;
+    WARN) echo "⚠️  Quality Gate: WARN — warning threshold breached, not a hard failure." ;;
+    NONE) echo "⚠️  Quality Gate: NONE — no quality gate conditions are configured for '$SONAR_PROJECT_KEY'; there is nothing to pass or fail." ;;
+    *) echo "⚠️  Quality Gate: $QUALITY_GATE (unrecognized status) — treat as not-necessarily-failed and verify manually." ;;
   esac
   # Fetch and display issues
   curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
@@ -1182,14 +1196,14 @@ After all checks complete:
 - Findings: N found, M fixed, K accepted-risk, J false-positives
 - By class: [State Machine: N1, Operator Observability: N2, ...]
 - By blast radius: cross_file N1, local N2
-- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds / ❌ Test failures after fix application — do not push until resolved
+- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds; approved fixes from that round remain applied (uncommitted) in the working tree / ❌ Test failures after fix application — do not push until resolved
 
 **Known Limitations** (for PR description):
 > _(List findings classified as "accepted risk", plus any `coverage_gap` entries from a
 > Phase E Accept/Abandon decision (visually distinct) — all MUST appear verbatim in the PR
 > description so reviewers understand what was deliberately left in and why.)_
 
-**SonarQube**: Quality Gate {PASSED | FAILED | UNKNOWN — could not read (see key/host/$SONAR_TOKEN) | NOT RUN — user deferred}
+**SonarQube**: Quality Gate {PASSED | FAILED | WARN — warning threshold breached, not a hard failure | NONE — no quality gate conditions configured | UNKNOWN — could not read (see key/host/$SONAR_TOKEN) | NOT RUN — user deferred}
 - New issues: N
 - Blocking issues: M
 
@@ -1222,10 +1236,21 @@ equivalent to a clean one:
 # one (Steps 4.8/4.9/5/6/7 ran in between, in separate invocations); see Step 4.7's own note.
 OUTCOME_FILE="$(git rev-parse --git-dir)/pre-pr-audit-adversarial-outcome"
 if [ ! -f "$OUTCOME_FILE" ]; then
-  echo "🛑 $OUTCOME_FILE not found — Step 4.7 never persisted its outcome. Re-run Step 4.7's capture block, or (resumed session) re-derive ADVERSARIAL_OUTCOME/TESTS_GREEN from adversarial-review's last-printed Outcome/test-result lines and write the file yourself before continuing." >&2
+  echo "🛑 $OUTCOME_FILE not found — could be: Step 4.7's capture block was never run or was skipped (resumed session); its write failed; git rev-parse --git-dir resolved to a different path than when it was written (cwd moved — submodule, another repo, or a different worktree); or the file was manually removed. Re-run Step 4.7's capture block, or re-derive ADVERSARIAL_OUTCOME/TESTS_GREEN from adversarial-review's last-printed Outcome/test-result lines and write the file yourself before continuing." >&2
   exit 1
 fi
 read -r ADVERSARIAL_OUTCOME TESTS_GREEN < "$OUTCOME_FILE"
+# Single-use: consume the marker once read, so a stale leftover from a prior/failed run (e.g. Step
+# 4.7 was skipped this time, or errored before writing a fresh one) can never be silently reused.
+rm -f "$OUTCOME_FILE"
+
+# Same reasoning as ADVERSARIAL_OUTCOME/TESTS_GREEN above — $BASE_BRANCH was set back in Step 1,
+# several fenced blocks and steps ago, and does NOT survive as a shell variable to this one.
+BASE_BRANCH=$(cat "$(git rev-parse --git-dir)/pre-pr-audit-base-branch" 2>/dev/null)
+if [ -z "$BASE_BRANCH" ]; then
+  echo "🛑 Could not read the persisted base branch — re-run Step 1's resolution (which persists it) before continuing." >&2
+  exit 1
+fi
 
 # Derive the audited tree from HEAD + any uncommitted changes — this skill routinely audits work
 # before it's committed ("After implementing a feature but before committing"), and `HEAD^{tree}`
@@ -1246,10 +1271,11 @@ UNTRACKED_FINGERPRINT=$(git ls-files --others --exclude-standard -z | xargs -0 -
 AUDITED_TREE="${AUDITED_TREE}-${UNTRACKED_FINGERPRINT}"
 
 # BLOCKING_ISSUES: unresolved CRITICAL/HIGH findings from the Workflow batch (Steps 4/4.5/4.6/4.8/
-# 4.9) per Step 5/6's disposition tally, plus 1 if Step 7's SonarQube Quality Gate is anything
-# other than PASSED — FAILED, UNKNOWN, or NOT RUN all count as blocking; an undetermined gate must
-# never read as clean.
-BLOCKING_ISSUES=<count of open CRITICAL/HIGH Workflow-batch findings, plus 1 if the Quality Gate above is not PASSED>
+# 4.9) per Step 5/6's disposition tally, plus 1 if Step 7's SonarQube Quality Gate is ERROR,
+# UNKNOWN, or NOT RUN — an undetermined gate must never read as clean. WARN and NONE are NOT
+# blocking on their own (Step 7's own case block calls both "not a hard failure" /
+# "nothing to pass or fail") — surface either as a note, not a blocking count.
+BLOCKING_ISSUES=<count of open CRITICAL/HIGH Workflow-batch findings, plus 1 if the Quality Gate above is ERROR, UNKNOWN, or NOT RUN (WARN/NONE do not count)>
 
 if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ "$TESTS_GREEN" = "true" ] && [ "$BLOCKING_ISSUES" -eq 0 ]; then
   OUTCOME="CLEAN"

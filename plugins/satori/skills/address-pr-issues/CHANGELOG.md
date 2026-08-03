@@ -58,10 +58,22 @@ blocks bug recurring in round 3's own `$ADVERSARIAL_OUTCOME`/`$TESTS_GREEN` capt
 persisting to a marker file instead), a non-deterministic dedup key introduced by round 3's own
 fix (reverted), `pattern_checker.py` (the one piece of this batch that's actual Python, not prose)
 still using a three-dot diff, and a Known-Limitations/Fix-Provenance-Notes miscategorization.
+A separate crash-fix (`067df8a`) landed next: `adversarial-review`'s own Phase A/B script could
+crash the whole round when a per-class agent thunk rejected instead of resolving null (observed
+live — a class hit its StructuredOutput retry cap and threw), discarding the `{name, result}`
+wrapper `parallel()` expects and crashing downstream reads on the resulting bare `null`. Round 5
+(24 findings, provisionalYield 15) found that round 4's untracked-file fix hadn't reached
+`pattern_checker.py`'s own per-line diff logic (a brand-new file's checks were still silently
+skipped) and that round 4's own persistence fix for `$ADVERSARIAL_OUTCOME`/`$TESTS_GREEN`
+reintroduced the identical shell-state-doesn't-persist bug one variable over, for `$BASE_BRANCH`
+(added to the same marker in the same commit) — both now fixed — plus a Phase E retry-yield bug
+that recomputed against already-mutated `PRIOR_FINDINGS`, a `missingClasses` slot-identity gap,
+a `lensKind` misclassification, and roughly a dozen smaller error-message/documentation-drift
+findings across all three skill files.
 
 See commits `cab1a0f` (the Fable/fix-planning feature), `29a594c` (round-1 dogfood fixes),
-`c767eea` (round-2), `842ced8` (round-3), and this round's commit (round-4 dogfood fixes) for the
-full change.
+`c767eea` (round-2), `842ced8` (round-3), the round-4 commit, `067df8a` (the crash-fix), and this
+round's commit (round-5 dogfood fixes) for the full change.
 
 ## 2026-08-02 - v1.7.5: Process Hardening from PR #171 Retrospective
 

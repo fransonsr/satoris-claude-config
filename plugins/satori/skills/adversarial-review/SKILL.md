@@ -125,10 +125,18 @@ fi
 # every agent in every round compares against the same fixed point regardless of what accumulates
 # on either branch meanwhile — whether this session's own practice (committing between rounds) or
 # the documented default (leaving Phase D's fixes uncommitted).
-MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD) || {
+MB_ERR=$(git merge-base "origin/$BASE_BRANCH" HEAD 2>&1); MB_RC=$?
+if [ "$MB_RC" -eq 1 ]; then
   echo "🛑 git merge-base origin/$BASE_BRANCH HEAD found no common ancestor (shallow clone? unrelated histories? run 'git fetch --unshallow origin $BASE_BRANCH') — no diff range can be computed." >&2
   exit 1
-}
+elif [ "$MB_RC" -ne 0 ]; then
+  # Any other exit code is a git error unrelated to "no common ancestor" (unborn HEAD, an
+  # unresolvable/ambiguous HEAD, a corrupt object store, not a work tree, ...) — print git's own
+  # message instead of asserting the wrong cause and prescribing a remedy that won't fix it.
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD failed (exit $MB_RC): $MB_ERR" >&2
+  exit 1
+fi
+MERGE_BASE="$MB_ERR"
 if [ -z "$MERGE_BASE" ]; then
   echo "🛑 git merge-base origin/$BASE_BRANCH HEAD returned nothing — no diff range can be computed." >&2
   exit 1
@@ -226,13 +234,15 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
     Operator Observability / Error Message Accuracy, Provenance / Identity Discrimination,
     Infrastructure / Environment Handling, Test Integrity — read the full contents of changed
     **source** files
-  - `doc`: Documentation Accuracy, Semantic Correctness / Logical Completeness, Operator Spec
-    Completeness, Spec Operator Walkthrough — read the full contents of changed **doc** files;
-    read source files only if the lens explicitly requires cross-referencing code (e.g.,
-    Documentation Accuracy's doc-vs-code checks)
-  - `both`: Cross-File Rule Consistency — read full contents of **both** changed source and doc
-    files; this lens isn't in either bucket above since a rule can be restated across a doc and a
-    code file
+  - `doc`: Documentation Accuracy, Operator Spec Completeness, Spec Operator Walkthrough — read
+    the full contents of changed **doc** files; read source files only if the lens explicitly
+    requires cross-referencing code (e.g., Documentation Accuracy's doc-vs-code checks)
+  - `both`: Cross-File Rule Consistency, Semantic Correctness / Logical Completeness — read full
+    contents of **both** changed source and doc files. Semantic Correctness's own definition in
+    `copilot-review-patterns.md` is "Code or documentation," and 3 of its 4 documented forms
+    (validator/regex too permissive, conditional fall-through missing an unsafe case, two parts of
+    the codebase disagreeing on a value's format) require reading source, not just docs — grouping
+    it under `doc` alone would starve those 3 forms of the files they need to check
   - A class not named in any bucket above (e.g. one just added via the Pattern-File Update Hook):
     **leave `lensKind` unset** for it — do not guess `both` yourself. `buildPrompt()` defaults an
     unset/unrecognized `lensKind` to `both` (the safe over-read) and logs the class name so the
@@ -411,17 +421,35 @@ phase('Review')
 // Catch inside the thunk so this slot always returns the `{name, result}` shape, `result: null`
 // on any failure — belt-and-suspenders against agent()'s own documented contract not holding.
 const responses = await parallel(classes.map(c => async () => {
+  // buildPrompt(c) is a separate try from the agent() call below — it can throw independently
+  // (a malformed CLASSES entry: non-object c, non-string lensKind, ...), which is an
+  // orchestrator-side args defect, not an agent/model contract violation. Naming the failing
+  // stage in the log keeps an operator from retrying the class or investigating the model
+  // provider when the actual bug is upstream, in Setup Step 5's CLASSES construction.
+  let prompt
+  try {
+    prompt = buildPrompt(c)
+  } catch (e) {
+    log(`class "${c.name}" failed during prompt-construction: ${e && e.message ? e.message : e} — check Setup Step 5's CLASSES entry for this class, not the model/agent call`)
+    return { name: c.name, result: null }
+  }
   let result = null
   try {
-    result = await agent(buildPrompt(c), { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
+    result = await agent(prompt, { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
       ...(c.model ? { model: c.model } : {}) })
   } catch (e) {
-    log(`class "${c.name}" agent call threw (${e && e.message ? e.message : e}) instead of resolving null — treating as a terminal failure for this round`)
+    log(`class "${c.name}" failed during the agent call: ${e && e.message ? e.message : e} instead of resolving null — treating as a terminal failure for this round`)
   }
   return { name: c.name, result }
 }))
 
-const missingClasses = responses.filter(r => !r || !r.result).map(r => r && r.name).filter(Boolean)
+// Preserve slot identity by index rather than filter-then-map — a bare-null slot (still possible
+// in principle if the thunk itself throws before its own try/catch, e.g. a malformed `classes`
+// entry) would otherwise contribute no name and silently vanish from this count instead of
+// surfacing as a missing class.
+const missingClasses = responses
+  .map((r, i) => (r && r.result) ? null : ((r && r.name) || `<class at index ${i}: ${JSON.stringify(classes[i])}>`))
+  .filter(Boolean)
 if (missingClasses.length) {
   log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.join(', ')}`)
 }
@@ -511,6 +539,14 @@ absorbed because the file string was technically "seen before."
 
 ### Phase C — Review-Pause (human decision)
 
+**Snapshot `ROUND_START_PRIOR_FINDINGS = PRIOR_FINDINGS`** before anything below appends to it.
+Every use of `priorFindings` for *this round's* yield math — the finalize-yield recompute below,
+and Phase E's missing-class retry — reads this snapshot, never the live `PRIOR_FINDINGS` variable,
+which this same phase mutates by appending. Using the live variable would make a retry's yield
+recompute run against a `priorCrossFileKeys` set that already contains this round's own findings
+(appended below, before Phase E ever runs), silently suppressing any retry-recovered finding whose
+location happens to collide with one this round already flagged.
+
 Present the synthesized findings **and any `missingClasses`** to the calling session. `missingClasses`
 is surfaced here for visibility only while rounds remain below `--rounds` — do not solicit a
 disposition for it yet; Phase E decides when a missing class actually requires one. For each
@@ -525,7 +561,8 @@ finding, the user classifies it:
 
 **Finalize the round's cross-file yield** after disposition by recomputing it directly from the
 same population Phase A/B's provisional count used — `cross_file` findings whose `crossFileKey`
-is not in `priorCrossFileKeys` — filtered to only those dispositioned **Fix** or **Accepted risk**
+is not in `ROUND_START_PRIOR_FINDINGS`'s cross-file keys (the snapshot above, NOT the live,
+by-then-already-appended `PRIOR_FINDINGS`) — filtered to only those dispositioned **Fix** or **Accepted risk**
 (an accepted-risk finding is a real, confirmed issue the human chose not to fix yet). Do NOT
 compute this by subtracting False-positive/Contradicts-design counts from the provisional number:
 a `cross_file` finding re-flagging a location already in `priorCrossFileKeys` was never in the
@@ -630,11 +667,14 @@ converged").
      and the same `patternFile`, `mergeBase`, and `intentBrief` values used this round —
      `buildPrompt()` interpolates all three directly into every prompt; omitting any throws before
      any agent spawns, per the missing-arg guard right after the `args` destructuring). Also pass
-     the same `priorFindings` used this
-     round — a *different* dependency: the outer script's yield/dedup logic reads it (not
-     `buildPrompt()`), so omitting it doesn't break any prompt, but silently resets every
-     retry-recovered finding's dedup history to empty, making them all register as fresh
-     cross-file yield. **This
+     `ROUND_START_PRIOR_FINDINGS` (Phase C's snapshot) as `priorFindings` — **not** the live
+     `PRIOR_FINDINGS`, which by now already contains this round's own findings (Phase C appended to
+     it before Phase E ever runs): passing the live variable would make the retry's yield recompute
+     silently suppress any retry-recovered finding whose location collides with one this round
+     already flagged. Omitting `priorFindings` entirely is a *different* mistake — it doesn't break
+     any prompt (the outer script's yield/dedup logic reads it, not `buildPrompt()`), but it
+     silently resets every retry-recovered finding's dedup history to empty, making them all
+     register as fresh cross-file yield regardless of what earlier rounds already saw. **This
      retry does not count as an additional round** for the ">1 round has actually run" test
      below — it completes this round's incomplete data rather than starting a fresh sweep. Treat
      the retry's raw findings exactly like a late-arriving Phase A/B response: merge them into
@@ -779,7 +819,7 @@ from Known Limitations above.>
 🟡 INCOMPLETE — N class(es) unreviewed: <names>; retry, accept as known limitation, or abandon (see Phase E)
 🟡+⚠️ INCOMPLETE + NOT converged — both a coverage gap and a confirmed finding cluster; resolve the missing class(es) AND still escalate to targeted deep-dive on <theme> (see Phase E)
 🟡+🔵 INCOMPLETE + Single round only — a coverage gap and confirmed cross-file findings from the one round that ran; resolve the missing class(es) and treat convergence as unconfirmed (see Phase E)
-🟠 ABANDONED — round stopped at the human's request; N class(es) never reviewed: <names>; no further rounds (see Phase E)
+🟠 ABANDONED — round stopped at the human's request; N class(es) never reviewed: <names>; no further rounds; M approved fix(es) from this round remain applied (uncommitted) in the working tree — review `git diff` before discarding anything (see Phase E)
 ❌  Test failures after fix application — do not push until resolved
 ```
 

@@ -170,10 +170,30 @@ gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url,body,autho
 PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)
 # BASE_BRANCH — needed by Step 3.5's --base-branch flag when it invokes /adversarial-review
 BASE_BRANCH=$(gh pr view $PR_NUMBER --json baseRefName -q .baseRefName)
+if [ -z "$BASE_BRANCH" ]; then
+  echo "🛑 Could not resolve BASE_BRANCH from gh pr view — check PR_NUMBER/gh auth before continuing." >&2
+  exit 1
+fi
+if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; then
+  echo "🛑 origin/$BASE_BRANCH does not exist locally — never fetched? Run 'git fetch origin $BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH'." >&2
+  exit 1
+fi
 # MERGE_BASE — needed by Step 3.7's cascade-sweep grep and Step 4.5's post-fix cascade sweep, so
 # both scope to the PR's full diff (tracked changes since the base branch) rather than only
 # unstaged/uncommitted changes since HEAD, which is all a bare `git diff`/`git diff HEAD` sees.
-MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+MB_ERR=$(git merge-base "origin/$BASE_BRANCH" HEAD 2>&1); MB_RC=$?
+if [ "$MB_RC" -eq 1 ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD found no common ancestor (shallow clone? unrelated histories? run 'git fetch --unshallow origin $BASE_BRANCH') — no diff range can be computed." >&2
+  exit 1
+elif [ "$MB_RC" -ne 0 ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD failed (exit $MB_RC): $MB_ERR" >&2
+  exit 1
+fi
+MERGE_BASE="$MB_ERR"
+if [ -z "$MERGE_BASE" ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD returned nothing — no diff range can be computed." >&2
+  exit 1
+fi
 ```
 
 **Clean working tree**: before making any changes, check `git status --porcelain`. If it
@@ -713,9 +733,14 @@ For each confirmed issue class from Step 3:
    **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only, across the
    PR's full diff (`$MERGE_BASE` from Step 1) — not a bare `git diff --name-only`, which only
    sees unstaged changes since HEAD and would silently narrow "the PR's changed files" (the claim
-   the Output section below makes) to whatever happens to be uncommitted right now.
+   the Output section below makes) to whatever happens to be uncommitted right now. Re-derive
+   `$MERGE_BASE = git merge-base "origin/$BASE_BRANCH" HEAD` per Step 1's shorthand note if this is
+   a new shell/session; also union in untracked files (`git ls-files --others --exclude-standard`),
+   since `git diff --name-only` alone only sees tracked content and a brand-new file would
+   otherwise never be swept.
    ```bash
-   git diff --name-only "$MERGE_BASE" | xargs grep -n "<pattern>"
+   [ -n "$MERGE_BASE" ] || { echo "🛑 \$MERGE_BASE is empty — re-derive it before running this sweep." >&2; exit 1; }
+   { git diff --name-only "$MERGE_BASE"; git ls-files --others --exclude-standard; } | sort -u | xargs grep -n "<pattern>"
    ```
 
    **Tier 3b — File-scoped grep** (structural absence): when the issue involves a property
@@ -744,7 +769,8 @@ For each confirmed issue class from Step 3:
 
 For each issue class swept, report one of:
 - **Hits found**: "Found the same pattern in N additional location(s) — fixing all of them eliminates this issue class rather than surfacing it again next round"
-- **Nothing found (textual)**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Nothing found (textual)**: only when the enumerated file list was non-empty — "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Sweep did not run**: when the enumerated file list was empty (e.g. `$MERGE_BASE` failed to resolve) — "Sweep did not run — no changed files enumerated; verify \$MERGE_BASE before trusting this issue class is clean" — never report this as "nothing found"
 - **Gap found (structural)**: "Diff-scoped grep found nothing, but file-scoped check found N sibling(s) also missing this property — adding to fix list"
 
 ### Examples
@@ -1494,9 +1520,13 @@ Copilot review automatically after every push. One tell: new Copilot comments sh
 for New Copilot Comments" below on a round where this counter was **not** incremented. But rule
 out the other explanations for that same tell before concluding auto-review is the cause — the
 counter also doesn't increment when `DIRECTIONAL_COUNT == 0` (this skill deliberately skipped the
-re-request) or when the `gh pr edit` call failed (the `else` branch below intentionally leaves it
-unchanged) — and comments from a *previous* round's re-request can land late, during this round's
-wait. Only if none of those apply — no skip, no failed `gh` call, and the previous round's
+re-request), when the `gh pr edit` call failed (the `else` branch below intentionally leaves it
+unchanged), or when `gh pr edit` succeeded but the `gh api` reviewer-list readback came back
+unconfirmed (the "gh pr edit reported success but copilot isn't in the reviewer list" branch below
+— this legitimately fires whenever Copilot already delivered its review before the readback ran,
+since GitHub clears `requested_reviewers` on submission, not just on a genuine mutation failure) —
+and comments from a *previous* round's re-request can land late, during this round's
+wait. Only if none of those apply — no skip, no failed `gh` call, no unconfirmed readback, and the previous round's
 re-request was already answered before this round's comments appeared — say so once: "this repo
 appears to auto-review Copilot on every push; the count below reflects explicit re-requests only,
 so the true review-cycle count **may be** higher." That changes how the numeric gate just below

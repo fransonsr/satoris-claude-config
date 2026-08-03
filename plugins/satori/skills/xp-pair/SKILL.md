@@ -145,9 +145,12 @@ Each agent returns a brief findings summary.
 
 The discovery agents above only gather facts — nothing yet turns those facts into an actual
 design recommendation; historically the navigator did that synthesis directly, at whatever model
-the session happens to be running. Once the discovery agents return, spawn one more agent —
-sequential, not parallel with them, since it consumes their output — with `model: 'fable'` for
-increased reasoning depth on the design decision itself. It receives:
+the session happens to be running. Once the discovery agents return and the Workflow call has
+returned to the navigator, spawn this design-synthesis agent as a **separate top-level `Agent`
+call** — not a second `phase()` inside the same `Workflow` script the four discovery agents ran
+in — with `model: 'fable'` for increased reasoning depth on the design decision itself (mirroring
+`adversarial-review`'s Phase D fix-planning gate, which makes the same "top-level `Agent` call,
+not a `Workflow`/`agent()` stage" distinction explicit for the same reason). It receives:
 - The task description
 - Every discovery agent's findings summary
 - An instruction to resolve and read the pattern file itself: prefer

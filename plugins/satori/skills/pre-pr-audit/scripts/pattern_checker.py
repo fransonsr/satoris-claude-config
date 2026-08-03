@@ -40,19 +40,28 @@ class PatternChecker:
         self.project_patterns = project_patterns
         self.issues: List[Issue] = []
         self.issue_counter = 1
+        self.scanned_count = 0
 
     def check_all(self) -> List[Issue]:
         """Run all pattern checks and return found issues."""
+        self.scanned_count = 0
+        skipped_missing = 0
         for file in self.changed_files:
             if not os.path.exists(file):
+                skipped_missing += 1
                 continue
 
-            with open(file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                lines = content.split('\n')
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    lines = content.split('\n')
+            except (UnicodeDecodeError, OSError) as e:
+                print(f"⚠️  Could not read {file} ({e}) — skipping this file.", file=sys.stderr)
+                continue
 
+            self.scanned_count += 1
             # Get git diff to focus on changed lines
-            diff_lines = self._get_changed_lines(file)
+            diff_lines = self._get_changed_lines(file, lines)
 
             # Run universal checks
             self._check_resource_lifecycle(file, content, lines, diff_lines)
@@ -72,21 +81,39 @@ class PatternChecker:
         # Cross-file checks (run after per-file loop)
         self._check_parallel_derivation_constants()
 
+        # Scan scope, unconditionally — so "no issues found" and "nothing was actually scanned"
+        # are never confused with each other (an empty --changed-files, every path missing on
+        # disk, or every file failing to read/diff all reach a clean-looking empty result).
+        print(f"Scanned {self.scanned_count}/{len(self.changed_files)} requested file(s)"
+              + (f", {skipped_missing} missing on disk" if skipped_missing else ""),
+              file=sys.stderr)
+
         # Sort by severity
         severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         self.issues.sort(key=lambda x: severity_order.get(x.severity, 999))
 
         return self.issues
 
-    def _get_changed_lines(self, file: str) -> set:
-        """Get line numbers that were changed in this file."""
+    def _get_changed_lines(self, file: str, lines: List[str]) -> set:
+        """Get line numbers that were changed in this file (all lines, if untracked)."""
+        # A brand-new, never-`git add`ed file has no tracked history at merge_base to diff against
+        # — `git diff` against it succeeds with empty output, which would otherwise read as "zero
+        # changed lines" and make every diff_lines-gated check silently skip the file entirely.
+        # This is the same untracked-file blind spot round 4's file-enumeration fix closed one
+        # layer up; close it here too, or a brand-new file is enumerated but never actually checked.
+        is_untracked = subprocess.run(
+            ['git', 'ls-files', '--others', '--exclude-standard', '--', file],
+            capture_output=True, text=True
+        ).stdout.strip() != ''
+        if is_untracked:
+            return set(range(1, len(lines) + 1))
         try:
             # Two-dot form (no second ref) against the pinned merge-base, NOT a three-dot
             # `{base}...HEAD` commit range — three-dot diffs commit-to-commit and can never see
             # uncommitted working-tree changes, the same bug SKILL.md's own diff-range computations
             # were fixed to avoid (commit 842ced8). merge_base is resolved once by the caller.
             result = subprocess.run(
-                ['git', 'diff', self.merge_base, '-U0', file],
+                ['git', 'diff', self.merge_base, '-U0', '--', file],
                 capture_output=True, text=True, check=True
             )
 
@@ -102,10 +129,15 @@ class PatternChecker:
 
             return changed_lines
         except subprocess.CalledProcessError as e:
-            print(f"⚠️  git diff {self.merge_base} -- {file} failed (exit {e.returncode}): "
+            print(f"⚠️  git diff {self.merge_base} -U0 -- {file} failed (exit {e.returncode}): "
                   f"{e.stderr.strip() if e.stderr else '(no stderr)'} — treating {file} as having "
                   f"no changed lines; every diff_lines-gated check will silently skip it.",
                   file=sys.stderr)
+            return set()
+        except UnicodeDecodeError as e:
+            print(f"⚠️  git diff output for {file} could not be decoded as UTF-8 ({e}) — "
+                  f"treating {file} as having no changed lines; every diff_lines-gated check will "
+                  f"silently skip it.", file=sys.stderr)
             return set()
 
     def _check_resource_lifecycle(self, file: str, content: str, lines: List[str], diff_lines: set):
@@ -488,9 +520,13 @@ class PatternChecker:
         for file in self.changed_files:
             if not os.path.exists(file):
                 continue
-            with open(file, 'r', encoding='utf-8') as f:
-                lines = f.read().split('\n')
-            diff_lines = self._get_changed_lines(file)
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    lines = f.read().split('\n')
+            except (UnicodeDecodeError, OSError) as e:
+                print(f"⚠️  Could not read {file} ({e}) — skipping this file.", file=sys.stderr)
+                continue
+            diff_lines = self._get_changed_lines(file, lines)
 
             for i, line in enumerate(lines):
                 line_num = i + 1
@@ -736,7 +772,10 @@ def main():
         print(json.dumps([asdict(issue) for issue in issues], indent=2))
     else:
         if not issues:
-            print("✅ No issues found!")
+            if checker.scanned_count == 0:
+                print(f"⚠️  0 files scanned — nothing was checked (requested {len(changed_files)}).")
+            else:
+                print(f"✅ No issues found in {checker.scanned_count} file(s)!")
         else:
             print(f"Found {len(issues)} issue(s):\n")
             for issue in issues:
