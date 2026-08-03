@@ -100,7 +100,11 @@ echo "BASE_BRANCH=$BASE_BRANCH (resolved via $BASE_SOURCE) CURRENT_BRANCH=$CURRE
 # name a branch never fetched locally, or an arg can be misspelled. Fail loudly here instead of
 # letting a later git command's fatal error get silently swallowed by a `2>/dev/null` downstream.
 if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; then
-  echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH' or supply --base-branch." >&2
+  # NOT a bare `git fetch origin $BASE_BRANCH` — verified that in a restricted-refspec clone
+  # (shallow, --single-branch, a CI runner checked out to only the feature branch — exactly the
+  # scenario this guard exists for) the bare form fetches into FETCH_HEAD only and does NOT create
+  # refs/remotes/origin/$BASE_BRANCH, so re-running this check fails again with the same error.
+  echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH' (the explicit-refspec form — a bare 'git fetch origin $BASE_BRANCH' does not create the remote-tracking ref in a restricted-refspec clone) or supply --base-branch." >&2
   exit 1
 fi
 
@@ -121,54 +125,67 @@ fi
 # every agent in every round compares against the same fixed point regardless of what accumulates
 # on either branch meanwhile — whether this session's own practice (committing between rounds) or
 # the documented default (leaving Phase D's fixes uncommitted).
-MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD) || {
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD found no common ancestor (shallow clone? unrelated histories? run 'git fetch --unshallow origin $BASE_BRANCH') — no diff range can be computed." >&2
+  exit 1
+}
+if [ -z "$MERGE_BASE" ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD returned nothing — no diff range can be computed." >&2
+  exit 1
+fi
 DIFF_RC=0
 git diff --quiet "$MERGE_BASE" || DIFF_RC=$?
-if [ "$DIFF_RC" -eq 0 ]; then
-  echo "🛑 diff against merge-base $MERGE_BASE is empty — refusing to report a round as CONVERGED with nothing reviewed. Check BASE_BRANCH/CURRENT_BRANCH above." >&2
+# `git diff`/`git ls-files` only ever see TRACKED content — a change consisting solely of new,
+# never-`git add`ed files (the canonical "after implementing a feature but before committing" case
+# this skill is built for) makes the tracked-diff exit 0 even though real content exists. Union in
+# untracked files before deciding the diff is empty.
+UNTRACKED_FILES=$(git ls-files --others --exclude-standard)
+if [ "$DIFF_RC" -eq 0 ] && [ -z "$UNTRACKED_FILES" ]; then
+  echo "🛑 diff against merge-base $MERGE_BASE is empty (no tracked changes, no untracked files) — refusing to report a round as CONVERGED with nothing reviewed. Check BASE_BRANCH/CURRENT_BRANCH above." >&2
   exit 1
 elif [ "$DIFF_RC" -ge 2 ]; then
   echo "🛑 git diff against merge-base $MERGE_BASE failed (exit $DIFF_RC) — this is a git error, not an empty diff. Re-run 'git diff $MERGE_BASE' directly to see the actual error." >&2
   exit 1
 fi
-CHANGED_FILE_COUNT=$(git diff --name-only "$MERGE_BASE" | wc -l | tr -d ' ')
+CHANGED_FILE_COUNT=$(( $(git diff --name-only "$MERGE_BASE" | wc -l) + $(echo "$UNTRACKED_FILES" | grep -c . || true) ))
 echo "MERGE_BASE=$MERGE_BASE CHANGED_FILE_COUNT=$CHANGED_FILE_COUNT"
 ```
 
 ### 4. Pin the comparison refs (run once)
 
-Record these values and pass them verbatim to every review agent. **Agents run their own diff
-and read the files their lens needs** — the orchestrator does not pre-read or paste file
-contents into agent prompts.
+Record this value and pass it verbatim to every review agent — `BASE_BRANCH`/`CURRENT_BRANCH`
+are only used for the self-match check and error messages in Setup Step 3; `MERGE_BASE` is the
+only one actually threaded into agent prompts. **Agents run their own diff and read the files
+their lens needs** — the orchestrator does not pre-read or paste file contents into agent prompts.
 
 ```bash
 # Pinned from Step 3 — fixed for all agents in all rounds
-BASE_BRANCH=<resolved in Step 3>
-CURRENT_BRANCH=<resolved in Step 3>
 MERGE_BASE=<resolved in Step 3>
 ```
 
-Agents use these ref values with the following enumeration commands (embed these in every agent
-prompt alongside the refs). Note the two-dot form — `git diff $MERGE_BASE`, no second ref — rather
+Agents use this ref value with the following enumeration commands (embed these in every agent
+prompt alongside the ref). Note the two-dot form — `git diff $MERGE_BASE`, no second ref — rather
 than a three-dot commit range: three-dot diffs commit-to-commit and cannot see uncommitted
 changes, which would make every round after the first blind to Phase D's own (deliberately
-uncommitted) fixes from the prior round:
+uncommitted) fixes from the prior round. `git diff`/`git diff --name-only` only see **tracked**
+content, so every enumeration below unions in `git ls-files --others --exclude-standard` — a
+change consisting solely of brand-new, never-`git add`ed files would otherwise be invisible:
 
 ```bash
 # Orientation: run once at review start to see what changed and where — includes uncommitted
 # working-tree changes (e.g. a prior round's Phase D fixes), unlike a three-dot commit range
 git diff $MERGE_BASE
 
-# List changed source files (read in full for cascade sweep)
-git diff --name-only $MERGE_BASE \
-  | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"
+# List changed source files (read in full for cascade sweep) — tracked diff UNION untracked files
+{ git diff --name-only $MERGE_BASE; git ls-files --others --exclude-standard; } \
+  | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" | sort -u
 
 # List changed doc files (for doc/spec lenses — see Setup Step 5)
-#   (1) doc files changed directly in the PR
-git diff --name-only $MERGE_BASE \
-  | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)"
+#   (1) doc files changed directly in the PR (tracked diff UNION untracked files)
+{ git diff --name-only $MERGE_BASE; git ls-files --others --exclude-standard; } \
+  | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)" | sort -u
 #   (2) README/CHANGELOG adjacent to any changed source file (up one directory)
-git diff --name-only $MERGE_BASE \
+{ git diff --name-only $MERGE_BASE; git ls-files --others --exclude-standard; } \
   | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" \
   | xargs -I{} dirname {} 2>/dev/null | sort -u \
   | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \( -name "README*" -o -name "CHANGELOG*" \) 2>/dev/null' \
@@ -232,8 +249,10 @@ omit for Sonnet — it's the default):
 - **Sonnet**: all other classes
 
 `CLASSES` is reused verbatim by every round's Workflow call in the Per-Round Loop below, alongside
-`$PATTERNS_FILE`, `BASE_BRANCH`, `CURRENT_BRANCH`, and the Intent Brief (`INTENT_BRIEF`) — each
-passed once via `args`, not repeated per class. The Phase A/B script's `buildPrompt()` assembles
+`$PATTERNS_FILE`, `MERGE_BASE`, and the Intent Brief (`INTENT_BRIEF`) — each passed once via
+`args`, not repeated per class (`BASE_BRANCH`/`CURRENT_BRANCH` are Setup-only values, used for the
+self-match check and error messages — `buildPrompt()` never receives them). The Phase A/B script's
+`buildPrompt()` assembles
 each agent's actual prompt from this metadata, embedding the following — identical for every
 class, so written once in the script rather than once per class:
 
@@ -278,8 +297,8 @@ deciding whether to continue. Maintain `PRIOR_FINDINGS` across rounds — empty 
 appended to at the end of each round's Phase C (see below).
 
 **Each round's Phase A/B is a fresh `Workflow` call — never `resumeFromRunId` pointed at a prior
-round's run.** Every input `buildPrompt()` uses (`CLASSES`, `$PATTERNS_FILE`, `BASE_BRANCH`,
-`CURRENT_BRANCH`, `INTENT_BRIEF`) is round-invariant by construction — only `priorFindings`
+round's run.** Every input `buildPrompt()` uses (`CLASSES`, `$PATTERNS_FILE`, `MERGE_BASE`,
+`INTENT_BRIEF`) is round-invariant by construction — only `priorFindings`
 differs round to round, and `buildPrompt()` doesn't use it. That means each `agent()` call's
 actual prompt string is identical across rounds. The `Workflow` tool caches each `agent()` call by
 its `(prompt, opts)` pair, so resuming a prior round's run would replay that round's stale
@@ -324,13 +343,23 @@ const FINDING_SCHEMA = {
 
 // `args` has been observed arriving as a raw JSON string rather than a parsed object,
 // regardless of how the caller passed it — parse defensively rather than trust the docs here.
-const { classes, priorFindings = [], patternFile, mergeBase, intentBrief } =
-  typeof args === 'string' ? JSON.parse(args) : args
+const rawArgs = typeof args === 'string' ? JSON.parse(args) : args
+const { classes, patternFile, mergeBase, intentBrief } = rawArgs
+// A destructuring default (`priorFindings = []`) only applies when the property is `undefined` —
+// an explicit JSON `null` (plausible: PRIOR_FINDINGS is only documented as "empty at round 1", not
+// typed as `[]`) passes straight through as `null` and bypasses the default entirely.
+const priorFindings = Array.isArray(rawArgs.priorFindings) ? rawArgs.priorFindings : []
 
 // Same defensive posture as the `args`-shape comment above, applied to the individual fields:
 // each is interpolated directly into every class's prompt (buildPrompt below), so a missing one
-// would render literal "undefined" into every agent's diff/read instructions. Fail before
-// spawning anything rather than burning a full round of agents on prompts already known broken.
+// would render literal "undefined" into every agent's diff/read instructions. `classes` is
+// checked separately since an empty/absent array doesn't render "undefined" anywhere — it just
+// makes `parallel([])` spawn zero agents and the round silently report CONVERGED with nothing
+// reviewed. Fail before spawning anything rather than burning a full round on prompts already
+// known broken, or reporting a false-clean verdict from a round that never ran.
+if (!Array.isArray(classes) || classes.length === 0) {
+  throw new Error(`missing/empty required arg "classes": ${JSON.stringify(classes)} — zero agents would spawn and the round would report CONVERGED with nothing reviewed; aborting`)
+}
 if (!patternFile || !mergeBase || !intentBrief) {
   throw new Error(`missing required arg(s) for this round: patternFile=${patternFile} mergeBase=${mergeBase} intentBrief=${intentBrief} — every class's prompt would be broken; aborting before spawning any agents`)
 }
@@ -356,12 +385,15 @@ function buildPrompt(c) {
   return `Review the current diff against the "${c.name}" pattern class only.
 
 1. Read ${patternFile} and extract the section for pattern class "${c.name}" (a "### N. ${c.name}" heading) — that section defines what to look for.
-2. Run \`git diff ${range}\` once for orientation. Enumerate changed source files with
-   \`git diff --name-only ${range} | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"\`,
+2. Run \`git diff ${range}\` once for orientation. \`git diff\`/\`git diff --name-only\` only see
+   TRACKED content, so every enumeration below unions in \`git ls-files --others --exclude-standard\`
+   (untracked, never-\`git add\`ed files) — a change consisting solely of brand-new files would
+   otherwise be invisible. Enumerate changed source files with
+   \`{ git diff --name-only ${range}; git ls-files --others --exclude-standard; } | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" | sort -u\`,
    changed doc files with
-   \`git diff --name-only ${range} | grep -E "(\\.md|\\.rst|\\.adoc|CHANGELOG|README)"\`,
+   \`{ git diff --name-only ${range}; git ls-files --others --exclude-standard; } | grep -E "(\\.md|\\.rst|\\.adoc|CHANGELOG|README)" | sort -u\`,
    and any README/CHANGELOG adjacent to a changed source file even if untouched itself with
-   \`git diff --name-only ${range} | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" | xargs -I{} dirname {} 2>/dev/null | sort -u | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \\( -name "README*" -o -name "CHANGELOG*" \\) 2>/dev/null' | sort -u\`.
+   \`{ git diff --name-only ${range}; git ls-files --others --exclude-standard; } | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" | xargs -I{} dirname {} 2>/dev/null | sort -u | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \\( -name "README*" -o -name "CHANGELOG*" \\) 2>/dev/null' | sort -u\`.
 3. ${lens}
 4. Intent Brief: ${intentBrief}
 5. Cascade sweep rule: when you find a bug, state its specific failure mode in one sentence (e.g., "subprocess returncode used before checking stdout"), then scan every other callsite of the same kind in the entire changed source for the same failure mode before reporting. Report all instances together as a cluster. Do NOT hold back and expect later rounds to catch siblings — a missed sibling is a miss.
@@ -420,11 +452,18 @@ const findings = [...merged.values()]
   .map(f => ({ ...f, pattern_classes: [...f.pattern_classes] }))
   .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
-// Keyed on file + pattern classes, not file alone — Phase D edits in place, so a fix-introduced
-// defect frequently lands on the same reported line as the finding that caused the fix. A file-only
-// key would suppress that genuinely new bug as "already seen" just because the location matches.
+// Keyed on `file` alone. A prior attempt keyed on file + pattern_classes (to distinguish a
+// fix-introduced defect from a re-flag of the same dismissed bug at the same line) made things
+// worse: pattern_classes is which LENSES happened to flag a location in a given round — the most
+// non-deterministic value in the pipeline. A location flagged by class A alone in round N and by
+// classes A+B in round N+1 (ordinary reviewer variance, not a code change) then produces two
+// different keys, so the unfixed, already-dismissed bug reads as fresh cross-file yield every
+// time the lens set happens to shift. Keying on `file` alone under-suppresses the rarer case (a
+// fix lands a genuinely new bug on the same reported line) but over-suppresses far less often —
+// see Phase C's "Finalize the round's cross-file yield" for how a re-flagged, still-dismissed
+// finding is kept out of the finalized count regardless.
 function crossFileKey(f) {
-  return `${f.file}::${[...(f.pattern_classes || [f.pattern_class])].sort().join(',')}`
+  return f.file
 }
 
 // Only a PRIOR cross_file sighting excludes a location from this round's yield — a location
@@ -485,8 +524,9 @@ result negative — a value neither Phase E's CONVERGED check (`== 0`) nor its N
 (`> 0`) handles. This finalized number is what Phase E reads.
 
 **Append to `PRIOR_FINDINGS`** before the next round: **every** finding synthesized this round,
-regardless of disposition, as `{file, blast_radius, pattern_classes}` (matching `crossFileKey`'s
-inputs). This is deliberately not filtered to Fix/Accepted-risk — `PRIOR_FINDINGS` tracks what has
+regardless of disposition, as `{file, blast_radius}` (`crossFileKey` only reads `file`;
+`pattern_classes` doesn't need to be carried forward). This is deliberately not filtered to
+Fix/Accepted-risk — `PRIOR_FINDINGS` tracks what has
 already been *seen* at a location, not whether it's a *confirmed bug* (that distinction is what
 finalized yield, above, already handles). If a False-positive- or Contradicts-design-dismissed
 finding were dropped from this list, the same non-deterministic reviewer re-flagging that exact
@@ -512,7 +552,9 @@ with `model: 'fable'` for extra reasoning depth on a fix that spans multiple sit
 
 It returns a structured fix plan (ordered steps, files touched, how each `cascade_sibling` is
 covered). If it returns nothing usable, fall through to the fix agent with the finding and
-`cascade_siblings` alone, and note in the round summary that planning was skipped for that finding.
+`cascade_siblings` alone, and record it in the Summary Output's **Fix Provenance Notes** — not
+Known Limitations, since the finding still gets fixed; this is a confidence/provenance note, not
+an unaddressed item.
 
 This is a native planning step, not an `xp-pair` invocation — `xp-pair`'s own Step 5 commits and
 shuts down its team as part of finishing a session, which would violate the git guardrails below
@@ -708,10 +750,17 @@ design, or still pending) — Findings = Fixed + Open by construction. Open loca
 listed here for human disposition — they did not block termination.>
 
 ### Known Limitations (for PR Description)
-<List of findings classified as "accepted risk", plus any `coverage_gap` entries from Phase E and
-any finding where Phase D's fix-planning gate returned nothing usable and fell through to the fix
-agent unplanned (note each as "planning skipped") — all three MUST appear in the PR description,
-visually distinct from one another.>
+<List of findings classified as "accepted risk", plus any `coverage_gap` entries from Phase E
+(visually distinct from the accepted-risk findings) — both MUST appear in the PR description.
+Do NOT include planning-skipped findings here — see below; a planning-skipped finding still went
+to the fix agent and was normally FIXED, so it is not something left unaddressed.>
+
+### Fix Provenance Notes (round summary only — not a PR-description limitation)
+<For each finding where Phase D's fix-planning gate returned nothing usable and fell through to
+the fix agent unplanned: "fix applied without a planning pass — verify multi-site coverage" (note
+each as "planning skipped"). This describes HOW the fix was derived, for the human disposing this
+round, not whether the finding was addressed — it is confidence/provenance information, distinct
+from Known Limitations above.>
 
 ### Outcome
 ✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above

@@ -170,6 +170,10 @@ gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url,body,autho
 PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)
 # BASE_BRANCH — needed by Step 3.5's --base-branch flag when it invokes /adversarial-review
 BASE_BRANCH=$(gh pr view $PR_NUMBER --json baseRefName -q .baseRefName)
+# MERGE_BASE — needed by Step 3.7's cascade-sweep grep and Step 4.5's post-fix cascade sweep, so
+# both scope to the PR's full diff (tracked changes since the base branch) rather than only
+# unstaged/uncommitted changes since HEAD, which is all a bare `git diff`/`git diff HEAD` sees.
+MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD)
 ```
 
 **Clean working tree**: before making any changes, check `git status --porcelain`. If it
@@ -706,9 +710,12 @@ For each confirmed issue class from Step 3:
 
 2. **Run a two-tier grep**:
 
-   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only.
+   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only, across the
+   PR's full diff (`$MERGE_BASE` from Step 1) — not a bare `git diff --name-only`, which only
+   sees unstaged changes since HEAD and would silently narrow "the PR's changed files" (the claim
+   the Output section below makes) to whatever happens to be uncommitted right now.
    ```bash
-   git diff --name-only | xargs grep -n "<pattern>"
+   git diff --name-only "$MERGE_BASE" | xargs grep -n "<pattern>"
    ```
 
    **Tier 3b — File-scoped grep** (structural absence): when the issue involves a property
@@ -746,7 +753,7 @@ For each issue class swept, report one of:
 Issue flagged: fleet_state.py _load_fleet_state catches JSONDecodeError but not OSError
 
 Sweep pattern: single-exception catch missing companion error type
-Tier 3a grep: git diff --name-only | xargs grep -n "except json\."
+Tier 3a grep: git diff --name-only "$MERGE_BASE" | xargs grep -n "except json\."
 
   fleet_state.py:88 — already in fix list (the original finding)
 
@@ -757,7 +764,7 @@ Result: No additional hits — only one catch site in the changed files.
 Issue flagged: fleet_runner.py ignores return code from cmd_set_merged
 
 Sweep pattern: return code from state-mutation command calls not captured or checked
-Tier 3a grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
+Tier 3a grep: git diff --name-only "$MERGE_BASE" | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
 
   fleet_runner.py:719 — already in fix list
   fleet_runner.py:831 — NOT in fix list: rc = cmd_advance(...) assigned but never checked
@@ -770,7 +777,7 @@ Adding fleet_runner.py:831 to fix list (same severity: medium).
 Issue flagged: run_step_analyze missing shutil.which("mvn") preflight
 
 Sweep pattern: run_step_* functions that call mvn lack preflight check
-Tier 3a grep: git diff --name-only | xargs grep -n "shutil.which"
+Tier 3a grep: git diff --name-only "$MERGE_BASE" | xargs grep -n "shutil.which"
   → Nothing found in diff
 
 Tier 3b structural check: grep full file for all run_step_* functions
@@ -1135,8 +1142,12 @@ For each fix applied this round, ask:
 Same two-tier grep as Step 3.7, but targeted at code **introduced or modified by the fixes**:
 
 ```bash
-# Tier A — what changed since before the fixes (the fixes themselves)
-git diff HEAD -- <changed files>
+# Tier A — what changed since before the fixes (the fixes themselves). Deliberately scoped to
+# HEAD, not $MERGE_BASE — this tier checks THIS ROUND's fix edits only, not the whole PR's diff
+# (that's Step 3.7's job). `git diff HEAD` only sees TRACKED changes, so union in untracked files
+# too — a fix that added a brand-new file (e.g. Step 4.1's "Add Test Coverage" pattern creating a
+# new test class) would otherwise be invisible here.
+{ git diff HEAD -- <changed files>; git ls-files --others --exclude-standard -- <changed files>; }
 
 # Tier B — structural check: if the fix adds a pattern, enumerate all peer sites
 grep -n "<pattern from fix>" <changed file> | grep -v "<already fixed>"
@@ -1503,12 +1514,16 @@ conversation memory — this survives a context compaction or a resumed session:
 # Distinguish "this round was never recorded" from "it recorded zero" — `// 0` collapses both to
 # the same value, which would make a missing entry (a commit-pr-fixes.sh failure, a wrong $ROUND,
 # a $WORKSPACE_DIR re-derived to the wrong PR, /tmp cleanup) print the same false affirmative
-# "No directional fixes this round" message that a genuinely confirmed-zero round gets.
-DC=$(jq -r --arg round "$ROUND" '.[$round].directional_count // "absent"' "$FIXES_FILE")
-if [ "$DC" = "absent" ] || [ "$DC" = "null" ]; then
+# "No directional fixes this round" message that a genuinely confirmed-zero round gets. Check the
+# FILE first — a missing $FIXES_FILE makes jq print nothing to stdout (error goes to stderr, exit
+# 2), which matches neither "absent" nor "null" below and would otherwise slip through as DC="".
+[[ -f "$FIXES_FILE" ]] || { echo "🛑 $FIXES_FILE does not exist — wrong \$WORKSPACE_DIR/\$PR_NUMBER, a /tmp cleanup, or Step 7's commit never ran; this is NOT confirmed-zero." >&2; exit 1; }
+DC=$(jq -r --arg round "$ROUND" '.[$round].directional_count // "absent"' "$FIXES_FILE") || { echo "🛑 jq failed reading $FIXES_FILE (corrupt JSON?)." >&2; exit 1; }
+if [ "$DC" = "absent" ] || [ "$DC" = "null" ] || [ -z "$DC" ]; then
   echo "🛑 fixes.json has no entry for round $ROUND — directional_count was never persisted; this is NOT confirmed-zero. Fix the Step 7 commit/write before deciding on a re-request." >&2
   exit 1
 fi
+[[ "$DC" =~ ^[0-9]+$ ]] || { echo "🛑 fixes.json's directional_count for round $ROUND ('$DC') is not a plain integer." >&2; exit 1; }
 DIRECTIONAL_COUNT="$DC"
 ```
 
@@ -1536,8 +1551,13 @@ DIRECTIONAL_COUNT="$DC"
     if GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
       # `gh pr edit`'s exit code alone isn't proof the mutation applied — it's documented in this
       # environment as able to report success while silently not applying an edit (the --body
-      # case on Projects-classic repos). Read the reviewer list back before trusting "confirmed".
-      COPILOT_REQUESTED=$(gh pr view $PR_NUMBER --json reviewRequests -q '[.reviewRequests[].login] | index("copilot") != null' 2>/dev/null || echo "unknown")
+      # case on Projects-classic repos). Read the reviewer list back before trusting "confirmed" —
+      # via `gh api`, not `gh pr view`, which this same environment has shown to serve stale/cached
+      # content immediately after a mutation. Match case-insensitively against a "copilot" prefix,
+      # not the exact string "copilot" — the actual login is "Copilot" (capital C) per GitHub's
+      # REST payload, and this same file uses "copilot-pull-request-reviewer" for the same actor
+      # at the NEW_THREADS filter below — neither matches an exact-lowercase "copilot" token.
+      COPILOT_REQUESTED=$(gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" --jq '[.requested_reviewers[].login // ""] | map(ascii_downcase) | any(startswith("copilot"))' 2>/dev/null || echo "unknown")
       if [ "$COPILOT_REQUESTED" = "true" ]; then
         # Only advance the counter and the round marker on a CONFIRMED successful re-request —
         # advancing them on failure would record a re-request that never happened, which both

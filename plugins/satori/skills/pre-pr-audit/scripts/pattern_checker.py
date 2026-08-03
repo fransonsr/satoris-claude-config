@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, asdict
 from typing import List, Optional, Dict
 from pathlib import Path
@@ -33,9 +34,9 @@ class Issue:
 class PatternChecker:
     """Checks code for common quality issues using pattern matching."""
 
-    def __init__(self, changed_files: List[str], base_branch: str, project_patterns: Optional[str] = None):
+    def __init__(self, changed_files: List[str], merge_base: str, project_patterns: Optional[str] = None):
         self.changed_files = changed_files
-        self.base_branch = base_branch
+        self.merge_base = merge_base
         self.project_patterns = project_patterns
         self.issues: List[Issue] = []
         self.issue_counter = 1
@@ -80,9 +81,12 @@ class PatternChecker:
     def _get_changed_lines(self, file: str) -> set:
         """Get line numbers that were changed in this file."""
         try:
-            # Get diff with line numbers
+            # Two-dot form (no second ref) against the pinned merge-base, NOT a three-dot
+            # `{base}...HEAD` commit range — three-dot diffs commit-to-commit and can never see
+            # uncommitted working-tree changes, the same bug SKILL.md's own diff-range computations
+            # were fixed to avoid (commit 842ced8). merge_base is resolved once by the caller.
             result = subprocess.run(
-                ['git', 'diff', f'{self.base_branch}...HEAD', '-U0', file],
+                ['git', 'diff', self.merge_base, '-U0', file],
                 capture_output=True, text=True, check=True
             )
 
@@ -97,7 +101,11 @@ class PatternChecker:
                         changed_lines.update(range(start, start + count))
 
             return changed_lines
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  git diff {self.merge_base} -- {file} failed (exit {e.returncode}): "
+                  f"{e.stderr.strip() if e.stderr else '(no stderr)'} — treating {file} as having "
+                  f"no changed lines; every diff_lines-gated check will silently skip it.",
+                  file=sys.stderr)
             return set()
 
     def _check_resource_lifecycle(self, file: str, content: str, lines: List[str], diff_lines: set):
@@ -710,7 +718,7 @@ class PatternChecker:
 def main():
     parser = argparse.ArgumentParser(description='Pattern-based code quality checker')
     parser.add_argument('--changed-files', required=True, help='Newline-separated list of changed files')
-    parser.add_argument('--base-branch', required=True, help='Base branch to compare against')
+    parser.add_argument('--merge-base', required=True, help='Merge-base commit to diff against (two-dot form — includes uncommitted working-tree changes)')
     parser.add_argument('--project-patterns', help='Project-specific patterns from CLAUDE.md')
     parser.add_argument('--output', default='json', choices=['json', 'text'], help='Output format')
 
@@ -720,7 +728,7 @@ def main():
     changed_files = [f.strip() for f in args.changed_files.split('\n') if f.strip()]
 
     # Run checks
-    checker = PatternChecker(changed_files, args.base_branch, args.project_patterns)
+    checker = PatternChecker(changed_files, args.merge_base, args.project_patterns)
     issues = checker.check_all()
 
     # Output results

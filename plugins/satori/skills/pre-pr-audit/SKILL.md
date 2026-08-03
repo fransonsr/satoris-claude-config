@@ -15,14 +15,16 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 - After implementing a feature but before committing
 - This skill predicts what Copilot will flag BEFORE you push
 - **Self-check (NEW)**: run this even if the user never says a trigger phrase, and even if this
-  skill already ran earlier for the current tree (compare the same audited-tree hash Step 8 below
-  derives — HEAD plus any uncommitted changes via `git stash create`, falling back to `git
-  rev-parse HEAD^{tree}` only when the tree is already clean — against the marker Step 8 writes at
-  `"$(git rev-parse --git-dir)/pre-pr-audit-last-audit"`; skip only if it matches **and** the
-  recorded outcome is `CLEAN` — re-run on any other outcome, or if the tree has changed). A plain
-  `HEAD^{tree}` comparison is NOT sufficient on its own: this skill routinely audits uncommitted
-  work, and `HEAD^{tree}` alone can't distinguish that from a later, different set of uncommitted
-  edits made over the same commit.
+  skill already ran earlier for the current tree (compare the same audited-tree hash **and base
+  branch** Step 8 below derives — HEAD plus any uncommitted tracked changes via `git stash
+  create`, falling back to `git rev-parse HEAD^{tree}` only when the tree is already clean, plus a
+  fingerprint of untracked files, plus `$BASE_BRANCH` — against the marker Step 8 writes at
+  `"$(git rev-parse --git-dir)/pre-pr-audit-last-audit"`; skip only if **both** the tree and the
+  base branch match **and** the recorded outcome is `CLEAN` — re-run on any other outcome, if the
+  tree has changed, or if the base branch differs). A plain `HEAD^{tree}` comparison is NOT
+  sufficient on its own: this skill routinely audits uncommitted work, and `HEAD^{tree}` alone
+  can't distinguish that from a later, different set of uncommitted edits made over the same
+  commit — nor does it (or `git stash create`) see untracked, never-`git add`ed files.
   Before invoking `gh pr create` for a change, run
   `/address-pr-issues`' own Step 2.5 checklist against it (Complexity Indicators + Decision
   Rules — don't hand-copy a subset here; the two lists have drifted before and cite-by-name
@@ -84,7 +86,10 @@ echo "BASE_BRANCH=$BASE_BRANCH (resolved via $BASE_SOURCE)"
 # A resolved name is not the same as one that actually exists on origin — fail loudly here instead
 # of letting a later git command's fatal error get silently swallowed downstream.
 if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; then
-  echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH' or supply the correct branch." >&2
+  # NOT a bare `git fetch origin $BASE_BRANCH` — verified that in a restricted-refspec clone
+  # (shallow, --single-branch, a CI runner checked out to only the feature branch) the bare form
+  # fetches into FETCH_HEAD only and does NOT create refs/remotes/origin/$BASE_BRANCH.
+  echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH' (the explicit-refspec form — a bare 'git fetch origin $BASE_BRANCH' does not create the remote-tracking ref in a restricted-refspec clone) or supply the correct branch." >&2
   exit 1
 fi
 ```
@@ -104,17 +109,29 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' (resolved via $BASE_SOURCE) — refusing to audit an empty diff. Supply the correct branch above." >&2
   exit 1
 fi
-MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD) || {
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD found no common ancestor (shallow clone? unrelated histories? run 'git fetch --unshallow origin $BASE_BRANCH') — no diff range can be computed." >&2
+  exit 1
+}
+if [ -z "$MERGE_BASE" ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD returned nothing — no diff range can be computed." >&2
+  exit 1
+fi
 DIFF_RC=0
 git diff --quiet "$MERGE_BASE" || DIFF_RC=$?
-if [ "$DIFF_RC" -eq 0 ]; then
-  echo "🛑 diff against merge-base $MERGE_BASE is empty — refusing to audit nothing. Check BASE_BRANCH above." >&2
+# `git diff`/`git ls-files` only see TRACKED content — a change consisting solely of new,
+# never-`git add`ed files (this skill's own "after implementing a feature but before committing"
+# trigger) makes the tracked-diff exit 0 even though real content exists. Union in untracked files
+# before deciding the diff is empty.
+UNTRACKED_FILES=$(git ls-files --others --exclude-standard)
+if [ "$DIFF_RC" -eq 0 ] && [ -z "$UNTRACKED_FILES" ]; then
+  echo "🛑 diff against merge-base $MERGE_BASE is empty (no tracked changes, no untracked files) — refusing to audit nothing. Check BASE_BRANCH above." >&2
   exit 1
 elif [ "$DIFF_RC" -ge 2 ]; then
   echo "🛑 git diff against merge-base $MERGE_BASE failed (exit $DIFF_RC) — this is a git error, not an empty diff. Re-run 'git diff $MERGE_BASE' directly to see the actual error." >&2
   exit 1
 fi
-CHANGED_FILES=$(git diff --name-only "$MERGE_BASE")
+CHANGED_FILES=$(printf '%s\n%s\n' "$(git diff --name-only "$MERGE_BASE")" "$UNTRACKED_FILES" | grep -v '^$' | sort -u)
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
 CHANGED_TEST_FILES=$(echo "$CHANGED_JAVA_FILES" | grep -E "(^|/)src/test/" || true)
 CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
@@ -211,7 +228,7 @@ Use the bundled pattern checker script:
 ```bash
 python3 ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/pre-pr-audit/scripts/pattern_checker.py \
   --changed-files "$CHANGED_JAVA_FILES" \
-  --base-branch "$BASE_BRANCH" \
+  --merge-base "$MERGE_BASE" \
   --project-patterns "$PROJECT_PATTERNS"
 ```
 
@@ -733,15 +750,25 @@ Intent Brief:
 Skill(adversarial-review, args="--rounds 3 --base-branch <BASE_BRANCH> --intent-brief \"<intent-brief text>\"")
 ```
 
-Run it to a terminal outcome, then immediately capture that outcome into shell variables — Step
-8's marker reads these, and nothing else in this document ever assigns them. The skill's own
-Summary Output badge (e.g. "✅ CONVERGED — cross-file yield 0...") is a human-readable line, not
-itself a token to compare against — derive the bare value from it explicitly:
+Run it to a terminal outcome, then immediately capture that outcome and **persist it to disk** —
+Step 8's marker reads it back, and shell variables do NOT survive across this document's separate
+fenced-block invocations (the same warning applies here as at Step 7's SonarQube section: "shell
+state doesn't persist across separate command invocations"). Steps 4.8, 4.9, 5 (an interactive
+review-pause), 6, and 7 (its own Sonar block, which can itself `exit 1`) all run between this point
+and Step 8's read. The skill's own Summary Output badge (e.g. "✅ CONVERGED — cross-file yield
+0...") is a human-readable line, not itself a token to compare against — derive the bare value
+from it explicitly, including the combined badge (adversarial-review always runs with `--rounds 3`
+here, so its "INCOMPLETE + NOT converged" combined outcome is reachable):
 
 ```bash
-ADVERSARIAL_OUTCOME=<bare token derived from the skill's Outcome badge: CONVERGED|NOT_CONVERGED|INCOMPLETE|ABANDONED|TEST_FAILURES>
+ADVERSARIAL_OUTCOME=<bare token derived from the skill's Outcome badge: CONVERGED|NOT_CONVERGED|INCOMPLETE|INCOMPLETE_NOT_CONVERGED|ABANDONED|TEST_FAILURES>
 TESTS_GREEN=<true unless the skill's own Phase D test run reported "Test failures after fix application", in which case false>
+printf '%s %s\n' "$ADVERSARIAL_OUTCOME" "$TESTS_GREEN" > "$(git rev-parse --git-dir)/pre-pr-audit-adversarial-outcome"
 ```
+
+Only `CONVERGED` maps to a potentially-clean run at Step 8 — every other token (including the
+combined one) maps to `NOT_CLEAN`, so the addition of `INCOMPLETE_NOT_CONVERGED` above is for
+operator clarity, not a behavior change.
 
 The `/adversarial-review` skill handles the full protocol:
 - One review agent per pattern class (parallel, dynamic enumeration from the pattern file)
@@ -762,7 +789,7 @@ The `/adversarial-review` skill handles the full protocol:
   both fire at the cap — see /adversarial-review's Summary Output for the combined "INCOMPLETE +
   NOT converged" badge covering that case
 
-The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), known-limitations list (accepted-risk items) for the PR description, a residual-risk statement (never a "clean" claim — a zero-yield round is one sample, not proof), and any escalation or incomplete-review recommendation.
+The skill returns a summary containing: per-round breakdown, findings by class split by blast radius (cross-file vs. local), a known-limitations list (accepted-risk items plus `coverage_gap` entries) for the PR description, a separate fix-provenance-notes list ("planning skipped" findings — these were fixed, so they are NOT known limitations, just a lower-confidence-fix flag for the human disposing the round), a residual-risk statement (never a "clean" claim — a zero-yield round is one sample, not proof), and any escalation or incomplete-review recommendation.
 
 ## Step 4.8: Spec-Completeness Review (Conditional: procedural spec/doc files in diff)
 
@@ -1092,7 +1119,15 @@ if [ "$QUALITY_GATE" = "OK" ]; then
 elif [ -z "$QUALITY_GATE" ] || [ "$QUALITY_GATE" = "null" ]; then
   echo "⚠️  Could not read quality gate for key '$SONAR_PROJECT_KEY' at $SONAR_HOST — this is NOT necessarily a gate failure; check the key/host/\$SONAR_TOKEN before reporting FAILED."
 else
-  echo "❌ Quality Gate: FAILED"
+  # SonarQube's projectStatus.status is one of OK/WARN/ERROR/NONE — name the actual value and the
+  # state actually reached, rather than asserting FAILED for any non-OK, non-empty status.
+  echo "❌ Quality Gate: $QUALITY_GATE (not OK)"
+  case "$QUALITY_GATE" in
+    ERROR) echo "   Gate failed — blocking issues below." ;;
+    WARN) echo "   Warning threshold breached — not a hard failure." ;;
+    NONE) echo "   No quality gate conditions are configured for '$SONAR_PROJECT_KEY' — there is nothing to pass or fail." ;;
+    *) echo "   Unrecognized status '$QUALITY_GATE' — treat as not-necessarily-failed and verify manually." ;;
+  esac
   # Fetch and display issues
   curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
     "$SONAR_HOST/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&inNewCodePeriod=true&impactSeverities=MEDIUM,HIGH,CRITICAL" \
@@ -1183,6 +1218,15 @@ don't pay that cost twice for the same content), and so it never treats an incom
 equivalent to a clean one:
 
 ```bash
+# Read back Step 4.7's persisted outcome — shell variables do NOT survive from that block to this
+# one (Steps 4.8/4.9/5/6/7 ran in between, in separate invocations); see Step 4.7's own note.
+OUTCOME_FILE="$(git rev-parse --git-dir)/pre-pr-audit-adversarial-outcome"
+if [ ! -f "$OUTCOME_FILE" ]; then
+  echo "🛑 $OUTCOME_FILE not found — Step 4.7 never persisted its outcome. Re-run Step 4.7's capture block, or (resumed session) re-derive ADVERSARIAL_OUTCOME/TESTS_GREEN from adversarial-review's last-printed Outcome/test-result lines and write the file yourself before continuing." >&2
+  exit 1
+fi
+read -r ADVERSARIAL_OUTCOME TESTS_GREEN < "$OUTCOME_FILE"
+
 # Derive the audited tree from HEAD + any uncommitted changes — this skill routinely audits work
 # before it's committed ("After implementing a feature but before committing"), and `HEAD^{tree}`
 # alone only reflects the last commit: it would go stale the moment the working tree is dirty and
@@ -1196,6 +1240,10 @@ if [ -n "$STASH_SHA" ]; then
 else
   AUDITED_TREE=$(git rev-parse HEAD^{tree})
 fi
+# `git stash create` captures TRACKED content only — fold in a fingerprint of untracked (never
+# `git add`ed) files too, or two working trees differing only by a brand-new file hash identically.
+UNTRACKED_FINGERPRINT=$(git ls-files --others --exclude-standard -z | xargs -0 -r git hash-object | sort | sha1sum | cut -d' ' -f1)
+AUDITED_TREE="${AUDITED_TREE}-${UNTRACKED_FINGERPRINT}"
 
 # BLOCKING_ISSUES: unresolved CRITICAL/HIGH findings from the Workflow batch (Steps 4/4.5/4.6/4.8/
 # 4.9) per Step 5/6's disposition tally, plus 1 if Step 7's SonarQube Quality Gate is anything
@@ -1208,7 +1256,10 @@ if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ "$TESTS_GREEN" = "true" ] && [ 
 else
   OUTCOME="NOT_CLEAN"  # NOT converged, INCOMPLETE, ABANDONED, TEST_FAILURES, or blocking pattern/Sonar issues
 fi
-printf '%s %s\n' "$AUDITED_TREE" "$OUTCOME" > "$(git rev-parse --git-dir)/pre-pr-audit-last-audit"
+# Record BASE_BRANCH alongside the tree — what was audited is a function of both. An audit that
+# recorded CLEAN against one base branch must not authorize skipping a later run against a
+# different base branch, even if the tree hash happens to still match.
+printf '%s %s %s\n' "$AUDITED_TREE" "$BASE_BRANCH" "$OUTCOME" > "$(git rev-parse --git-dir)/pre-pr-audit-last-audit"
 ```
 
 Use `git rev-parse --git-dir` rather than a literal `.git/` path — in a linked worktree, `.git`

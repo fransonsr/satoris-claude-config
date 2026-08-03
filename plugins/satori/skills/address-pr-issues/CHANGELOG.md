@@ -37,9 +37,31 @@ numbers across a Step 4.1 loop-back (glob-based lookup now used instead of round
 `pre-pr-audit`'s Step 4.7/Step 6 still described the pre-restructure "findings return to Step 5"
 model after Step 4/5 were rewritten; and `pre-pr-audit/README.md` / `xp-pair/README.md` were
 confirmed stale by the same mechanism and reduced to pointers alongside `address-pr-issues/README.md`.
+Round 3 (43 findings, provisionalYield 26 — growing, not converging) found the architecturally most
+significant bug in the whole batch: every diff-range computation (`adversarial-review`'s Setup
+Step 3/4, `pre-pr-audit`'s Step 2) used a three-dot commit range (`origin/$BASE...$CURRENT` /
+`origin/$BASE...HEAD`), which can NEVER see uncommitted working-tree changes — directly
+contradicting Phase D's own prohibition on `git commit`ing fix-round changes, so every round after
+the first was silently re-diffing pre-fix content. Fixed by switching every diff-range use to a
+two-dot form against a pinned `$MERGE_BASE`. Also fixed: `pre-pr-audit`'s CLEAN/NOT_CLEAN
+idempotency marker read `$ADVERSARIAL_OUTCOME`/`$BLOCKING_ISSUES`, neither of which was ever
+assigned anywhere, making the marker permanently record `NOT_CLEAN`; the base-branch fallback
+checked local `refs/heads/*` instead of `refs/remotes/origin/*`; and roughly two dozen smaller
+cross-file consistency/documentation-drift findings. Round 4 (27 findings, provisionalYield 18)
+found that round 3's "working-tree-aware" fix still couldn't see brand-new, never-`git add`ed
+files (`git diff`/`git stash create` only ever see tracked content) — fixed by unioning in `git
+ls-files --others --exclude-standard` everywhere a changed-file set or the audited-tree hash is
+computed; that round also found `git fetch origin $BASE_BRANCH` (round 3's own suggested remedy
+for a missing ref) does not actually create the remote-tracking ref in a restricted-refspec clone,
+an unchecked `git merge-base` substitution, the exact same shell-state-doesn't-persist-across-
+blocks bug recurring in round 3's own `$ADVERSARIAL_OUTCOME`/`$TESTS_GREEN` capture (fixed by
+persisting to a marker file instead), a non-deterministic dedup key introduced by round 3's own
+fix (reverted), `pattern_checker.py` (the one piece of this batch that's actual Python, not prose)
+still using a three-dot diff, and a Known-Limitations/Fix-Provenance-Notes miscategorization.
 
-See commits `cab1a0f` (the Fable/fix-planning feature), `29a594c` (round-1 dogfood fixes), and
-this round's commit (round-2 dogfood fixes) for the full change.
+See commits `cab1a0f` (the Fable/fix-planning feature), `29a594c` (round-1 dogfood fixes),
+`c767eea` (round-2), `842ced8` (round-3), and this round's commit (round-4 dogfood fixes) for the
+full change.
 
 ## 2026-08-02 - v1.7.5: Process Hardening from PR #171 Retrospective
 
