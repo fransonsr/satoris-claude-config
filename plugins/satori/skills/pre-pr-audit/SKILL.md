@@ -57,37 +57,42 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 ## Step 1: Determine Base Branch
 
 Ask the user which branch to compare against, or auto-detect — same resolution
-`adversarial-review`'s own Setup Step 3 uses, so both halves of this audit agree on scope:
+`adversarial-review`'s own Setup Step 3 uses, so both halves of this audit agree on scope. **If the
+user names a branch, set `BASE_BRANCH_ARG` to that value before running this step; leave it unset
+otherwise** — the block below checks for it and uses it directly, skipping auto-detection
+entirely, mirroring `adversarial-review`'s own override handling exactly (auto-detect is the
+fallback for when no override was given, not a check that runs regardless of one):
 
 ```bash
-# NOT `@{u}` (the current branch's OWN upstream) — once this branch is pushed with -u, that
-# resolves to the branch itself, making BASE_BRANCH == CURRENT_BRANCH and every diff empty.
-BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null)
-BASE_SOURCE="gh-pr"
-if [ -z "$BASE_BRANCH" ]; then
-  BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##')
-  BASE_SOURCE="origin-head"
-fi
-
-# Fallback to common names — remote-tracking refs, not local refs/heads/*: every downstream diff
-# uses an origin/-prefixed range, and a shallow clone, a worktree checked out to only the feature
-# branch, or a CI runner can have origin/main or origin/master without a local main/master branch.
-if [ -z "$BASE_BRANCH" ]; then
-  if git show-ref --verify --quiet refs/remotes/origin/main; then
-    BASE_BRANCH="main"
-  elif git show-ref --verify --quiet refs/remotes/origin/master; then
-    BASE_BRANCH="master"
-  else
-    echo "Cannot detect base branch — tell me which branch to compare against" >&2
-    exit 1
+if [ -n "$BASE_BRANCH_ARG" ]; then
+  BASE_BRANCH="$BASE_BRANCH_ARG"
+  BASE_SOURCE="arg"
+else
+  # NOT `@{u}` (the current branch's OWN upstream) — once this branch is pushed with -u, that
+  # resolves to the branch itself, making BASE_BRANCH == CURRENT_BRANCH and every diff empty.
+  BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null)
+  BASE_SOURCE="gh-pr"
+  if [ -z "$BASE_BRANCH" ]; then
+    BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##')
+    BASE_SOURCE="origin-head"
   fi
-  BASE_SOURCE="origin-fallback"
+
+  # Fallback to common names — remote-tracking refs, not local refs/heads/*: every downstream diff
+  # uses an origin/-prefixed range, and a shallow clone, a worktree checked out to only the feature
+  # branch, or a CI runner can have origin/main or origin/master without a local main/master branch.
+  if [ -z "$BASE_BRANCH" ]; then
+    if git show-ref --verify --quiet refs/remotes/origin/main; then
+      BASE_BRANCH="main"
+    elif git show-ref --verify --quiet refs/remotes/origin/master; then
+      BASE_BRANCH="master"
+    else
+      echo "Cannot detect base branch — tell me which branch to compare against" >&2
+      exit 1
+    fi
+    BASE_SOURCE="origin-fallback"
+  fi
 fi
 echo "BASE_BRANCH=$BASE_BRANCH (resolved via $BASE_SOURCE)"
-# Persist immediately — Step 8 reads this back several fenced blocks later, and shell variables
-# do NOT survive across this document's separate bash invocations (same reason Step 4.7's
-# ADVERSARIAL_OUTCOME/TESTS_GREEN are persisted to disk rather than trusted as shell state).
-printf '%s\n' "$BASE_BRANCH" > "$(git rev-parse --git-dir)/pre-pr-audit-base-branch"
 
 # A resolved name is not the same as one that actually exists on origin — fail loudly here instead
 # of letting a later git command's fatal error get silently swallowed downstream.
@@ -98,6 +103,14 @@ if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; t
   echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH' (the explicit-refspec form — a bare 'git fetch origin $BASE_BRANCH' does not create the remote-tracking ref in a restricted-refspec clone) or supply the correct branch." >&2
   exit 1
 fi
+
+# Persist AFTER validation, not before — a persisted-but-invalid value would let Step 2's read-back
+# proceed with something already proven broken. Both fields (BASE_BRANCH and BASE_SOURCE): Step 8's
+# error messages need to say which resolution path produced the value, the same way this step's do.
+# Persist immediately — Step 8 reads this back several fenced blocks later, and shell variables do
+# NOT survive across this document's separate bash invocations (same reason Step 4.7's
+# ADVERSARIAL_OUTCOME/TESTS_GREEN are persisted to disk rather than trusted as shell state).
+printf '%s %s\n' "$BASE_BRANCH" "$BASE_SOURCE" > "$(git rev-parse --git-dir)/pre-pr-audit-base-branch"
 ```
 
 ## Step 2: Get Changed Files
@@ -110,6 +123,16 @@ below) resolves and pins the same kind of value as `$MERGE_BASE`, so both halves
 agree on scope:
 
 ```bash
+# Re-derive if this is a new shell/session — $BASE_BRANCH/$BASE_SOURCE don't persist from Step 1's
+# invocation any more than $ADVERSARIAL_OUTCOME/$TESTS_GREEN do across their own separate blocks.
+if [ -z "$BASE_BRANCH" ]; then
+  BASE_BRANCH_FILE="$(git rev-parse --git-dir)/pre-pr-audit-base-branch"
+  if [ ! -f "$BASE_BRANCH_FILE" ]; then
+    echo "🛑 \$BASE_BRANCH is unset and $BASE_BRANCH_FILE not found — re-run Step 1 before this step." >&2
+    exit 1
+  fi
+  read -r BASE_BRANCH BASE_SOURCE < "$BASE_BRANCH_FILE"
+fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' (resolved via $BASE_SOURCE) — refusing to audit an empty diff. Supply the correct branch above." >&2
@@ -144,12 +167,15 @@ elif [ "$DIFF_RC" -ge 2 ]; then
 fi
 CHANGED_FILES=$(printf '%s\n%s\n' "$(git diff --name-only "$MERGE_BASE")" "$UNTRACKED_FILES" | grep -v '^$' | sort -u)
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
+# pattern_checker.py has a Python-specific check (subprocess safety) gated on file.endswith('.py')
+# — pass it Python files too, not just Java, or that check is permanently unreachable.
+CHANGED_PY_FILES=$(echo "$CHANGED_FILES" | grep "\.py$" || true)
 CHANGED_TEST_FILES=$(echo "$CHANGED_JAVA_FILES" | grep -E "(^|/)src/test/" || true)
 CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
 
-# If no Java files, check if there are other languages to analyze
-if [ -z "$CHANGED_JAVA_FILES" ]; then
-  echo "No Java files changed. Would you like me to analyze other file types?"
+# If no Java or Python files, check if there are other languages to analyze
+if [ -z "$CHANGED_JAVA_FILES" ] && [ -z "$CHANGED_PY_FILES" ]; then
+  echo "No Java or Python files changed. Would you like me to analyze other file types?"
   # Extend to other languages as needed
 fi
 ```
@@ -211,7 +237,8 @@ from CLAUDE.md — **except** the Whole-Document Coherence Walk agent (Step 4.9)
 receive the diff or any indication of which sections changed; see that step's Agent mandate below
 for why:
 
-- **Pattern Checks** — checks described in Step 4 details below
+- **Pattern Checks** — checks described in Step 4 details below; read `pattern_checker.py`'s
+  stderr output before trusting its findings — see that step's note on the scan-scope line
 - **Consistency Checks** — checks described in Step 4.5 details below
 - **Maven Plugin Checks** (skip if no `@Mojo` annotation or `maven-plugin` packaging detected) — checks in Step 4.6 below
 - **Spec-Completeness Review** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.8 below; returns findings for review-pause in Step 5
@@ -238,20 +265,27 @@ Use the bundled pattern checker script:
 
 ```bash
 python3 ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/pre-pr-audit/scripts/pattern_checker.py \
-  --changed-files "$CHANGED_JAVA_FILES" \
+  --changed-files "$(printf '%s\n%s\n' "$CHANGED_JAVA_FILES" "$CHANGED_PY_FILES" | grep -v '^$')" \
   --merge-base "$MERGE_BASE" \
   --project-patterns "$PROJECT_PATTERNS"
 ```
+
+**Check the script's stderr output before trusting an empty/clean result** — it prints a
+"Scanned X/Y requested file(s)" line unconditionally, plus any per-file warnings (unreadable,
+diff-failed). An empty findings list where `X < Y` means files were silently skipped, not
+verified clean; the agent running this check (in the Workflow batch below) must read stderr, not
+just the JSON result, before reporting "no issues found."
 
 The script checks for:
 
 ### Universal Patterns (All Projects)
 
 **Resource Lifecycle**:
-- File handles opened without try-with-resources or finally
-- Locks acquired without unlock in finally
-- Connections opened without close
-- Streams not closed
+- Spark `.persist()` without `.unpersist()`, `.broadcast()` without `.destroy()` (both gated on a
+  `finally`-block check in the same method)
+- `FileInputStream`/`FileOutputStream`/`BufferedReader`/`Files.newBufferedReader` opened without
+  try-with-resources — the only four constructors checked; other stream/connection/lock types
+  (sockets, JDBC connections, explicit `Lock.lock()`/`unlock()`) are NOT covered by this script
 
 **Fail-Fast vs Silent Failures**:
 - `LOGGER.warn()` or `LOGGER.error()` with keywords: duplicate, invalid, corrupt, conflict, mismatch
@@ -275,6 +309,7 @@ The script checks for:
 - `catch` on a specific `*Exception`/`*Error` subtype immediately around a JDK/library call, when the API only documents a broader contract (may miss a sibling exception type)
 - Python `subprocess.run`/`Popen` calls missing `cwd=`, `timeout=`, a `TimeoutExpired` handler, or an executable guard
 - The same numeric constant appearing across changed files to control truncation/padding/formatting (the constant-level half of Consistency Check #4's "Parallel Derivation Anti-Pattern", below — the agent only needs to cover the string-manipulation and lookup-key halves, since the script already automates this one)
+- `list.add()` inside a loop with no `Set`/`contains()` check guarding against duplicates
 
 **Try/Finally Scope**:
 - Operations between resource acquisition and try block
@@ -290,6 +325,9 @@ Apply any patterns loaded from the project configuration.
 
 ### Silent Failure Patterns
 
+**NOT implemented by the script** — same as the isinstance/dict-default bullets above, these three
+sub-categories (Parse/Compile Failures, Type/Name Resolution, Platform Compatibility) are not
+automated by `pattern_checker.py`; check them by hand or delegate to the Consistency-Checks agent.
 Check for operations that can fail without clear user-visible errors:
 
 **Parse/Compile Failures**:
@@ -1002,6 +1040,12 @@ disposition to the skill so it can apply them under the correct guardrails.
 
 **For pattern-check findings (Steps 4, 4.5, 4.6)**: apply the fix patterns below.
 
+**Track whether any Workflow-batch fix was applied this run**: set
+`WORKFLOW_BATCH_FIXES_APPLIED=true` the moment the first one lands, `false` if none are approved.
+Step 8's outcome marker needs this — `AUDITED_TREE` is computed there, AFTER this step's edits, but
+nothing re-runs the Workflow-batch checks against the post-fix content, so a CLEAN verdict would
+otherwise certify a tree no check ever actually ran against.
+
 When user approves a fix, apply the appropriate fix pattern:
 
 ### Fix Pattern: Add Resource Cleanup
@@ -1196,12 +1240,19 @@ After all checks complete:
 - Findings: N found, M fixed, K accepted-risk, J false-positives
 - By class: [State Machine: N1, Operator Observability: N2, ...]
 - By blast radius: cross_file N1, local N2
-- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds; approved fixes from that round remain applied (uncommitted) in the working tree / ❌ Test failures after fix application — do not push until resolved
+- Outcome: ❌ TEST_FAILURES — this round's test suite is red; checked FIRST by /adversarial-review's own Phase E, before every other outcome below — do not push until resolved / ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds; approved fixes from that round remain applied in the working tree, committed or not
 
 **Known Limitations** (for PR description):
 > _(List findings classified as "accepted risk", plus any `coverage_gap` entries from a
 > Phase E Accept/Abandon decision (visually distinct) — all MUST appear verbatim in the PR
 > description so reviewers understand what was deliberately left in and why.)_
+
+**Fix Provenance Notes** (round summary only — NOT a PR-description limitation, since these
+findings were fixed, not left unaddressed):
+> _(`/adversarial-review`'s own Summary Output returns this list per Step 4.7's contract above —
+> "planning skipped: <stage> <failed|timed out|returned nothing usable>" entries. Surface them
+> here, visually distinct from Known Limitations, so they don't silently disappear when this
+> template is filled out verbatim.)_
 
 **SonarQube**: Quality Gate {PASSED | FAILED | WARN — warning threshold breached, not a hard failure | NONE — no quality gate conditions configured | UNKNOWN — could not read (see key/host/$SONAR_TOKEN) | NOT RUN — user deferred}
 - New issues: N
@@ -1216,7 +1267,9 @@ After all checks complete:
 OR
 ⚠️  Fix N blocking issues before pushing
 OR
-❌ Quality gate failed - see issues above
+❌ Quality gate ERROR - see issues above
+OR
+⚠️  Quality gate undetermined (UNKNOWN / NOT RUN) — treated as blocking, but this is NOT a gate failure; resolve the key/host/$SONAR_TOKEN or run Step 7 before pushing
 
 **Next Steps**:
 1. Run tests: `mvn test`
@@ -1240,17 +1293,22 @@ if [ ! -f "$OUTCOME_FILE" ]; then
   exit 1
 fi
 read -r ADVERSARIAL_OUTCOME TESTS_GREEN < "$OUTCOME_FILE"
-# Single-use: consume the marker once read, so a stale leftover from a prior/failed run (e.g. Step
-# 4.7 was skipped this time, or errored before writing a fresh one) can never be silently reused.
-rm -f "$OUTCOME_FILE"
+# Single-use, but NOT consumed yet — deferred to just before the final printf below, after every
+# operation that can still exit 1 (the base-branch read-back next, then AUDITED_TREE derivation).
+# Consuming it here would leave the marker destroyed if any of those later steps aborts, forcing
+# a re-run of Step 4.7's mandatory --rounds 3 sweep (the most expensive part of this skill) just
+# to regenerate a value this run already had in hand.
 
-# Same reasoning as ADVERSARIAL_OUTCOME/TESTS_GREEN above — $BASE_BRANCH was set back in Step 1,
-# several fenced blocks and steps ago, and does NOT survive as a shell variable to this one.
-BASE_BRANCH=$(cat "$(git rev-parse --git-dir)/pre-pr-audit-base-branch" 2>/dev/null)
-if [ -z "$BASE_BRANCH" ]; then
+# Same reasoning as ADVERSARIAL_OUTCOME/TESTS_GREEN above — $BASE_BRANCH/$BASE_SOURCE were set
+# back in Step 1, several fenced blocks and steps ago, and do NOT survive as shell variables to
+# this one. Two fields, matching Step 1's two-field write — a single-field `cat` here would
+# capture "branch source" as one corrupted string.
+BASE_BRANCH_FILE="$(git rev-parse --git-dir)/pre-pr-audit-base-branch"
+if [ ! -f "$BASE_BRANCH_FILE" ]; then
   echo "🛑 Could not read the persisted base branch — re-run Step 1's resolution (which persists it) before continuing." >&2
   exit 1
 fi
+read -r BASE_BRANCH BASE_SOURCE < "$BASE_BRANCH_FILE"
 
 # Derive the audited tree from HEAD + any uncommitted changes — this skill routinely audits work
 # before it's committed ("After implementing a feature but before committing"), and `HEAD^{tree}`
@@ -1259,6 +1317,11 @@ fi
 # stash create` builds a commit object representing HEAD + working-tree + index state WITHOUT
 # touching HEAD, the index, or the working tree (non-destructive, nothing is actually stashed); it
 # prints nothing when the tree is already clean, hence the fallback to HEAD^{tree} in that case.
+# NOTE on WHAT this certifies: this hash is taken HERE, at Step 8 — i.e. AFTER Step 6 may have
+# applied Workflow-batch fixes — not at the point the checks in Steps 4/4.5/4.6/4.8/4.9 actually
+# ran. Nothing re-runs those checks against Step 6's edits, so this marker can only certify "the
+# tree as it stood when this run finished", not "content every check has verified". See
+# WORKFLOW_BATCH_FIXES_APPLIED below, which forces NOT_CLEAN whenever that gap is live this run.
 STASH_SHA=$(git stash create 2>/dev/null)
 if [ -n "$STASH_SHA" ]; then
   AUDITED_TREE=$(git rev-parse "$STASH_SHA^{tree}")
@@ -1267,7 +1330,15 @@ else
 fi
 # `git stash create` captures TRACKED content only — fold in a fingerprint of untracked (never
 # `git add`ed) files too, or two working trees differing only by a brand-new file hash identically.
-UNTRACKED_FINGERPRINT=$(git ls-files --others --exclude-standard -z | xargs -0 -r git hash-object | sort | sha1sum | cut -d' ' -f1)
+# sha1sum and xargs -r are GNU-coreutils-only — absent by default on macOS (which ships
+# `shasum -a 1`/no -r support in BSD xargs). Guard both rather than assume a GNU environment.
+HASH_CMD="sha1sum"; command -v sha1sum >/dev/null 2>&1 || HASH_CMD="shasum -a 1"
+UNTRACKED_LIST=$(git ls-files --others --exclude-standard)
+if [ -n "$UNTRACKED_LIST" ]; then
+  UNTRACKED_FINGERPRINT=$(echo "$UNTRACKED_LIST" | while IFS= read -r f; do git hash-object "$f"; done | sort | $HASH_CMD | cut -d' ' -f1)
+else
+  UNTRACKED_FINGERPRINT=""
+fi
 AUDITED_TREE="${AUDITED_TREE}-${UNTRACKED_FINGERPRINT}"
 
 # BLOCKING_ISSUES: unresolved CRITICAL/HIGH findings from the Workflow batch (Steps 4/4.5/4.6/4.8/
@@ -1277,11 +1348,18 @@ AUDITED_TREE="${AUDITED_TREE}-${UNTRACKED_FINGERPRINT}"
 # "nothing to pass or fail") — surface either as a note, not a blocking count.
 BLOCKING_ISSUES=<count of open CRITICAL/HIGH Workflow-batch findings, plus 1 if the Quality Gate above is ERROR, UNKNOWN, or NOT RUN (WARN/NONE do not count)>
 
-if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ "$TESTS_GREEN" = "true" ] && [ "$BLOCKING_ISSUES" -eq 0 ]; then
+if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ "$TESTS_GREEN" = "true" ] && [ "$BLOCKING_ISSUES" -eq 0 ] && [ "$WORKFLOW_BATCH_FIXES_APPLIED" != "true" ]; then
   OUTCOME="CLEAN"
 else
-  OUTCOME="NOT_CLEAN"  # NOT converged, INCOMPLETE, ABANDONED, TEST_FAILURES, or blocking pattern/Sonar issues
+  OUTCOME="NOT_CLEAN"  # NOT converged, INCOMPLETE, ABANDONED, TEST_FAILURES, blocking pattern/Sonar
+  # issues, or WORKFLOW_BATCH_FIXES_APPLIED=true (Step 6 edited the tree after the checks ran
+  # against it — see the AUDITED_TREE note above; this tree has never actually been re-verified)
 fi
+# Single-use: consume the marker only now, once the record it feeds is about to be durably
+# written — a stale leftover from a prior/failed run can never be silently reused, but consuming
+# it any earlier (before the fallible reads/derivations above) risks destroying it on an abort
+# with nothing yet written to replace it.
+rm -f "$OUTCOME_FILE"
 # Record BASE_BRANCH alongside the tree — what was audited is a function of both. An audit that
 # recorded CLEAN against one base branch must not authorize skipping a later run against a
 # different base branch, even if the tree hash happens to still match.

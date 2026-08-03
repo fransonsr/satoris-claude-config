@@ -41,11 +41,17 @@ class PatternChecker:
         self.issues: List[Issue] = []
         self.issue_counter = 1
         self.scanned_count = 0
+        self._diff_cache: Dict[str, tuple] = {}
 
     def check_all(self) -> List[Issue]:
         """Run all pattern checks and return found issues."""
         self.scanned_count = 0
         skipped_missing = 0
+        unreadable = 0
+        diff_failed = 0
+        self._diff_cache: Dict[str, tuple] = {}  # file -> (content, lines, diff_lines) — one
+        # read/diff per file across this whole run; _check_parallel_derivation_constants reuses it
+        # below instead of re-reading and re-diffing every file a second time.
         for file in self.changed_files:
             if not os.path.exists(file):
                 skipped_missing += 1
@@ -57,11 +63,18 @@ class PatternChecker:
                     lines = content.split('\n')
             except (UnicodeDecodeError, OSError) as e:
                 print(f"⚠️  Could not read {file} ({e}) — skipping this file.", file=sys.stderr)
+                unreadable += 1
                 continue
 
+            # Get git diff to focus on changed lines. Counted as "scanned" regardless of whether
+            # the diff itself succeeded — the file's content was read and checks did run against
+            # it; `diff_failed` tracks the degraded-diff-info case separately so the two are never
+            # conflated in the summary below.
+            diff_lines, diff_ok = self._get_changed_lines(file, lines)
+            if not diff_ok:
+                diff_failed += 1
             self.scanned_count += 1
-            # Get git diff to focus on changed lines
-            diff_lines = self._get_changed_lines(file, lines)
+            self._diff_cache[file] = (content, lines, diff_lines)
 
             # Run universal checks
             self._check_resource_lifecycle(file, content, lines, diff_lines)
@@ -83,9 +96,18 @@ class PatternChecker:
 
         # Scan scope, unconditionally — so "no issues found" and "nothing was actually scanned"
         # are never confused with each other (an empty --changed-files, every path missing on
-        # disk, or every file failing to read/diff all reach a clean-looking empty result).
+        # disk, or every file failing to read/diff all reach a clean-looking empty result). Buckets
+        # sum to len(changed_files): scanned + skipped_missing + unreadable == total (diff_failed
+        # is a subset of scanned, not a fourth bucket, since those files were still checked).
+        detail = []
+        if skipped_missing:
+            detail.append(f"{skipped_missing} missing on disk")
+        if unreadable:
+            detail.append(f"{unreadable} unreadable")
+        if diff_failed:
+            detail.append(f"{diff_failed} diff-failed (checked with no line filter — see warnings above)")
         print(f"Scanned {self.scanned_count}/{len(self.changed_files)} requested file(s)"
-              + (f", {skipped_missing} missing on disk" if skipped_missing else ""),
+              + (f" ({', '.join(detail)})" if detail else ""),
               file=sys.stderr)
 
         # Sort by severity
@@ -94,19 +116,32 @@ class PatternChecker:
 
         return self.issues
 
-    def _get_changed_lines(self, file: str, lines: List[str]) -> set:
-        """Get line numbers that were changed in this file (all lines, if untracked)."""
+    def _get_changed_lines(self, file: str, lines: List[str]) -> tuple:
+        """Get (line numbers changed in this file, whether diff resolution succeeded).
+
+        All lines count as "changed" for an untracked file. `ok=False` on any failure means the
+        caller should treat the returned (empty) set as degraded information, not as "verified no
+        changes" — distinguishing "diff genuinely found nothing" from "diff computation failed".
+        """
         # A brand-new, never-`git add`ed file has no tracked history at merge_base to diff against
         # — `git diff` against it succeeds with empty output, which would otherwise read as "zero
         # changed lines" and make every diff_lines-gated check silently skip the file entirely.
         # This is the same untracked-file blind spot round 4's file-enumeration fix closed one
         # layer up; close it here too, or a brand-new file is enumerated but never actually checked.
-        is_untracked = subprocess.run(
-            ['git', 'ls-files', '--others', '--exclude-standard', '--', file],
-            capture_output=True, text=True
-        ).stdout.strip() != ''
+        try:
+            is_untracked = subprocess.run(
+                ['git', 'ls-files', '--others', '--exclude-standard', '--', file],
+                capture_output=True, text=True, check=True
+            ).stdout.strip() != ''
+        except (subprocess.CalledProcessError, OSError, UnicodeDecodeError) as e:
+            # A failed tracked/untracked check must not silently default to "tracked" — that would
+            # route a brand-new file into the git-diff branch below, which is blind to it. Degrade
+            # to "treat as untracked" (checks the whole file) instead, the safer of the two guesses.
+            print(f"⚠️  git ls-files --others -- {file} failed ({e}) — treating {file} as untracked "
+                  f"(checking the whole file) rather than guessing it's tracked.", file=sys.stderr)
+            return set(range(1, len(lines) + 1)), False
         if is_untracked:
-            return set(range(1, len(lines) + 1))
+            return set(range(1, len(lines) + 1)), True
         try:
             # Two-dot form (no second ref) against the pinned merge-base, NOT a three-dot
             # `{base}...HEAD` commit range — three-dot diffs commit-to-commit and can never see
@@ -127,18 +162,18 @@ class PatternChecker:
                         count = int(match.group(2)) if match.group(2) else 1
                         changed_lines.update(range(start, start + count))
 
-            return changed_lines
+            return changed_lines, True
         except subprocess.CalledProcessError as e:
             print(f"⚠️  git diff {self.merge_base} -U0 -- {file} failed (exit {e.returncode}): "
                   f"{e.stderr.strip() if e.stderr else '(no stderr)'} — treating {file} as having "
                   f"no changed lines; every diff_lines-gated check will silently skip it.",
                   file=sys.stderr)
-            return set()
+            return set(), False
         except UnicodeDecodeError as e:
             print(f"⚠️  git diff output for {file} could not be decoded as UTF-8 ({e}) — "
                   f"treating {file} as having no changed lines; every diff_lines-gated check will "
                   f"silently skip it.", file=sys.stderr)
-            return set()
+            return set(), False
 
     def _check_resource_lifecycle(self, file: str, content: str, lines: List[str], diff_lines: set):
         """Check for resource leaks (acquire without release)."""
@@ -517,17 +552,10 @@ class PatternChecker:
         """Flag same numeric literal appearing in multiple changed files (parallel derivation smell)."""
         constant_locations: Dict[str, List[tuple]] = {}
 
-        for file in self.changed_files:
-            if not os.path.exists(file):
-                continue
-            try:
-                with open(file, 'r', encoding='utf-8') as f:
-                    lines = f.read().split('\n')
-            except (UnicodeDecodeError, OSError) as e:
-                print(f"⚠️  Could not read {file} ({e}) — skipping this file.", file=sys.stderr)
-                continue
-            diff_lines = self._get_changed_lines(file, lines)
-
+        # Reuse check_all's per-file cache — this check ran a SECOND read+diff of every file
+        # (once here, once in check_all's own loop) until this fix; a file missing/unreadable/
+        # diff-failed was already logged and counted once there, so don't re-derive or re-warn.
+        for file, (_content, lines, diff_lines) in self._diff_cache.items():
             for i, line in enumerate(lines):
                 line_num = i + 1
                 if line_num not in diff_lines:

@@ -44,6 +44,15 @@ PATTERNS_FILE=~/.claude/copilot-review-patterns.md
 if [ ! -f "$PATTERNS_FILE" ]; then
   PATTERNS_FILE=~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md
 fi
+# The fallback needs its own existence check too — the primary path is guarded, but with neither
+# file present this would otherwise surface much later and misattributed: Setup Step 2's grep
+# would fail to stderr, PATTERN_CLASSES would come back empty, and the first hard stop an operator
+# actually sees would be Phase A/B's missing-arg guard throwing over an empty `classes` array —
+# nothing pointing back at the real cause, a missing pattern file.
+if [ ! -f "$PATTERNS_FILE" ]; then
+  echo "🛑 No pattern file found at either the global (~/.claude/copilot-review-patterns.md) or bundled path — cannot enumerate pattern classes." >&2
+  exit 1
+fi
 echo "$PATTERNS_FILE"
 ```
 
@@ -54,6 +63,10 @@ Echo the resolved path — it's the only observed record of which branch (global
 ```bash
 # DO NOT hardcode a number — classes grow as new issues are encountered
 PATTERN_CLASSES=$(grep "^### [0-9]" "$PATTERNS_FILE" | sed 's/^### [0-9]*\. //')
+if [ -z "$PATTERN_CLASSES" ]; then
+  echo "🛑 $PATTERNS_FILE has no '### N. <name>' headings — cannot build CLASSES. Check the file's format." >&2
+  exit 1
+fi
 ```
 
 ### 3. Resolve the base branch
@@ -307,14 +320,18 @@ Repeat up to `--rounds` times. After each round, check the termination condition
 deciding whether to continue. Maintain `PRIOR_FINDINGS` across rounds — empty at round 1,
 appended to at the end of each round's Phase C (see below).
 
-**Each round's Phase A/B is a fresh `Workflow` call — never `resumeFromRunId` pointed at a prior
-round's run.** Every input `buildPrompt()` uses (`CLASSES`, `$PATTERNS_FILE`, `MERGE_BASE`,
-`INTENT_BRIEF`) is round-invariant by construction — only `priorFindings`
-differs round to round, and `buildPrompt()` doesn't use it. That means each `agent()` call's
-actual prompt string is identical across rounds. The `Workflow` tool caches each `agent()` call by
-its `(prompt, opts)` pair, so resuming a prior round's run would replay that round's stale
-per-class results — from the now-superseded tree — instead of actually re-diffing the code as it
-stands after this round's fixes, even though the outer `args.priorFindings` value differs.
+**Each round's Phase A/B is a fresh `Workflow` call — never `resumeFromRunId` pointed at any prior
+run, including this round's own** (not just "a prior round's run" — a same-round missing-class
+retry, below, is exactly as vulnerable and is the case where resuming reads as the intuitive
+choice: "continue this incomplete round"). Every input `buildPrompt()` uses (`CLASSES`,
+`$PATTERNS_FILE`, `MERGE_BASE`, `INTENT_BRIEF`) is round-invariant by construction — only
+`priorFindings` differs round to round, and `buildPrompt()` doesn't use it. That means each
+`agent()` call's actual prompt string is identical across rounds, AND identical for the same class
+within a round's retry. The `Workflow` tool caches each `agent()` call by its `(prompt, opts)`
+pair, so resuming any prior run — a previous round's, or this round's own already-terminated
+attempt — would replay that run's stale per-class result (from the now-superseded tree, or from
+the exact terminal failure the retry exists to overcome) instead of actually re-diffing the code,
+even though the outer `args.priorFindings` value differs.
 
 ### Phase A/B — Parallel Review + Synthesize (Workflow)
 
@@ -324,8 +341,10 @@ to synthesis until every class has resolved or been retried to a terminal failur
 forces structured output instead of relying on an agent to comply with a text instruction. This
 replaces spawning per-class review agents directly. `agent`, `parallel`, `phase`, `log`, and
 `args` below are pre-bound globals the Workflow tool provides inside the script it executes —
-not something this file defines. `agent()` retries a failed call internally before giving up;
-`missingClasses` (below) reflects only classes that exhausted those retries.
+not something this file defines. `agent()` retries a failed call internally before giving up, but `missingClasses` (below) is
+broader than "exhausted retries" alone — it also covers a prompt-construction failure (a malformed
+`CLASSES` entry, which never reaches `agent()` at all) and a bare-null response slot; each entry
+carries a `stage` (`'prompt'` | `'agent'` | `'slot'`) so these are never conflated into one story.
 
 ```js
 export const meta = {
@@ -426,13 +445,16 @@ const responses = await parallel(classes.map(c => async () => {
   // (a malformed CLASSES entry: non-object c, non-string lensKind, ...), which is an
   // orchestrator-side args defect, not an agent/model contract violation. Naming the failing
   // stage in the log keeps an operator from retrying the class or investigating the model
-  // provider when the actual bug is upstream, in Setup Step 5's CLASSES construction.
+  // provider when the actual bug is upstream, in Setup Step 5's CLASSES construction. `stage` is
+  // carried on the returned object so it reaches missingClasses below, not just the log line —
+  // Setup Step 5 (:246-250) instructs hand-building CLASSES entries and deliberately leaving
+  // `lensKind` unset for new classes, so a malformed entry is a plausible, expected input.
   let prompt
   try {
     prompt = buildPrompt(c)
   } catch (e) {
     log(`class "${c.name}" failed during prompt-construction: ${e && e.message ? e.message : e} — check Setup Step 5's CLASSES entry for this class, not the model/agent call`)
-    return { name: c.name, result: null }
+    return { name: c.name, result: null, stage: 'prompt' }
   }
   let result = null
   try {
@@ -441,18 +463,24 @@ const responses = await parallel(classes.map(c => async () => {
   } catch (e) {
     log(`class "${c.name}" failed during the agent call: ${e && e.message ? e.message : e} instead of resolving null — treating as a terminal failure for this round`)
   }
-  return { name: c.name, result }
+  return { name: c.name, result, stage: 'agent' }
 }))
 
 // Preserve slot identity by index rather than filter-then-map — a bare-null slot (still possible
 // in principle if the thunk itself throws before its own try/catch, e.g. a malformed `classes`
 // entry) would otherwise contribute no name and silently vanish from this count instead of
-// surfacing as a missing class.
+// surfacing as a missing class. Each entry is `{name, stage}` — 'prompt' | 'agent' | 'slot' (a
+// bare-null response slot, no stage information available) — not a bare string, so every
+// downstream consumer (the log below, Phase E's retry carve-out, the coverage-gap note) can
+// distinguish "exhausted retries" from "this was never a retry-shaped failure to begin with".
 const missingClasses = responses
-  .map((r, i) => (r && r.result) ? null : ((r && r.name) || `<class at index ${i}: ${JSON.stringify(classes[i])}>`))
+  .map((r, i) => (r && r.result) ? null : {
+    name: (r && r.name) || `<class at index ${i}: ${JSON.stringify(classes[i])}>`,
+    stage: (r && r.stage) || 'slot',
+  })
   .filter(Boolean)
 if (missingClasses.length) {
-  log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.join(', ')}`)
+  log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.map(m => `${m.name} (${m.stage})`).join(', ')}`)
 }
 
 phase('Synthesize')
@@ -534,9 +562,11 @@ seen as `local` (and dismissed) that a later round's different lens re-flags as 
 new information the sweep exists to surface — it must count as fresh yield, not get silently
 absorbed because the file string was technically "seen before."
 
-**`missingClasses` is not "that class was clean."** A class whose agent never returned a result
-(terminal API error after retries) means that lens genuinely didn't run this round. Carry
-`missingClasses` forward into Phase C and Phase E — it blocks a CONVERGED verdict (see Phase E).
+**`missingClasses` is not "that class was clean."** A class whose agent never returned a result —
+whether that's exhausted retries after a terminal API error (`stage: 'agent'`), a malformed
+`CLASSES` entry that never reached the agent call (`stage: 'prompt'`), or a bare-null response slot
+(`stage: 'slot'`) — means that lens genuinely didn't run this round. Carry `missingClasses`
+forward into Phase C and Phase E — it blocks a CONVERGED verdict (see Phase E).
 
 ### Phase C — Review-Pause (human decision)
 
@@ -616,9 +646,11 @@ findings that Phase C didn't already link together (so a human disposing finding
 isn't the only line of defense against two findings turning out to be the same underlying issue
 viewed through different pattern classes).
 
-If it returns nothing usable, proceed with Phase D unchanged (per-finding gate and fix agents use
-only what Phase A/B/C already produced), and record in the round summary that the round-level plan
-was skipped.
+**If it fails, times out, or returns nothing usable** (three distinct outcomes, not one), proceed
+with Phase D unchanged (per-finding gate and fix agents use only what Phase A/B/C already
+produced), and record in the round summary that the round-level plan was skipped — name which of
+the three happened, since "returned nothing usable" and "the call itself failed" call for
+different operator responses (retry vs. treat as a known tooling gap this round).
 
 **Fix planning gate (complex/cascading findings only)**: before spawning the fix-implementation
 agent, check the approved finding against fields it already carries from Phase A/B, **plus the
@@ -639,10 +671,11 @@ sites. It receives:
   read-only — no Edit/Write at all; Bash only for reading files or grep/find
 
 It returns a structured fix plan (ordered steps, files touched, how each `cascade_sibling` **and**
-each round-level expanded site is covered). If it returns nothing usable, fall through to the fix
-agent with the finding, `cascade_siblings`, and the round-level expanded sites alone, and record it
-in the Summary Output's **Fix Provenance Notes** — not Known Limitations, since the finding still
-gets fixed; this is a confidence/provenance note, not an unaddressed item.
+each round-level expanded site is covered). **If it fails, times out, or returns nothing usable**
+(three distinct outcomes, not one), fall through to the fix agent with the finding,
+`cascade_siblings`, and the round-level expanded sites alone, and record which of the three
+happened in the Summary Output's **Fix Provenance Notes** — not Known Limitations, since the
+finding still gets fixed; this is a confidence/provenance note, not an unaddressed item.
 
 This is a native planning step, not an `xp-pair` invocation — `xp-pair`'s own Step 5 commits and
 shuts down its team as part of finishing a session, which would violate the git guardrails below
@@ -672,9 +705,18 @@ For each approved finding, apply the fix. The fix agent receives:
 > Do NOT create new test classes. Add tests to the **existing** test class for the changed file.
 
 Run the test suite after applying all fixes for this round. If tests fail, report the failures
-before proceeding — do not continue to the next round with a red test suite.
+before proceeding — do not continue to the next round with a red test suite. This is a **terminal
+state**, not a soft warning: see Phase E's `TEST_FAILURES` outcome below, which this rule refers to
+by name — evaluate it before CONVERGED or the round-limit outcomes, and do not evaluate either of
+those on a red suite.
 
 ### Phase E — Check Termination
+
+**Check the test suite first, before anything else below.** If Phase D's test run for this round
+is red, terminate as **TEST_FAILURES** immediately — do not evaluate the CONVERGED conditions, do
+not check whether rounds remain, and do not continue to the next round. A round that fixed
+findings but broke the suite is not convergence and is not safe to build on top of; report the
+failures and stop the loop here regardless of what cross-file yield or `missingClasses` say.
 
 The next round's Phase A/B Workflow call will self-diff the now-modified working tree when it
 starts — `MERGE_BASE` is pinned once in Setup and diffed with the two-dot form, so this is true
@@ -683,10 +725,13 @@ per round) or left uncommitted (the documented default) — the orchestrator doe
 re-read or re-pass file contents between rounds.
 
 Termination is driven by the round's **finalized cross-file yield** (provisional in Phase A/B,
-finalized in Phase C) and `missingClasses`, not by `is_clean` flags. Open `local` findings never
-force another round — report them in the Summary Output for human disposition and move on.
+finalized in Phase C), `missingClasses`, and the test-suite check above — not by `is_clean` flags.
+Open `local` findings never force another round — report them in the Summary Output for human
+disposition and move on.
 
 **Terminate as CONVERGED when:**
+- The test suite check above passed (this round's suite is green) — a red suite terminates as
+  TEST_FAILURES above and never reaches this check
 - Cross-file yield == 0 — no new `cross_file` finding this round, even if `local` findings remain open
 - AND `missingClasses` is empty — every class returned a definitive result this round
 
@@ -706,10 +751,17 @@ converged").
 1. **If `missingClasses` is non-empty**, a class nobody ever reviewed is not evidence it's
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
-   - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
+   - Retry only the missing classes (a **fresh** `Workflow` call — never `resumeFromRunId`, per the
+     Per-Round Loop note above; this retry is exactly as vulnerable to replaying a stale cached
+     result as a cross-round resume would be — re-invoke with `classes` filtered to just those,
      and the same `patternFile`, `mergeBase`, and `intentBrief` values used this round —
      `buildPrompt()` interpolates all three directly into every prompt; omitting any throws before
-     any agent spawns, per the missing-arg guard right after the `args` destructuring). Also pass
+     any agent spawns, per the missing-arg guard right after the `args` destructuring). **Carve out
+     `stage: 'prompt'` entries first**: a prompt-construction failure means the `CLASSES` entry
+     itself is malformed (see Setup Step 5) — retrying without fixing it burns a retry on a call
+     that will fail identically again, since the bug never reached the agent/model at all. Fix the
+     `CLASSES` entry, then retry that class; only `stage: 'agent'`/`'slot'` entries are worth a
+     bare retry as-is. Also pass
      `ROUND_START_PRIOR_FINDINGS` (Phase C's snapshot) as `priorFindings` — **not** the live
      `PRIOR_FINDINGS`, which by now already contains this round's own findings (Phase C appended to
      it before Phase E ever runs): passing the live variable would make the retry's yield recompute
@@ -719,11 +771,20 @@ converged").
      silently resets every retry-recovered finding's dedup history to empty, making them all
      register as fresh cross-file yield regardless of what earlier rounds already saw. **This
      retry does not count as an additional round** for the ">1 round has actually run" test
-     below — it completes this round's incomplete data rather than starting a fresh sweep. Treat
-     the retry's raw findings exactly like a late-arriving Phase A/B response: merge them into
-     this round's existing `findings` via the same dedup logic (so a retry-recovered finding
-     colliding with an already-flagged location correctly escalates severity/blast_radius and
-     unions `pattern_classes`/`cascade_siblings`, instead of becoming a duplicate row), send the
+     below — it completes this round's incomplete data rather than starting a fresh sweep.
+
+     **Merging needs an adapted variant of the dedup logic, not the literal script.** The retry's
+     own Phase A/B call already ran its own Synthesize step, so its `findings` are POST-merge
+     objects — `pattern_classes` (plural array), no `pattern_class` field — and so is this round's
+     existing `findings` array. The literal merge loop at the top of the Phase A/B script
+     destructures a singular `pattern_class` off each raw per-agent finding and seeds a fresh
+     `Set([pattern_class])`; running that unmodified against two already-synthesized arrays reads
+     `pattern_class` as `undefined` on every item, producing `pattern_classes: [undefined]` instead
+     of a real union. Adapt it: for a colliding `file`, union the two `pattern_classes` ARRAYS
+     directly (`new Set([...existing.pattern_classes, ...incoming.pattern_classes])`) rather than
+     seeding from a single string, then apply the same severity/blast_radius escalation and
+     `mergeStrings` description/recommendation rules the literal script uses. For a non-colliding
+     `file`, just append the retry's finding as-is (it's already shaped correctly). Send the
      merged result back through **Phase C** for disposition like any other finding, then
      recompute finalized yield and update this round's Per-Round Breakdown row in place (don't
      add a new row) — a retry-recovered finding is not applied to code until an approved **Fix**
@@ -736,10 +797,16 @@ converged").
    - Accept the gap as a known limitation. A missing class produced no finding, so don't force
      it into the finding shape (there's no real `severity` or `blast_radius` to report) —
      record a distinct coverage-gap entry instead: `{type: 'coverage_gap', class: '<class
-     name>', note: 'never returned a result after retries this round'}`. List it in Known
-     Limitations alongside (but visually distinct from) real accepted-risk findings; it has no
-     `pattern_class`/`blast_radius` to bucket under, so it does not populate the By Pattern
-     Class or By Blast Radius tables — those describe findings, not coverage gaps.
+     name>', stage: '<prompt|agent|slot>', note: '<N> retr{y,ies} attempted, still missing' or
+     'no retry attempted — accepted on first INCOMPLETE signal' (N=0)}`. **Do NOT hard-code "after
+     retries" in the note** — item 1's own three choices (Retry/Accept/Abandon) are all available
+     the very first time a class goes missing, so a human can Accept or Abandon with zero retries
+     ever having run; a static "after retries" claim would be false in that case and, per the
+     Known Limitations rule below ("all MUST appear verbatim in the PR description"), would land,
+     unedited, in a real PR description as a false claim about how the gap was investigated. List
+     it in Known Limitations alongside (but visually distinct from) real accepted-risk findings;
+     it has no `pattern_class`/`blast_radius` to bucket under, so it does not populate the By
+     Pattern Class or By Blast Radius tables — those describe findings, not coverage gaps.
    - **Abandon the round**: by the time Phase E is reached, Phase D has already applied any
      approved fixes from this round's Phase C — those are independent, confirmed fixes and stay
      in the tree; "abandon" does not undo them. It means: don't retry the missing class, record
@@ -849,21 +916,22 @@ Do NOT include planning-skipped findings here — see below; a planning-skipped 
 to the fix agent and was normally FIXED, so it is not something left unaddressed.>
 
 ### Fix Provenance Notes (round summary only — not a PR-description limitation)
-<For each finding where Phase D's fix-planning gate returned nothing usable and fell through to
-the fix agent unplanned: "fix applied without a planning pass — verify multi-site coverage" (note
-each as "planning skipped"). This describes HOW the fix was derived, for the human disposing this
-round, not whether the finding was addressed — it is confidence/provenance information, distinct
-from Known Limitations above.>
+<For each finding where the round-level pass or the per-finding fix-planning gate failed, timed
+out, or returned nothing usable, and the finding fell through to the fix agent unplanned: "fix
+applied without a planning pass — verify multi-site coverage" (note each as "planning skipped:
+<which stage> <failed | timed out | returned nothing usable>"). This describes HOW the fix was
+derived, for the human disposing this round, not whether the finding was addressed — it is
+confidence/provenance information, distinct from Known Limitations above.>
 
 ### Outcome
+❌ TEST_FAILURES — this round's test suite is red after fix application; do not push, do not continue to the next round, and do not evaluate CONVERGED/round-limit outcomes below until the suite is green again (see Phase E — checked FIRST, before every other outcome)
 ✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above
 ⚠️  NOT converged — cross-file yield N at round limit after M>1 rounds; escalate to targeted deep-dive on <theme> (see Phase E)
 🔵 Single round only — found & fixed N confirmed cross-file findings; convergence unconfirmed (see Phase E)
 🟡 INCOMPLETE — N class(es) unreviewed: <names>; retry, accept as known limitation, or abandon (see Phase E)
 🟡+⚠️ INCOMPLETE + NOT converged — both a coverage gap and a confirmed finding cluster; resolve the missing class(es) AND still escalate to targeted deep-dive on <theme> (see Phase E)
 🟡+🔵 INCOMPLETE + Single round only — a coverage gap and confirmed cross-file findings from the one round that ran; resolve the missing class(es) and treat convergence as unconfirmed (see Phase E)
-🟠 ABANDONED — round stopped at the human's request; N class(es) never reviewed: <names>; no further rounds; M approved fix(es) from this round remain applied (uncommitted) in the working tree — review `git diff` before discarding anything (see Phase E)
-❌  Test failures after fix application — do not push until resolved
+🟠 ABANDONED — round stopped at the human's request; N class(es) never reviewed: <names>; no further rounds; M approved fix(es) from this round remain applied in the working tree, committed or not per this session's practice — review `git diff`/`git log` before discarding anything (see Phase E)
 ```
 
 ---

@@ -158,7 +158,9 @@ not a `Workflow`/`agent()` stage" distinction explicit for the same reason). It 
   `~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md`
   snapshot — the fully-qualified path, matching `adversarial-review`'s own Setup Step 1 exactly;
   a bare relative path won't resolve since this agent's cwd isn't guaranteed to be the plugin
-  root. Enumerate class names with `grep "^### [0-9]" <file> | sed 's/^### [0-9]*\. //'` (the
+  root. **If neither path resolves, report that explicitly in the returned synthesis** (e.g. "no
+  pattern classes available — design recommendation given without a watch-out-for list") rather
+  than silently proceeding as if the edge-case list were simply empty. Enumerate class names with `grep "^### [0-9]" <file> | sed 's/^### [0-9]*\. //'` (the
   `sed` strips the heading marker and number, matching `adversarial-review`'s own Setup Step 2
   enumeration — without it you get `### 2. Defensive Guards...` instead of the bare name), pick
   the classes whose names or `**How to find**` sections match this task's characteristics, and

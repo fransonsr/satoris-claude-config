@@ -276,7 +276,10 @@ Step 1.6, `$PR_AUTHOR`) re-derived too if those have also gone stale:
 they're shorthand for `$WORKSPACE_DIR/threads.json`, `$WORKSPACE_DIR/checklist.json`,
 `$WORKSPACE_DIR/fixes.json`, and `$(cat "$WORKSPACE_DIR/round.txt")` respectively. Set them
 yourself before running a snippet that uses them, e.g.
-`THREADS_FILE="$WORKSPACE_DIR/threads.json"`.
+`THREADS_FILE="$WORKSPACE_DIR/threads.json"`. `$BASE_BRANCH`/`$MERGE_BASE` are the same kind of
+shorthand too, not exported by any script — re-derive with the guarded two-step form Step 1 uses
+(lines 184-196: `gh pr view ... --json baseRefName`, then `git merge-base "origin/$BASE_BRANCH"
+HEAD` with its existence/failure checks), not a bare re-run of just the second command.
 
 **Benefits**:
 - Faster workflow (no redundant API calls)
@@ -687,6 +690,12 @@ cap here, this fires immediately rather than waiting for a later round. Treat it
 other finding needing a decision: retry that class, accept the gap as a known limitation, or
 abandon the round.
 
+**If the round's test suite is red after fix application**, `/adversarial-review` reports
+TEST_FAILURES — its own Phase E checks this FIRST, before any other outcome. Do not treat the
+round as done and do not proceed to Step 4 with a broken suite; report the failures back to the
+user and resolve them before continuing, the same as any other terminal outcome this step must
+handle, not just CONVERGED/NOT-converged/INCOMPLETE.
+
 **Adversarial review's own findings are already fixed by the time it returns — Step 4/4.1 does
 not re-implement them.** What Step 4/4.1 still handles is Step 2's *original* triaged issues (the
 ones whose complexity triggered the Step 2.5 gate in the first place); adversarial-review's
@@ -1041,7 +1050,7 @@ MANDATORY) and Step 5 (local sonar-scanner) — both routinely produce further e
         "$FIXES_FILE" > "$FIXES_FILE.tmp"; then
       mv "$FIXES_FILE.tmp" "$FIXES_FILE"
     else
-      echo "🛑 xp-pair commit $(git rev-parse --short HEAD) succeeded but the fixes.json write for round $ROUND failed — directional_count NOT persisted. Step 8 will read the round as absent, not as confirmed-zero, and print an affirmative 'No directional fixes this round' message that is not actually true. Fix and retry before continuing." >&2
+      echo "🛑 xp-pair commit $(git rev-parse --short HEAD) succeeded but the fixes.json write for round $ROUND failed — directional_count NOT persisted. Step 8's directional_count read will hard-stop with '🛑 fixes.json has no entry for round $ROUND' and abort before the re-request decision. Fix and retry before continuing." >&2
       rm -f "$FIXES_FILE.tmp"
       exit 1
     fi
@@ -1077,8 +1086,9 @@ delegated work, not something specific to this skill.
 
 **If the agent never reports back** (times out, dies on a terminal API error, or returns nothing
 usable): fall back to implementing the fix directly in this session — the same fallback
-`adversarial-review`'s Phase D fix-planning gate uses when its own delegated agent returns nothing
-usable — and say so explicitly rather than silently treating the round as done with the fix
+`adversarial-review`'s Phase D fix-planning gate uses when its own delegated agent fails, times
+out, or returns nothing usable (three distinct outcomes there too) — and say so explicitly,
+naming which of the three happened, rather than silently treating the round as done with the fix
 unapplied.
 
 ### Mandate Test-First for Critical Bugs
@@ -1415,8 +1425,8 @@ explicit acknowledgment or a posted reply. The principle: a thread the user has 
 to leave open is fine; a thread that fell off the workflow without anyone noticing is not.
 
 Only run the full table when there's more than a trivial number of threads — for a single-digit
-round, a one-line summary (`Handled: N already-resolved, M silent, P replied, K won't-fix, all
-threads accounted for.`) is enough.
+round, a one-line summary (`Handled: N already-resolved, M silent, P replied, K won't-fix, Q
+already-decided, all threads accounted for.`) is enough.
 
 ## Step 7: Pre-Push Checklist & Commit
 
@@ -1574,6 +1584,11 @@ DIRECTIONAL_COUNT="$DC"
   OVERRIDE_FILE="$WORKSPACE_DIR/escalation_override.txt"
   # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
   [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
+  # Validate the same way $ROUND was validated above — a non-integer value here (e.g. from manual
+  # editing or a prior partial write) makes `[[ "abc" -ge 2 ]]` silently evaluate false (bash reads
+  # it as 0), disarming the escalation gate below, and `$(( abc + 1 ))` on the increment path
+  # would reset the counter to 1 instead of erroring.
+  [[ "$(cat "$COUNT_FILE")" =~ ^[0-9]+$ ]] || { echo "🛑 $COUNT_FILE ('$(cat "$COUNT_FILE")') is not a plain integer — fix it by hand before continuing." >&2; exit 1; }
 
   # Shared by the normal re-request (else, below) and an escalation override (elif, below) so
   # the two paths can't drift into different counter-advance behavior.
@@ -1583,11 +1598,13 @@ DIRECTIONAL_COUNT="$DC"
       # environment as able to report success while silently not applying an edit (the --body
       # case on Projects-classic repos). Read the reviewer list back before trusting "confirmed" —
       # via `gh api`, not `gh pr view`, which this same environment has shown to serve stale/cached
-      # content immediately after a mutation. Match case-insensitively against a "copilot" prefix,
-      # not the exact string "copilot" — the actual login is "Copilot" (capital C) per GitHub's
-      # REST payload, and this same file uses "copilot-pull-request-reviewer" for the same actor
-      # at the NEW_THREADS filter below — neither matches an exact-lowercase "copilot" token.
-      COPILOT_REQUESTED=$(gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" --jq '[.requested_reviewers[].login // ""] | map(ascii_downcase) | any(startswith("copilot"))' 2>/dev/null || echo "unknown")
+      # content immediately after a mutation. Match case-insensitively against the exact login
+      # "copilot" — not a prefix — the actual login is "Copilot" (capital C) per GitHub's REST
+      # payload; `ascii_downcase` alone handles that. A prefix match would also match any reviewer
+      # whose login happens to start with "copilot" (a bot named "copilot-review-bot", say) as a
+      # false confirmation. This file already uses exact matching for the same actor elsewhere
+      # ("copilot-pull-request-reviewer" at the NEW_THREADS filter below) — mirror that convention.
+      COPILOT_REQUESTED=$(gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" --jq '[.requested_reviewers[].login // ""] | map(ascii_downcase) | any(. == "copilot")' 2>/dev/null || echo "unknown")
       if [ "$COPILOT_REQUESTED" = "true" ]; then
         # Only advance the counter and the round marker on a CONFIRMED successful re-request —
         # advancing them on failure would record a re-request that never happened, which both
