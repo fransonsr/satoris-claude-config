@@ -402,23 +402,33 @@ function buildPrompt(c) {
 }
 
 phase('Review')
-// agent() resolves to null on a terminal failure (exhausted retries) — it does not reject/throw.
-// Pair each result with its class name explicitly rather than relying on parallel() preserving
-// input order — correct either way, and removes an assumption this file can't itself verify.
-const responses = await parallel(classes.map(c => async () => ({
-  name: c.name,
-  result: await agent(buildPrompt(c), { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
-    ...(c.model ? { model: c.model } : {}) }),
-})))
+// agent() is documented to resolve null on a terminal failure (exhausted retries) rather than
+// reject — but a retry-cap error (e.g. StructuredOutput validation failing 5 times) has been
+// observed to throw instead. If the thunk itself rejects, `parallel()`'s own contract ("a thunk
+// that throws resolves to null in the result array") replaces this WHOLE element with a bare
+// `null` — discarding the `{name, result}` wrapper along with it, so a downstream `r.result` read
+// on that slot throws "null is not an object" instead of degrading to a missing-class entry.
+// Catch inside the thunk so this slot always returns the `{name, result}` shape, `result: null`
+// on any failure — belt-and-suspenders against agent()'s own documented contract not holding.
+const responses = await parallel(classes.map(c => async () => {
+  let result = null
+  try {
+    result = await agent(buildPrompt(c), { label: `review:${c.name}`, phase: 'Review', schema: FINDING_SCHEMA,
+      ...(c.model ? { model: c.model } : {}) })
+  } catch (e) {
+    log(`class "${c.name}" agent call threw (${e && e.message ? e.message : e}) instead of resolving null — treating as a terminal failure for this round`)
+  }
+  return { name: c.name, result }
+}))
 
-const missingClasses = responses.filter(r => !r.result).map(r => r.name)
+const missingClasses = responses.filter(r => !r || !r.result).map(r => r && r.name).filter(Boolean)
 if (missingClasses.length) {
   log(`${missingClasses.length} class(es) returned no result and are excluded from this round: ${missingClasses.join(', ')}`)
 }
 
 phase('Synthesize')
 const SEVERITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
-const raw = responses.filter(r => r.result).flatMap(r => r.result.findings)
+const raw = responses.filter(r => r && r.result).flatMap(r => r.result.findings)
 
 // Shared by every free-text field below so "dedupe against the full accumulated set, not just
 // the last value" is implemented once — not re-derived (and re-forgotten) per field.
