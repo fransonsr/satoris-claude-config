@@ -24,7 +24,7 @@ human disposition, applies approved fixes under strict git guardrails, then re-e
 | Arg | Default | Description |
 |-----|---------|-------------|
 | `--rounds N` | `3` | Maximum review rounds |
-| `--base-branch BRANCH` | auto-detect | Compare against this branch (`@{u}` → `main` → `master`) |
+| `--base-branch BRANCH` | auto-detect | Compare against this branch — see Setup Step 3 for the exact resolution order |
 | `--intent-brief "..."` | _(prompt user)_ | ~200 words: problem statement, design decisions, what was deferred |
 
 If `--intent-brief` is not supplied by a caller, ask the user to provide it before proceeding.
@@ -66,40 +66,73 @@ given, not a check that runs regardless:
 ```bash
 if [ -n "$BASE_BRANCH_ARG" ]; then
   BASE_BRANCH="$BASE_BRANCH_ARG"
+  BASE_SOURCE="arg"
 else
   # NOT `@{u}` (the current branch's OWN upstream, e.g. origin/feature-x when ON feature-x) —
   # that resolves to the current branch itself once it's been pushed with -u, which every round
   # of /address-pr-issues does, making BASE_BRANCH == CURRENT_BRANCH and every subsequent diff
   # empty. Ask the PR itself first, then the repo's actual default branch:
   BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null)
+  BASE_SOURCE="gh-pr"
   if [ -z "$BASE_BRANCH" ]; then
     BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##')
+    BASE_SOURCE="origin-head"
   fi
   if [ -z "$BASE_BRANCH" ]; then
-    if git show-ref --verify --quiet refs/heads/main; then
+    # Remote-tracking refs, not local refs/heads/* — every downstream diff uses an origin/-prefixed
+    # range, and a shallow clone, a worktree checked out to only the feature branch, or a CI runner
+    # can have origin/main or origin/master without a local main/master branch ever existing.
+    if git show-ref --verify --quiet refs/remotes/origin/main; then
       BASE_BRANCH=main
-    elif git show-ref --verify --quiet refs/heads/master; then
+    elif git show-ref --verify --quiet refs/remotes/origin/master; then
       BASE_BRANCH=master
     else
-      echo "Cannot detect base branch — supply --base-branch"
+      echo "Cannot detect base branch — supply --base-branch" >&2
       exit 1
     fi
+    BASE_SOURCE="origin-fallback"
   fi
 fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-echo "BASE_BRANCH=$BASE_BRANCH CURRENT_BRANCH=$CURRENT_BRANCH"
+echo "BASE_BRANCH=$BASE_BRANCH (resolved via $BASE_SOURCE) CURRENT_BRANCH=$CURRENT_BRANCH"
+
+# A resolved name is not the same as one that actually exists on origin — gh-pr/origin-head can
+# name a branch never fetched locally, or an arg can be misspelled. Fail loudly here instead of
+# letting a later git command's fatal error get silently swallowed by a `2>/dev/null` downstream.
+if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; then
+  echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH' or supply --base-branch." >&2
+  exit 1
+fi
 
 # A resolution bug or a caller-supplied override that happens to match the current branch both
 # produce an empty diff, which every per-class agent would then report as clean — a false
 # CONVERGED verdict over a diff that was never actually examined. Refuse instead:
 if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
-  echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' — refusing to review an empty diff. Supply --base-branch." >&2
+  echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' (resolved via $BASE_SOURCE) — refusing to review an empty diff. Supply a --base-branch that differs from the current branch." >&2
   exit 1
 fi
-if git diff --quiet "origin/$BASE_BRANCH...$CURRENT_BRANCH" 2>/dev/null; then
-  echo "🛑 origin/$BASE_BRANCH...$CURRENT_BRANCH is an empty diff — refusing to report a round as CONVERGED with nothing reviewed. Check BASE_BRANCH/CURRENT_BRANCH above." >&2
+
+# Two-dot form against the merge-base — NOT a three-dot commit range (`A...B`), which diffs
+# commit-to-commit and can NEVER see uncommitted working-tree changes. Phase D's fixes are applied
+# but deliberately never committed (guardrails below prohibit `git commit`), so a three-dot range
+# would go blind to every fix the moment Phase D ran, making every round after the first re-diff
+# the identical pre-fix content and re-report the same findings as "new" cross-file yield forever.
+# MERGE_BASE is pinned once here and reused for the whole review (Setup Step 4, buildPrompt()), so
+# every agent in every round compares against the same fixed point regardless of what accumulates
+# on either branch meanwhile — whether this session's own practice (committing between rounds) or
+# the documented default (leaving Phase D's fixes uncommitted).
+MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+DIFF_RC=0
+git diff --quiet "$MERGE_BASE" || DIFF_RC=$?
+if [ "$DIFF_RC" -eq 0 ]; then
+  echo "🛑 diff against merge-base $MERGE_BASE is empty — refusing to report a round as CONVERGED with nothing reviewed. Check BASE_BRANCH/CURRENT_BRANCH above." >&2
+  exit 1
+elif [ "$DIFF_RC" -ge 2 ]; then
+  echo "🛑 git diff against merge-base $MERGE_BASE failed (exit $DIFF_RC) — this is a git error, not an empty diff. Re-run 'git diff $MERGE_BASE' directly to see the actual error." >&2
   exit 1
 fi
+CHANGED_FILE_COUNT=$(git diff --name-only "$MERGE_BASE" | wc -l | tr -d ' ')
+echo "MERGE_BASE=$MERGE_BASE CHANGED_FILE_COUNT=$CHANGED_FILE_COUNT"
 ```
 
 ### 4. Pin the comparison refs (run once)
@@ -112,25 +145,30 @@ contents into agent prompts.
 # Pinned from Step 3 — fixed for all agents in all rounds
 BASE_BRANCH=<resolved in Step 3>
 CURRENT_BRANCH=<resolved in Step 3>
+MERGE_BASE=<resolved in Step 3>
 ```
 
 Agents use these ref values with the following enumeration commands (embed these in every agent
-prompt alongside the refs):
+prompt alongside the refs). Note the two-dot form — `git diff $MERGE_BASE`, no second ref — rather
+than a three-dot commit range: three-dot diffs commit-to-commit and cannot see uncommitted
+changes, which would make every round after the first blind to Phase D's own (deliberately
+uncommitted) fixes from the prior round:
 
 ```bash
-# Orientation: run once at review start to see what changed and where
-git diff origin/$BASE_BRANCH...$CURRENT_BRANCH
+# Orientation: run once at review start to see what changed and where — includes uncommitted
+# working-tree changes (e.g. a prior round's Phase D fixes), unlike a three-dot commit range
+git diff $MERGE_BASE
 
 # List changed source files (read in full for cascade sweep)
-git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+git diff --name-only $MERGE_BASE \
   | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$"
 
 # List changed doc files (for doc/spec lenses — see Setup Step 5)
 #   (1) doc files changed directly in the PR
-git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+git diff --name-only $MERGE_BASE \
   | grep -E "(\.md|\.rst|\.adoc|CHANGELOG|README)"
 #   (2) README/CHANGELOG adjacent to any changed source file (up one directory)
-git diff --name-only origin/$BASE_BRANCH...$CURRENT_BRANCH \
+git diff --name-only $MERGE_BASE \
   | grep -E "\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" \
   | xargs -I{} dirname {} 2>/dev/null | sort -u \
   | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \( -name "README*" -o -name "CHANGELOG*" \) 2>/dev/null' \
@@ -202,11 +240,11 @@ class, so written once in the script rather than once per class:
 1. An instruction to read `$PATTERNS_FILE` (passed as `args.patternFile`) and extract the section
    for `name` (a `### N. <name>` heading) itself — the only pattern-file read this step requires,
    and it happens inside the agent's own context
-2. `args.baseBranch`/`args.currentBranch` and **all three** enumeration commands from Setup Step 4
-   — the orientation diff, the changed-source-files grep, and **both** doc-file commands (files
-   changed directly in the diff, and any README/CHANGELOG adjacent to a changed source file even
-   if untouched itself). A command added to Setup Step 4 must be added to `buildPrompt()` too —
-   they're two copies of the same list, kept in sync by hand, not derived from one source
+2. `args.mergeBase` and every enumeration command from Setup Step 4 — the orientation diff, the
+   changed-source-files grep, and both doc-file commands (files changed directly in the diff, and
+   any README/CHANGELOG adjacent to a changed source file even if untouched itself). A command
+   added to Setup Step 4 must be added to `buildPrompt()` too — they're two copies of the same
+   list, kept in sync by hand, not derived from one source
 3. The `lensKind`-specific file-reading instruction above
 4. `args.intentBrief`
 5. The **cascade sweep rule** (embedded below, condensed from the fuller prose in this section —
@@ -286,14 +324,15 @@ const FINDING_SCHEMA = {
 
 // `args` has been observed arriving as a raw JSON string rather than a parsed object,
 // regardless of how the caller passed it — parse defensively rather than trust the docs here.
-const { classes, priorFindings = [], patternFile, baseBranch, currentBranch, intentBrief } =
+const { classes, priorFindings = [], patternFile, mergeBase, intentBrief } =
   typeof args === 'string' ? JSON.parse(args) : args
 
 // Same defensive posture as the `args`-shape comment above, applied to the individual fields:
 // each is interpolated directly into every class's prompt (buildPrompt below), so a missing one
-// renders literal "undefined" into every agent's diff/read instructions rather than failing loudly.
-if (!patternFile || !baseBranch || !currentBranch || !intentBrief) {
-  log(`missing required arg(s) for this round: patternFile=${patternFile} baseBranch=${baseBranch} currentBranch=${currentBranch} intentBrief=${intentBrief} — every class's prompt will be broken`)
+// would render literal "undefined" into every agent's diff/read instructions. Fail before
+// spawning anything rather than burning a full round of agents on prompts already known broken.
+if (!patternFile || !mergeBase || !intentBrief) {
+  throw new Error(`missing required arg(s) for this round: patternFile=${patternFile} mergeBase=${mergeBase} intentBrief=${intentBrief} — every class's prompt would be broken; aborting before spawning any agents`)
 }
 
 const LENS_INSTRUCTIONS = {
@@ -307,7 +346,9 @@ const LENS_INSTRUCTIONS = {
 // Every input here is round-invariant — identical text every round (see the resumeFromRunId note
 // above); only `priorFindings` differs round to round, and it isn't used here.
 function buildPrompt(c) {
-  const range = `origin/${baseBranch}...${currentBranch}`
+  // Two-dot form (no second ref) against the pinned merge-base — includes uncommitted working-tree
+  // changes, unlike a three-dot commit range. See Setup Step 3's MERGE_BASE derivation for why.
+  const range = mergeBase
   const lens = LENS_INSTRUCTIONS[c.lensKind] || LENS_INSTRUCTIONS.both
   if (!LENS_INSTRUCTIONS[c.lensKind]) {
     log(`class "${c.name}" has unrecognized lensKind "${c.lensKind}" — defaulting to 'both'. Update Setup Step 5's bucket list.`)
@@ -379,17 +420,23 @@ const findings = [...merged.values()]
   .map(f => ({ ...f, pattern_classes: [...f.pattern_classes] }))
   .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
 
+// Keyed on file + pattern classes, not file alone — Phase D edits in place, so a fix-introduced
+// defect frequently lands on the same reported line as the finding that caused the fix. A file-only
+// key would suppress that genuinely new bug as "already seen" just because the location matches.
+function crossFileKey(f) {
+  return `${f.file}::${[...(f.pattern_classes || [f.pattern_class])].sort().join(',')}`
+}
+
 // Only a PRIOR cross_file sighting excludes a location from this round's yield — a location
 // previously seen as local must still count as fresh yield if it now escalates to cross_file.
-const priorCrossFileKeys = new Set(priorFindings.filter(f => f.blast_radius === 'cross_file').map(f => f.file))
-const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorCrossFileKeys.has(f.file)).length
+const priorCrossFileKeys = new Set(priorFindings.filter(f => f.blast_radius === 'cross_file').map(crossFileKey))
+const provisionalYield = findings.filter(f => f.blast_radius === 'cross_file' && !priorCrossFileKeys.has(crossFileKey(f))).length
 
 return { findings, provisionalYield, missingClasses }
 ```
 
 Invoke with `Workflow({ script: <above>, args: { classes: CLASSES, priorFindings: PRIOR_FINDINGS,
-patternFile: PATTERNS_FILE, baseBranch: BASE_BRANCH, currentBranch: CURRENT_BRANCH, intentBrief:
-INTENT_BRIEF } })`.
+patternFile: PATTERNS_FILE, mergeBase: MERGE_BASE, intentBrief: INTENT_BRIEF } })`.
 Dedup keys on the `file` string (already `path:line` or `path:startLine-endLine`, as agents
 report it). On a collision: `severity` escalates to whichever is worse; `blast_radius` escalates
 to `cross_file` if either finding says so (wider radius wins); `description` and `recommendation`
@@ -427,20 +474,24 @@ finding, the user classifies it:
 | **Accepted risk** | Record as a known limitation; include in the Summary Output's Known Limitations section and PR description. Do NOT silently drop — the absence of a finding in the summary is a claim that it was addressed |
 | **False positive** | Skip; note the reason in the round summary |
 
-**Finalize the round's cross-file yield** after disposition: subtract any `cross_file` finding
-dispositioned as **False positive** or **Contradicts design** from Phase A/B's provisional count
-— those are not confirmed bugs, so they should not read as evidence the sweep is still finding
-real issues. **Fix** and **Accepted risk** dispositions both count (an accepted-risk finding is
-a real, confirmed issue the human chose not to fix yet). This finalized number is what Phase E
-reads.
+**Finalize the round's cross-file yield** after disposition by recomputing it directly from the
+same population Phase A/B's provisional count used — `cross_file` findings whose `crossFileKey`
+is not in `priorCrossFileKeys` — filtered to only those dispositioned **Fix** or **Accepted risk**
+(an accepted-risk finding is a real, confirmed issue the human chose not to fix yet). Do NOT
+compute this by subtracting False-positive/Contradicts-design counts from the provisional number:
+a `cross_file` finding re-flagging a location already in `priorCrossFileKeys` was never in the
+provisional count to begin with, so subtracting its disposition from that count can drive the
+result negative — a value neither Phase E's CONVERGED check (`== 0`) nor its NOT-converged check
+(`> 0`) handles. This finalized number is what Phase E reads.
 
 **Append to `PRIOR_FINDINGS`** before the next round: **every** finding synthesized this round,
-regardless of disposition, as `{file, blast_radius}`. This is deliberately not filtered to
-Fix/Accepted-risk — `PRIOR_FINDINGS` tracks what has already been *seen* at a location, not
-whether it's a *confirmed bug* (that distinction is what finalized yield, above, already
-handles). If a False-positive- or Contradicts-design-dismissed finding were dropped from this
-list, the same non-deterministic reviewer re-flagging that exact spot next round would count as
-fresh cross-file yield — re-litigating something a human already resolved.
+regardless of disposition, as `{file, blast_radius, pattern_classes}` (matching `crossFileKey`'s
+inputs). This is deliberately not filtered to Fix/Accepted-risk — `PRIOR_FINDINGS` tracks what has
+already been *seen* at a location, not whether it's a *confirmed bug* (that distinction is what
+finalized yield, above, already handles). If a False-positive- or Contradicts-design-dismissed
+finding were dropped from this list, the same non-deterministic reviewer re-flagging that exact
+spot next round would count as fresh cross-file yield — re-litigating something a human already
+resolved.
 
 ### Phase D — Apply Fixes
 
@@ -494,7 +545,10 @@ before proceeding — do not continue to the next round with a red test suite.
 ### Phase E — Check Termination
 
 The next round's Phase A/B Workflow call will self-diff the now-modified working tree when it
-starts — the orchestrator does not need to re-read or re-pass file contents between rounds.
+starts — `MERGE_BASE` is pinned once in Setup and diffed with the two-dot form, so this is true
+whether the prior round's Phase D fixes were committed (this session's own practice, one commit
+per round) or left uncommitted (the documented default) — the orchestrator does not need to
+re-read or re-pass file contents between rounds.
 
 Termination is driven by the round's **finalized cross-file yield** (provisional in Phase A/B,
 finalized in Phase C) and `missingClasses`, not by `is_clean` flags. Open `local` findings never
@@ -521,10 +575,10 @@ converged").
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
-     and the same `patternFile`, `baseBranch`, `currentBranch`, and `intentBrief` values used this
-     round — `buildPrompt()` interpolates all four directly into every prompt; omitting any
-     renders literal "undefined" into it, and the missing-arg guard right after the `args`
-     destructuring will log this if it happens). Also pass the same `priorFindings` used this
+     and the same `patternFile`, `mergeBase`, and `intentBrief` values used this round —
+     `buildPrompt()` interpolates all three directly into every prompt; omitting any throws before
+     any agent spawns, per the missing-arg guard right after the `args` destructuring). Also pass
+     the same `priorFindings` used this
      round — a *different* dependency: the outer script's yield/dedup logic reads it (not
      `buildPrompt()`), so omitting it doesn't break any prompt, but silently resets every
      retry-recovered finding's dedup history to empty, making them all register as fresh
@@ -622,8 +676,8 @@ Return to the calling session (or present to the user if run standalone):
 ## Adversarial Review Summary — <N> round(s)
 
 **Pattern file**: [global | bundled] (~/.claude/copilot-review-patterns.md or references/)
-**Diff range**: origin/<BASE_BRANCH>...<CURRENT_BRANCH> (<N> files changed) — printed by Setup
-Step 3; a CONVERGED verdict is only meaningful alongside the scope it was computed over
+**Diff range**: <MERGE_BASE> (<CHANGED_FILE_COUNT> files changed, working-tree-inclusive) — both
+printed by Setup Step 3; a CONVERGED verdict is only meaningful alongside the scope it was computed over
 **Pattern classes swept**: <list from PATTERN_CLASSES>
 **Rounds completed**: <N> / <max>
 
@@ -654,8 +708,10 @@ design, or still pending) — Findings = Fixed + Open by construction. Open loca
 listed here for human disposition — they did not block termination.>
 
 ### Known Limitations (for PR Description)
-<List of findings classified as "accepted risk", plus any `coverage_gap` entries from Phase E
-(visually distinct from the accepted-risk findings) — both MUST appear in the PR description.>
+<List of findings classified as "accepted risk", plus any `coverage_gap` entries from Phase E and
+any finding where Phase D's fix-planning gate returned nothing usable and fell through to the fix
+agent unplanned (note each as "planning skipped") — all three MUST appear in the PR description,
+visually distinct from one another.>
 
 ### Outcome
 ✅ CONVERGED — cross-file yield 0 this round (one sample, not a proof); residual risk: open local findings and accepted-risk items above
@@ -675,7 +731,9 @@ listed here for human disposition — they did not block termination.>
 - **Language-agnostic**: The source file glob covers all common languages. The pattern-class
   heuristics are implementation-language-independent; they describe code logic patterns.
 - **Model cost**: Opus agents for the two highest-ROI classes (State Machine, Operator
-  Observability) are deliberate. Sonnet handles the rest. Budget ~5-10 agents per round.
+  Observability) are deliberate. Sonnet handles the rest. Budget one agent per pattern class
+  (currently 11 — the count comes from `$PATTERNS_FILE`, so it grows as classes are added), plus
+  up to one Fable fix-planning agent per qualifying finding in Phase D.
 - **Cascade sweep is mandatory on first find**: The sweep rule is not optional — it prevents
   the "sibling miss" failure mode where a bug class is fixed in the reported instance but its
   identical siblings in the same diff survive.

@@ -169,6 +169,11 @@ cases sourced from the matching pattern classes — not just "what to build" but
 in similar code before." The navigator presents this synthesis as the basis for the discussion
 with the user below — it augments, not replaces, the human sign-off this step already requires.
 
+**If this agent fails, times out, or returns nothing usable**: fall back to the navigator
+synthesizing the discovery agents' findings directly — the pre-existing behavior before this
+step existed — and say so explicitly to the user rather than silently proceeding with an empty
+synthesis or blocking on a single agent call.
+
 **Example synthesis** (now produced by the design-synthesis agent, presented by the navigator —
 using two of the real `copilot-review-patterns.md` classes below, not this file's own "Things
 that SEEM simple but consistently hide bugs" list above, and not `address-pr-issues`' similarly-

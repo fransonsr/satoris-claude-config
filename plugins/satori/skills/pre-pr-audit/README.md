@@ -37,15 +37,19 @@ consistency checks alone.
 
 ## Workflow at a Glance
 
-For full detail on any step, read the matching heading in `SKILL.md`:
+This is a condensed overview, not a step-number mapping — `SKILL.md`'s actual step numbers
+(Step 1 through Step 8, with sub-steps 4.5-4.9) don't correspond 1:1 to the list below. For full
+detail, read `SKILL.md`'s "Workflow Overview" and the named step headings it points to (e.g.
+"Adversarial Pattern Review" is `SKILL.md` Step 4.7, not item 2 below):
 
-1. Adversarial Pattern Review (direct, mandatory) — run to a terminal outcome before the rest
-2. Identify changed files, load project patterns from CLAUDE.md
-3. Run pattern-based, consistency, Maven-plugin, spec-completeness, and coherence-walk checks (parallel Workflow batch)
+1. Determine base branch, identify changed files, load project patterns from CLAUDE.md
+2. Adversarial Pattern Review (direct, mandatory) — run to a terminal outcome, BEFORE the batch below, never concurrently
+3. Run pattern-based, consistency, Maven-plugin, spec-completeness, and coherence-walk checks (parallel Workflow batch, once adversarial-review is done touching the tree)
 4. Present findings interactively, offer to fix
 5. Optional SonarQube analysis
-6. Final summary and recommendations
+6. Final summary and recommendations, record the audited tree + outcome marker
 
-**This skill records a tree-hash + outcome marker at the end of a clean run** so re-invoking it
-on unchanged content doesn't re-pay the cost of the mandatory adversarial review sweep — see
-`SKILL.md`'s "When to Use This Skill" self-check and Step 8 for the exact mechanism.
+**This skill records a tree-hash + outcome marker on every run** (`CLEAN` or `NOT_CLEAN`) so a
+later re-invocation on unchanged content can skip re-paying the cost of the mandatory adversarial
+review sweep — but only when the prior run's recorded outcome was `CLEAN`; see `SKILL.md`'s "When
+to Use This Skill" self-check and Step 8 for the exact mechanism.

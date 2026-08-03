@@ -15,11 +15,14 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 - After implementing a feature but before committing
 - This skill predicts what Copilot will flag BEFORE you push
 - **Self-check (NEW)**: run this even if the user never says a trigger phrase, and even if this
-  skill already ran earlier for the current tree (compare `git rev-parse HEAD^{tree}` — the
-  *content* hash, which survives a commit made right after auditing, unlike the commit SHA
-  itself — against the marker Step 8 below writes at
+  skill already ran earlier for the current tree (compare the same audited-tree hash Step 8 below
+  derives — HEAD plus any uncommitted changes via `git stash create`, falling back to `git
+  rev-parse HEAD^{tree}` only when the tree is already clean — against the marker Step 8 writes at
   `"$(git rev-parse --git-dir)/pre-pr-audit-last-audit"`; skip only if it matches **and** the
-  recorded outcome is `CLEAN` — re-run on any other outcome, or if the tree has changed).
+  recorded outcome is `CLEAN` — re-run on any other outcome, or if the tree has changed). A plain
+  `HEAD^{tree}` comparison is NOT sufficient on its own: this skill routinely audits uncommitted
+  work, and `HEAD^{tree}` alone can't distinguish that from a later, different set of uncommitted
+  edits made over the same commit.
   Before invoking `gh pr create` for a change, run
   `/address-pr-issues`' own Step 2.5 checklist against it (Complexity Indicators + Decision
   Rules — don't hand-copy a subset here; the two lists have drifted before and cite-by-name
@@ -37,14 +40,15 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 
 ## Workflow Overview
 
-1. **Identify changed files** (git diff against base branch)
-2. **Load project patterns** (from CLAUDE.md if present)
-3. **Run pattern-based checks** (fast, structural analysis)
-4. **Adversarial pattern review** (MANDATORY — invokes /adversarial-review, parallel per-class agents)
-5. **Report findings** with severity and recommendations
-6. **Offer to fix** issues automatically
+1. **Determine base branch** (auto-detect or ask)
+2. **Identify changed files** (git diff against base branch)
+3. **Load project patterns** (from CLAUDE.md if present)
+4. **Adversarial pattern review** (MANDATORY — invokes /adversarial-review to a terminal outcome,
+   parallel per-class agents — runs BEFORE the batch below, never concurrently; see Step 4)
+5. **Run pattern-based, consistency, Maven, spec-completeness, and coherence-walk checks** (parallel `Workflow` batch, once adversarial-review is done touching the tree)
+6. **Report findings** with severity and recommendations, offer to fix
 7. **Validate fixes** (tests + optional SonarQube)
-8. **Re-check after fixes** to verify
+8. **Final summary**, record the audited tree + outcome marker
 
 ## Step 1: Determine Base Branch
 
@@ -55,37 +59,62 @@ Ask the user which branch to compare against, or auto-detect — same resolution
 # NOT `@{u}` (the current branch's OWN upstream) — once this branch is pushed with -u, that
 # resolves to the branch itself, making BASE_BRANCH == CURRENT_BRANCH and every diff empty.
 BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null)
+BASE_SOURCE="gh-pr"
 if [ -z "$BASE_BRANCH" ]; then
   BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##')
+  BASE_SOURCE="origin-head"
 fi
 
-# Fallback to common names
+# Fallback to common names — remote-tracking refs, not local refs/heads/*: every downstream diff
+# uses an origin/-prefixed range, and a shallow clone, a worktree checked out to only the feature
+# branch, or a CI runner can have origin/main or origin/master without a local main/master branch.
 if [ -z "$BASE_BRANCH" ]; then
-  if git show-ref --verify --quiet refs/heads/main; then
+  if git show-ref --verify --quiet refs/remotes/origin/main; then
     BASE_BRANCH="main"
-  elif git show-ref --verify --quiet refs/heads/master; then
+  elif git show-ref --verify --quiet refs/remotes/origin/master; then
     BASE_BRANCH="master"
   else
-    # Ask user
-    echo "Which branch should I compare against? (main/master/other)"
+    echo "Cannot detect base branch — tell me which branch to compare against" >&2
+    exit 1
   fi
+  BASE_SOURCE="origin-fallback"
 fi
-echo "BASE_BRANCH=$BASE_BRANCH"
+echo "BASE_BRANCH=$BASE_BRANCH (resolved via $BASE_SOURCE)"
+
+# A resolved name is not the same as one that actually exists on origin — fail loudly here instead
+# of letting a later git command's fatal error get silently swallowed downstream.
+if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; then
+  echo "🛑 origin/$BASE_BRANCH does not exist locally (resolved via $BASE_SOURCE) — never fetched? remote not named 'origin'? base branch renamed? Run 'git fetch origin $BASE_BRANCH' or supply the correct branch." >&2
+  exit 1
+fi
 ```
 
 ## Step 2: Get Changed Files
 
-Diff against `origin/$BASE_BRANCH`, not a local branch that may be behind — otherwise this
-step and `/adversarial-review`'s own Step 4.7 sweep (which always diffs `origin/$BASE_BRANCH`)
-can silently see different change sets:
+Diff against the merge-base with `origin/$BASE_BRANCH`, not a three-dot commit range — this skill
+audits work that is often still uncommitted ("After implementing a feature but before
+committing"), and a three-dot range (`origin/$BASE_BRANCH...HEAD`) diffs commit-to-commit, so it
+can never see uncommitted changes. `/adversarial-review`'s own Setup Step 3/4 (invoked at Step 4.7
+below) resolves and pins the same kind of value as `$MERGE_BASE`, so both halves of this audit
+agree on scope:
 
 ```bash
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
-  echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' — refusing to audit an empty diff. Supply the correct branch above." >&2
+  echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' (resolved via $BASE_SOURCE) — refusing to audit an empty diff. Supply the correct branch above." >&2
   exit 1
 fi
-CHANGED_FILES=$(git diff --name-only "origin/$BASE_BRANCH...HEAD")
+MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+DIFF_RC=0
+git diff --quiet "$MERGE_BASE" || DIFF_RC=$?
+if [ "$DIFF_RC" -eq 0 ]; then
+  echo "🛑 diff against merge-base $MERGE_BASE is empty — refusing to audit nothing. Check BASE_BRANCH above." >&2
+  exit 1
+elif [ "$DIFF_RC" -ge 2 ]; then
+  echo "🛑 git diff against merge-base $MERGE_BASE failed (exit $DIFF_RC) — this is a git error, not an empty diff. Re-run 'git diff $MERGE_BASE' directly to see the actual error." >&2
+  exit 1
+fi
+CHANGED_FILES=$(git diff --name-only "$MERGE_BASE")
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
 CHANGED_TEST_FILES=$(echo "$CHANGED_JAVA_FILES" | grep -E "(^|/)src/test/" || true)
 CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
@@ -139,14 +168,20 @@ it needs its own live, per-round human review-pause (Phase C) before applying fi
 to show the orchestrating session's user something and wait for a real decision — only the
 orchestrating session itself can host that, the same way `/address-pr-issues`' Step 3.5 invokes
 `/adversarial-review` directly rather than through a spawned sub-agent. Run it to a terminal
-outcome (CONVERGED, NOT converged + escalated, INCOMPLETE + accepted, or ABANDONED) — see Step
-4.7 below for the full invocation — before starting the Workflow batch.
+outcome (CONVERGED, NOT converged + escalated, INCOMPLETE + accepted, ABANDONED, or Test failures
+after fix application — do not start the Workflow batch on a red suite) — see Step 4.7 below for
+the full invocation — before starting the Workflow batch.
 
 **Workflow batch** (Pattern Checks, Consistency Checks, Maven Plugin Checks, Spec-Completeness
-Review, Whole-Document Coherence Walk): once adversarial-review is done touching the tree, use
-the `Workflow` tool (Claude Code's multi-agent orchestration primitive) to spawn these agents
+Review, Whole-Document Coherence Walk): once adversarial-review is done touching the tree,
+**re-derive `CHANGED_FILES`/`CHANGED_JAVA_FILES`/`CHANGED_TEST_FILES`/`CHANGED_SPEC_FILES` by
+re-running Step 2's block** — Phase D may have applied fixes that add/remove files or shift line
+numbers, so this batch's inputs must post-date those edits, not the pre-Step-4.7 snapshot. Then
+use the `Workflow` tool (Claude Code's multi-agent orchestration primitive) to spawn these agents
 simultaneously. Pass each agent the git diff output, changed file contents, and project patterns
-from CLAUDE.md:
+from CLAUDE.md — **except** the Whole-Document Coherence Walk agent (Step 4.9), which must NOT
+receive the diff or any indication of which sections changed; see that step's Agent mandate below
+for why:
 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
@@ -154,12 +189,16 @@ from CLAUDE.md:
 - **Spec-Completeness Review** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.8 below; returns findings for review-pause in Step 5
 - **Whole-Document Coherence Walk** (skip if `CHANGED_SPEC_FILES` is empty) — checks described in Step 4.9 below; single pass, non-repeating; returns findings for review-pause in Step 5
 
-Each agent in this batch returns findings as a list:
+Most agents in this batch return findings in this shape:
 ```json
 [{"severity": "CRITICAL|HIGH|MEDIUM|LOW", "file": "path:line", "description": "...", "recommendation": "..."}]
 ```
-Merge all findings by severity, then present them interactively (Step 5), and apply Step 5/6
-fixes for the Workflow-batch's own findings.
+**Step 4.8 and Step 4.9 don't match this shape** — Step 4.8 returns `location` (not `file`) plus
+an extra `check` field; Step 4.9 returns `location`/`changed_section`/`affected_section` with no
+`recommendation` at all (see their own Output Format sections below). Merge all findings by
+severity, then present them interactively (Step 5, which branches its template per finding source
+rather than assuming every finding has `file`/`recommendation`), and apply Step 5/6 fixes for the
+Workflow-batch's own findings.
 
 The detailed check instructions for each agent follow below.
 
@@ -196,8 +235,18 @@ The script checks for:
 - Collection operations without null/empty checks
 - Parse operations (`parseInt`, `parse`, `valueOf`) without try-catch
 - Array access without bounds checking
+
+**NOT implemented by the script** (do these by hand / delegate to the Consistency-Checks agent —
+`pattern_checker.py` has no `isinstance`/dict-default analysis):
 - Python `dict.get(key, non_None_value)` where the key may be present with value `None` in externally-sourced dicts (JSON, API responses, subprocess output) — `dict.get` only uses the default for absent keys; flag and recommend `d.get(key) or default` instead (Python files only)
 - Value extracted from a dict or parsed JSON immediately used in a type-dependent operation (iterated, sliced, `len()`, indexed, arithmetic) without a preceding `isinstance()` / `typeof` guard — applies to values from external sources where the schema is not compiler-enforced
+
+**Implemented by the script but not covered above**:
+- `.toString().equals()` on a receiver whose declared type is an interface/abstract class with known subclasses (fragile on polymorphic types)
+- `.toString().startsWith()`/`.endsWith()` used as a type discriminator (same fragility, string-shape form)
+- `catch` on a specific `*Exception`/`*Error` subtype immediately around a JDK/library call, when the API only documents a broader contract (may miss a sibling exception type)
+- Python `subprocess.run`/`Popen` calls missing `cwd=`, `timeout=`, a `TimeoutExpired` handler, or an executable guard
+- The same numeric constant appearing across changed files to control truncation/padding/formatting (the constant-level half of Consistency Check #4's "Parallel Derivation Anti-Pattern", below — the agent only needs to cover the string-manipulation and lookup-key halves, since the script already automates this one)
 
 **Try/Finally Scope**:
 - Operations between resource acquisition and try block
@@ -401,7 +450,7 @@ This logic should live in `LogPattern.isConvertible()` method.
 
 **Parallel Derivation Anti-Pattern** (highest-value check):
 When the same conceptual value (truncated string, formatted key, computed hash, normalized name) is derived from the same input in two or more classes with no shared constant or shared method, the algorithms can silently diverge. Look specifically for:
-- The same numeric constant (e.g., `60`, `80`, `MAX_LENGTH`) appearing in multiple files to control truncation, padding, or formatting
+- The same numeric constant (e.g., `60`, `80`, `MAX_LENGTH`) appearing in multiple files to control truncation, padding, or formatting — **already automated by `pattern_checker.py`** (Step 4 details above); this agent only needs to cover the two bullets below, which the script doesn't check
 - The same string manipulation (prefix stripping, suffix appending, case normalization) repeated across classes
 - Equality guards or lookup keys built from derived values where the derivation logic lives in each consumer independently
 
@@ -684,6 +733,16 @@ Intent Brief:
 Skill(adversarial-review, args="--rounds 3 --base-branch <BASE_BRANCH> --intent-brief \"<intent-brief text>\"")
 ```
 
+Run it to a terminal outcome, then immediately capture that outcome into shell variables — Step
+8's marker reads these, and nothing else in this document ever assigns them. The skill's own
+Summary Output badge (e.g. "✅ CONVERGED — cross-file yield 0...") is a human-readable line, not
+itself a token to compare against — derive the bare value from it explicitly:
+
+```bash
+ADVERSARIAL_OUTCOME=<bare token derived from the skill's Outcome badge: CONVERGED|NOT_CONVERGED|INCOMPLETE|ABANDONED|TEST_FAILURES>
+TESTS_GREEN=<true unless the skill's own Phase D test run reported "Test failures after fix application", in which case false>
+```
+
 The `/adversarial-review` skill handles the full protocol:
 - One review agent per pattern class (parallel, dynamic enumeration from the pattern file)
 - Cascade sweep within each class (every callsite, not just changed lines)
@@ -850,6 +909,10 @@ review-pause, presented and disposed of entirely within the `Skill(adversarial-r
 itself, using its own four-way disposition (Fix / Contradicts design / Accepted risk / False
 positive) — it doesn't hand findings back here for a second presentation in this step's format.
 
+Step 4.8/4.9 findings don't carry `file`/`recommendation` (see Step 4's schema note above) — for
+those, substitute `location` for **File** and, for Step 4.9, derive a one-line **Recommendation**
+from `description` rather than leaving the template field blank.
+
 For each issue found in the Workflow batch, present:
 
 ```markdown
@@ -990,8 +1053,8 @@ one:
 
 Resolve the project key AND host in the same shell invocation that runs the analysis below —
 splitting resolution and analysis into separate fenced blocks loses the variable, since shell
-state doesn't persist across separate command invocations (this document's own `$WORKSPACE_DIR`
-shorthand note elsewhere warns about exactly this):
+state doesn't persist across separate command invocations (`address-pr-issues/SKILL.md`'s Step 1
+`$WORKSPACE_DIR` shorthand note warns about exactly this same pitfall, in that file's own context):
 
 ```bash
 if [ -f "sonar-project.properties" ]; then
@@ -1084,14 +1147,14 @@ After all checks complete:
 - Findings: N found, M fixed, K accepted-risk, J false-positives
 - By class: [State Machine: N1, Operator Observability: N2, ...]
 - By blast radius: cross_file N1, local N2
-- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds
+- Outcome: ✅ CONVERGED (cross-file yield 0; residual risk: open local findings/accepted-risk above) / ⚠️ NOT converged — escalate to targeted deep-dive on <theme> / 🟡 INCOMPLETE — N class(es) unreviewed (can co-occur with NOT converged — see /adversarial-review's Summary Output for the combined badge, not a mutually exclusive list) / 🟠 ABANDONED — round stopped at the human's request, no further rounds / ❌ Test failures after fix application — do not push until resolved
 
 **Known Limitations** (for PR description):
 > _(List findings classified as "accepted risk", plus any `coverage_gap` entries from a
 > Phase E Accept/Abandon decision (visually distinct) — all MUST appear verbatim in the PR
 > description so reviewers understand what was deliberately left in and why.)_
 
-**SonarQube**: Quality Gate {PASSED|FAILED}
+**SonarQube**: Quality Gate {PASSED | FAILED | UNKNOWN — could not read (see key/host/$SONAR_TOKEN) | NOT RUN — user deferred}
 - New issues: N
 - Blocking issues: M
 
@@ -1120,19 +1183,37 @@ don't pay that cost twice for the same content), and so it never treats an incom
 equivalent to a clean one:
 
 ```bash
-if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ -z "$BLOCKING_ISSUES" ]; then
+# Derive the audited tree from HEAD + any uncommitted changes — this skill routinely audits work
+# before it's committed ("After implementing a feature but before committing"), and `HEAD^{tree}`
+# alone only reflects the last commit: it would go stale the moment the working tree is dirty and
+# could falsely match a later, DIFFERENT set of uncommitted edits made over the same HEAD. `git
+# stash create` builds a commit object representing HEAD + working-tree + index state WITHOUT
+# touching HEAD, the index, or the working tree (non-destructive, nothing is actually stashed); it
+# prints nothing when the tree is already clean, hence the fallback to HEAD^{tree} in that case.
+STASH_SHA=$(git stash create 2>/dev/null)
+if [ -n "$STASH_SHA" ]; then
+  AUDITED_TREE=$(git rev-parse "$STASH_SHA^{tree}")
+else
+  AUDITED_TREE=$(git rev-parse HEAD^{tree})
+fi
+
+# BLOCKING_ISSUES: unresolved CRITICAL/HIGH findings from the Workflow batch (Steps 4/4.5/4.6/4.8/
+# 4.9) per Step 5/6's disposition tally, plus 1 if Step 7's SonarQube Quality Gate is anything
+# other than PASSED — FAILED, UNKNOWN, or NOT RUN all count as blocking; an undetermined gate must
+# never read as clean.
+BLOCKING_ISSUES=<count of open CRITICAL/HIGH Workflow-batch findings, plus 1 if the Quality Gate above is not PASSED>
+
+if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ "$TESTS_GREEN" = "true" ] && [ "$BLOCKING_ISSUES" -eq 0 ]; then
   OUTCOME="CLEAN"
 else
-  OUTCOME="NOT_CLEAN"  # NOT converged, INCOMPLETE, ABANDONED, or blocking pattern/Sonar issues
+  OUTCOME="NOT_CLEAN"  # NOT converged, INCOMPLETE, ABANDONED, TEST_FAILURES, or blocking pattern/Sonar issues
 fi
-printf '%s %s\n' "$(git rev-parse HEAD^{tree})" "$OUTCOME" > "$(git rev-parse --git-dir)/pre-pr-audit-last-audit"
+printf '%s %s\n' "$AUDITED_TREE" "$OUTCOME" > "$(git rev-parse --git-dir)/pre-pr-audit-last-audit"
 ```
 
 Use `git rev-parse --git-dir` rather than a literal `.git/` path — in a linked worktree, `.git`
 is a regular file (a `gitdir:` pointer), not a directory, and a bare redirect into it fails with
-"Not a directory". Using the tree hash (not the commit SHA) means the marker written here still
-matches after the "Next Steps" commit below, since committing doesn't change the tree's content —
-only further edits would.
+"Not a directory".
 
 ## Important Notes
 

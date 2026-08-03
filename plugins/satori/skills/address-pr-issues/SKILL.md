@@ -168,6 +168,8 @@ PR_NUMBER="${args:-$(gh pr view --json number -q .number)}"
 # (PR_AUTHOR — needed for Step 1.6's silent-thread classification)
 gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url,body,author
 PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)
+# BASE_BRANCH — needed by Step 3.5's --base-branch flag when it invokes /adversarial-review
+BASE_BRANCH=$(gh pr view $PR_NUMBER --json baseRefName -q .baseRefName)
 ```
 
 **Clean working tree**: before making any changes, check `git status --porcelain`. If it
@@ -228,10 +230,14 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 - `$WORKSPACE_DIR/fixes.json` - Fix history per round
 - `$WORKSPACE_DIR/checklist.json` - Pre-commit checklist state
 - `$WORKSPACE_DIR/triage.json` - Step 2's persisted triage results (written in Step 2)
+- `$WORKSPACE_DIR/triage.round-N.json` - per-round severity snapshot, the only on-disk record of
+  that round's severities (written in Step 2)
 - `$WORKSPACE_DIR/copilot_review_count.txt` - Re-review counter (written in Step 8)
 - `$WORKSPACE_DIR/last_rerequest_round.txt` - Round number of the last Copilot re-request
   (written in Step 8) — prevents double-incrementing the counter above if Step 8 is re-entered
   for the same round
+- `$WORKSPACE_DIR/escalation_override.txt` - round marker for a user-confirmed numeric /plan
+  escalation override (written in Step 8)
 
 **Shorthand used throughout this doc**: `$WORKSPACE_DIR` itself is not exported by any
 script — `init-pr-state.sh` and the other wrapper scripts set it only inside their own
@@ -446,7 +452,9 @@ change what the PR does?", not "how bad is it":
 **Persist the merged triage results** to `$WORKSPACE_DIR/triage.json` (an array of the per-issue
 JSON objects above, keyed by `issue_id`) before moving on — this is what Step 4.1 reads back to
 compute `DIRECTIONAL_COUNT`, so it survives a context compaction the same way `threads.json`/
-`fixes.json` do. Also copy it to a round-stamped snapshot, `cp "$WORKSPACE_DIR/triage.json"
+`fixes.json` do. Re-derive `$ROUND` per Step 1's shorthand note if this is a new shell/session
+before either write below — a stale `$ROUND` silently mislabels which round's snapshot this is.
+Also copy it to a round-stamped snapshot, `cp "$WORKSPACE_DIR/triage.json"
 "$WORKSPACE_DIR/triage.round-${ROUND}.json"` — `threads.json`'s own `before-round-N` snapshots
 carry thread metadata (`bucket`, `labels`) but never `severity`, so the round-stamped triage files
 are the only on-disk record of this round's severities; Step 8's severity-trend escalation (under
@@ -638,7 +646,7 @@ This step runs on the diff of an already-open PR's fix round — a single sweep 
 cost/coverage trade-off:
 
 ```
-Skill(adversarial-review, args="--rounds 1 --base-branch <base-branch> --intent-brief \"<intent-brief text>\"")
+Skill(adversarial-review, args="--rounds 1 --base-branch <BASE_BRANCH from Step 1> --intent-brief \"<intent-brief text>\"")
 ```
 
 The `/adversarial-review` skill runs one round of parallel per-class agents and presents its own
@@ -974,9 +982,10 @@ MANDATORY) and Step 5 (local sonar-scanner) — both routinely produce further e
 - **Check whether the tree is dirty after Steps 4.5/5/6**, since they commonly add edits on top
   of xp-pair's commit: `git status --porcelain`.
   - **If dirty**: `git add` the new edits and run `./scripts/commit-pr-fixes.sh $PR_NUMBER
-    "$DIRECTIONAL_COUNT"` normally (re-derive `$ROUND`/`$FIXES_FILE`/`$DIRECTIONAL_COUNT` per
-    Step 1's shorthand note if this is a new shell/session) — it creates a proper round-tracked
-    commit on top of xp-pair's and writes `fixes.json` itself. Nothing further needed here.
+    "$DIRECTIONAL_COUNT"` normally (re-derive `$ROUND`/`$FIXES_FILE` per Step 1's shorthand note,
+    and `$DIRECTIONAL_COUNT` per "Derive DIRECTIONAL_COUNT" below Step 4.1 — that note doesn't
+    cover it — if this is a new shell/session) — it creates a proper round-tracked commit on top
+    of xp-pair's and writes `fixes.json` itself. Nothing further needed here.
   - **If clean** (xp-pair's commit was the whole round): `commit-pr-fixes.sh`'s recovery path
     can't adopt that commit for you — it only fires when `HEAD`'s subject matches `PR #<n> review
     feedback (Round <r>)`, which an xp-pair commit won't. Write the round's `fixes.json` entry
@@ -984,9 +993,16 @@ MANDATORY) and Step 5 (local sonar-scanner) — both routinely produce further e
     (`scripts/commit-pr-fixes.sh:22,92-103`) rather than letting a bare `jq` failure pass silently:
     ```bash
     [[ "$ROUND" =~ ^[0-9]+$ ]] && [[ "$DIRECTIONAL_COUNT" =~ ^[0-9]+$ ]] || {
-      echo "🛑 ROUND ('$ROUND') or DIRECTIONAL_COUNT ('$DIRECTIONAL_COUNT') is not a plain integer — re-derive both before writing fixes.json (see Step 1's shorthand note)." >&2
+      echo "🛑 ROUND ('$ROUND') or DIRECTIONAL_COUNT ('$DIRECTIONAL_COUNT') is not a plain integer — re-derive ROUND per Step 1's shorthand note and DIRECTIONAL_COUNT per 'Derive DIRECTIONAL_COUNT' below Step 4.1 before writing fixes.json." >&2
       exit 1
     }
+    # Strip leading zeros — bash's arithmetic/test operators treat a leading-zero numeral as
+    # octal, so a value like "08" would otherwise crash `-gt`/`(( ))` elsewhere despite passing
+    # the regex above. Mirrors commit-pr-fixes.sh:28.
+    DIRECTIONAL_COUNT=$((10#$DIRECTIONAL_COUNT))
+    # fixes.json may not exist yet on this PR's first round — initialize it rather than letting
+    # the jq write below fail on a missing file with no forward path. Mirrors commit-pr-fixes.sh:40-42.
+    [[ -f "$FIXES_FILE" ]] || echo '{}' > "$FIXES_FILE"
     if jq --arg r "$ROUND" --arg sha "$(git rev-parse HEAD)" --argjson d "$DIRECTIONAL_COUNT" \
         '. + {($r): {commit: $sha, files: [], directional_count: $d, timestamp: now|todate}}' \
         "$FIXES_FILE" > "$FIXES_FILE.tmp"; then
@@ -1025,6 +1041,12 @@ implementation work:
 yourself before committing — an agent's own "done" report is not verification. This mirrors the
 "never trust an agent's own summary without checking the diff" discipline that applies to any
 delegated work, not something specific to this skill.
+
+**If the agent never reports back** (times out, dies on a terminal API error, or returns nothing
+usable): fall back to implementing the fix directly in this session — the same fallback
+`adversarial-review`'s Phase D fix-planning gate uses when its own delegated agent returns nothing
+usable — and say so explicitly rather than silently treating the round as done with the fix
+unapplied.
 
 ### Mandate Test-First for Critical Bugs
 
@@ -1478,7 +1500,16 @@ does below): `ROUND=$(cat "$WORKSPACE_DIR/round.txt")`,
 for the round just committed (persisted by `commit-pr-fixes.sh` in Step 7) rather than trusting
 conversation memory — this survives a context compaction or a resumed session:
 ```bash
-DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0' "$FIXES_FILE")
+# Distinguish "this round was never recorded" from "it recorded zero" — `// 0` collapses both to
+# the same value, which would make a missing entry (a commit-pr-fixes.sh failure, a wrong $ROUND,
+# a $WORKSPACE_DIR re-derived to the wrong PR, /tmp cleanup) print the same false affirmative
+# "No directional fixes this round" message that a genuinely confirmed-zero round gets.
+DC=$(jq -r --arg round "$ROUND" '.[$round].directional_count // "absent"' "$FIXES_FILE")
+if [ "$DC" = "absent" ] || [ "$DC" = "null" ]; then
+  echo "🛑 fixes.json has no entry for round $ROUND — directional_count was never persisted; this is NOT confirmed-zero. Fix the Step 7 commit/write before deciding on a re-request." >&2
+  exit 1
+fi
+DIRECTIONAL_COUNT="$DC"
 ```
 
 - **If `DIRECTIONAL_COUNT >= 1`**: at least one fix shifted what the PR does — but check the
@@ -1488,6 +1519,11 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   action it gates, not several sections later where it's easy to skip in practice. Three
   outcomes, checked as one if/elif/else chain (not as separate steps — the ordering matters):
   ```bash
+  # A missing/empty marker file reads as "" from `cat ... 2>/dev/null` — indistinguishable from
+  # an empty $ROUND on the read side below. Validate $ROUND first so a stale/unset value can never
+  # false-match a missing marker and silently claim a re-request or override that never happened.
+  [[ "$ROUND" =~ ^[0-9]+$ ]] || { echo "🛑 ROUND ('$ROUND') is not a plain integer — re-derive it (see Step 1's shorthand note) before running this block." >&2; exit 1; }
+
   COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
   LAST_REREQUEST_ROUND_FILE="$WORKSPACE_DIR/last_rerequest_round.txt"
   OVERRIDE_FILE="$WORKSPACE_DIR/escalation_override.txt"
@@ -1498,13 +1534,22 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   # the two paths can't drift into different counter-advance behavior.
   do_rerequest() {
     if GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
-      # Only advance the counter and the round marker on a CONFIRMED successful re-request —
-      # advancing them on failure would record a re-request that never happened, which both
-      # blocks a legitimate retry this round (the check above would then falsely think this
-      # round is done) and inflates the /plan-escalation count past actual review activity.
-      echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
-      echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
-      echo "✅ Re-requested Copilot review for round $ROUND (review #$(cat "$COUNT_FILE"))."
+      # `gh pr edit`'s exit code alone isn't proof the mutation applied — it's documented in this
+      # environment as able to report success while silently not applying an edit (the --body
+      # case on Projects-classic repos). Read the reviewer list back before trusting "confirmed".
+      COPILOT_REQUESTED=$(gh pr view $PR_NUMBER --json reviewRequests -q '[.reviewRequests[].login] | index("copilot") != null' 2>/dev/null || echo "unknown")
+      if [ "$COPILOT_REQUESTED" = "true" ]; then
+        # Only advance the counter and the round marker on a CONFIRMED successful re-request —
+        # advancing them on failure would record a re-request that never happened, which both
+        # blocks a legitimate retry this round (the check above would then falsely think this
+        # round is done) and inflates the /plan-escalation count past actual review activity.
+        echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
+        echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
+        echo "✅ Re-requested Copilot review for round $ROUND (review #$(cat "$COUNT_FILE"))."
+      else
+        echo "⚠️  gh pr edit reported success but copilot isn't in the reviewer list afterward (or the readback failed) — treating as unconfirmed, not advancing the counter/marker."
+        echo "✅ Re-request submitted (not verified) for round $ROUND."
+      fi
     else
       echo "⚠️  Copilot re-review couldn't be triggered via CLI (gh reported: $GH_ERR)."
       echo "    If this is 422/user-not-found, use the 'Re-request review' button next to"
@@ -1516,7 +1561,7 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
     fi
   }
 
-  if [[ "$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)" == "$ROUND" ]]; then
+  if [[ -f "$LAST_REREQUEST_ROUND_FILE" ]] && [[ "$(cat "$LAST_REREQUEST_ROUND_FILE")" == "$ROUND" ]]; then
     # Step 8 is being re-entered for a round that already re-requested successfully (e.g.
     # after a context compaction or a resumed session) — re-requesting again would
     # double-count a single round's request.
@@ -1539,20 +1584,35 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
     SNAPSHOT_COUNT=0
     for f in $(ls "$WORKSPACE_DIR"/triage.round-*.json 2>/dev/null | sort -V | tail -2); do
       R=$(basename "$f" | sed -E 's/triage\.round-([0-9]+)\.json/\1/')
-      SEV=$(jq -r '[.[].severity] | group_by(.) | map("\(.[0]):\(length)") | join(", ")' "$f")
-      TREND="${TREND}round ${R}: ${SEV:-none}; "
+      if SEV=$(jq -r '[.[].severity] | group_by(.) | map("\(.[0]):\(length)") | join(", ")' "$f" 2>/dev/null); then
+        TREND="${TREND}round ${R}: ${SEV:-none}; "
+      else
+        TREND="${TREND}round ${R}: unreadable (jq failed on $f); "
+      fi
       SNAPSHOT_COUNT=$((SNAPSHOT_COUNT + 1))
     done
     echo "Copilot review #${PENDING_REVIEW_NUM} pending (counter=$(cat "$COUNT_FILE"))."
     if [[ "$SNAPSHOT_COUNT" -gt 0 ]]; then
       echo "   Severity trend, oldest to newest (${SNAPSHOT_COUNT} most recent snapshot(s)): ${TREND}"
     else
-      echo "   No triage.round-*.json snapshots exist yet — Step 2 may not have persisted one for"
-      echo "   recent rounds (a loop-back to Step 4.1 on new findings skips Step 2 entirely)."
+      echo "   No triage.round-*.json snapshots found in $WORKSPACE_DIR — either Step 2 never"
+      echo "   persisted one (a loop-back to Step 4.1 on new findings skips Step 2 entirely), or"
+      echo "   \$WORKSPACE_DIR/\$PR_NUMBER is wrong, or the state dir was cleaned — verify the path"
+      echo "   before reading this as 'no severity history'."
     fi
-    if [[ "$(cat "$OVERRIDE_FILE" 2>/dev/null)" == "$ROUND" ]]; then
+    if [[ -f "$OVERRIDE_FILE" ]] && [[ "$(cat "$OVERRIDE_FILE")" == "$ROUND" ]]; then
       echo "▶️  Already overridden for round $ROUND — proceeding with review #${PENDING_REVIEW_NUM} instead of escalating."
       do_rerequest
+    elif [[ "$SNAPSHOT_COUNT" -eq 0 ]]; then
+      echo "🛑 Escalating to /plan instead of re-requesting — no severity trend is available (see above), so override only if you have other evidence real Critical/High findings are still recurring."
+      echo "   Present both to the user now and wait for their decision:"
+      echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
+      echo "     - Override: record it, then re-run this entire Step 8 block from the top —"
+      echo "       do NOT try to call do_rerequest directly; it's a shell function scoped to"
+      echo "       this one invocation and won't exist in a later turn/shell:"
+      echo "       echo \"$ROUND\" > \"$OVERRIDE_FILE\""
+      echo "       Re-running this block will then take the 'Already overridden' branch above,"
+      echo "       which calls do_rerequest for you with the same counter-advance-on-success rule."
     else
       echo "🛑 Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
       echo "   Present both to the user now and wait for their decision:"
@@ -1778,8 +1838,11 @@ starting points:
 # Full fix history across all rounds
 cat "$FIXES_FILE"
 
-# Rounds + threads resolved + files changed, one line per round
-jq -r 'to_entries[] | "\(.key): \(.value.threads_resolved | length) threads, \(.value.files_changed | length) files"' "$FIXES_FILE"
+# Rounds + files changed + directional-fix count + commit, one line per round — matches the
+# actual schema commit-pr-fixes.sh writes ({commit, files, directional_count, timestamp}); there
+# is no threads_resolved/files_changed field on this object (threads_resolved lives on
+# checklist.json as a boolean, not a per-round list — see State Files Created above)
+jq -r 'to_entries[] | "\(.key): \(.value.files | length) files, directional=\(.value.directional_count), \(.value.commit[0:8])"' "$FIXES_FILE"
 ```
 
 **Cleanup after merge**: `rm -rf "/tmp/pr-${PR_NUMBER}"`, or archive it first with
