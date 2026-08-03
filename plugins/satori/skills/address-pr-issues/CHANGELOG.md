@@ -1,11 +1,52 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-08-02/03 - v1.7.6: Fable Design Guidance, Native Fix-Planning, Base-Branch Bug
+
+**Context**: A follow-on to v1.7.5's PR #171 hardening, this batch spans all four satori review
+skills (`address-pr-issues`, `adversarial-review`, `pre-pr-audit`, `xp-pair`), plus two rounds of
+`/satori:pre-pr-audit` dogfooding against the batch's own changes, which is why the set of fixes
+is broader than the original feature. Added: `xp-pair` gained a Fable-model generative design
+guidance step (Step 2) that reads matching `copilot-review-patterns.md` classes and returns a
+design recommendation plus an edge-case watch-list, augmenting its existing 4 discovery agents;
+`adversarial-review` gained a native (not `xp-pair`) Fable fix-planning gate in Phase D for
+approved findings with `cascade_siblings`, `cross_file` blast radius, or CRITICAL/HIGH severity —
+deliberately not invoking `xp-pair`, since its Step 5 commits and shuts down its team, which would
+violate Phase D's no-commit git guardrails; `adversarial-review`'s Setup Step 5 was rewritten so
+`CLASSES` carries lightweight `{name, lensKind, model?}` metadata instead of full per-class prompt
+text, after discovering the original prose-only "capture it in a shell variable" plan doesn't work
+(`Workflow` args must be literal JSON; Bash shell state doesn't persist across tool calls) — each
+spawned agent now reads its own pattern-file section directly. Round 1 of dogfooding against this
+batch (23 findings, 18 cross-file) fixed: a `lensKind` fallback+log in `buildPrompt()`, a missing
+doc-file enumeration command, `Phase E`'s retry instructions listing all required args, explicit
+guardrails on the fix-planning agent, `--base-branch` actually being honored, `xp-pair`'s
+fictional pattern-class names, `address-pr-issues`' `xp-pair`-fix caveat wrongly saying "resume at
+Step 8" (it was skipping mandatory steps and the push), a severity-trend gate that printed an
+unsubstituted template placeholder, an "Already Decided" thread-closeout bucket, and reduced
+`address-pr-issues/README.md` from a 1696-line stale duplicate of `SKILL.md` to a 103-line
+pointer-based overview. Round 2 (18 more cross-file findings, mostly bugs in round 1's own fixes —
+exactly what this repo's dogfooding recipe warns a single round won't catch) fixed the most
+consequential one: `adversarial-review`'s and `pre-pr-audit`'s base-branch auto-detect used
+`@{u}` (the current branch's *own* upstream), which resolves to the branch itself once pushed
+with `-u` — every round `address-pr-issues` runs — silently producing an empty diff and a false
+CONVERGED verdict; replaced with `gh pr view --json baseRefName` + `git symbolic-ref
+refs/remotes/origin/HEAD`, plus a hard-stop guard on an empty/self-matching diff. Also fixed:
+`xp-pair`'s pattern-file fallback path was relative instead of absolute (silently unresolvable
+outside this repo's own checkout); the escalation-override mechanism referenced a shell function
+that doesn't survive a new turn; `triage.round-N.json`'s writer and reader disagreed on round
+numbers across a Step 4.1 loop-back (glob-based lookup now used instead of round arithmetic);
+`pre-pr-audit`'s Step 4.7/Step 6 still described the pre-restructure "findings return to Step 5"
+model after Step 4/5 were rewritten; and `pre-pr-audit/README.md` / `xp-pair/README.md` were
+confirmed stale by the same mechanism and reduced to pointers alongside `address-pr-issues/README.md`.
+
+See commits `cab1a0f` (the Fable/fix-planning feature), `29a594c` (round-1 dogfood fixes), and
+this round's commit (round-2 dogfood fixes) for the full change.
+
 ## 2026-08-02 - v1.7.5: Process Hardening from PR #171 Retrospective
 
 **Context**: `fs-eng/cc-plugins-java-stack#171` (a `logging-migration` regex-based completeness
 gate) ran ~10 reactive `address-pr-issues` rounds without ever running `/pre-pr-audit` first,
 surfacing six gaps in this skill's own process logic. Added a reverse cross-reference to
-`/pre-pr-audit` (Step 1) for PRs that skipped it; accounted for repos that auto-review Copilot on
+`/pre-pr-audit` (Workflow Overview) for PRs that skipped it; accounted for repos that auto-review Copilot on
 every push, not just PR open, and required checking for new comments after every push regardless
 of whether an explicit re-request fired (Step 8); paired the numeric re-request-count escalation
 gate with a qualitative severity-trend summary of the last 1-2 rounds, since this PR's count

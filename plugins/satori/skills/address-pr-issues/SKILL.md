@@ -646,8 +646,8 @@ review-pause **live in this conversation**, using its own 4-way Phase C disposit
 Contradicts design / Accepted risk / False positive) — not Step 3's severity-matrix template,
 which is a different vocabulary built for Copilot/SonarQube comments (fix now/defer, apply/
 ignore). It then applies approved fixes itself under git guardrails (PROHIBITED: git reset,
-rebase, commit, stash, restore; PERMITTED: Edit/Write, read-only bash, git diff/status), and
-returns a summary.
+rebase, commit, stash, checkout -- <file>, restore; PERMITTED: Edit/Write, read-only bash, git
+diff/status), and returns a summary.
 
 If a class's review agent never returns a result (a terminal error even after retries), the
 single round comes back INCOMPLETE rather than a clean pass — since round 1 is always the round
@@ -969,19 +969,34 @@ Acceptance Criteria:
 **Caveat**: `xp-pair`'s own Step 5 commits (with an ad-hoc message, not this skill's round-tracked
 one) and shuts down its team — but that **only replaces Step 7's `commit-pr-fixes.sh` sub-step**,
 nothing else. Do not "resume at Step 8" — still run, in order: Step 4.5 (Post-Fix Cascade Sweep,
-MANDATORY), Step 5 (local sonar-scanner), Step 6 (Resolve Conversations — REQUIRED before
-pushing), then in Step 7:
-- Skip the `commit-pr-fixes.sh` invocation (xp-pair already committed) — but its recovery path
-  can't adopt that commit for you: it only fires when `HEAD`'s subject matches `PR #<n> review
-  feedback (Round <r>)`, which an xp-pair commit won't. Write the round's `fixes.json` entry
-  directly instead, so `directional_count` still reaches disk:
-  ```bash
-  jq --arg r "$ROUND" --arg sha "$(git rev-parse HEAD)" --argjson d "$DIRECTIONAL_COUNT" \
-    '. + {($r): {commit: $sha, files: [], directional_count: $d, timestamp: now|todate}}' \
-    "$FIXES_FILE" > "$FIXES_FILE.tmp" && mv "$FIXES_FILE.tmp" "$FIXES_FILE"
-  ```
-  Skipping this step leaves the round missing from `fixes.json`; Step 8 then reads `// 0` and
-  silently skips the Copilot re-request for what may be the most directional round in the PR.
+MANDATORY) and Step 5 (local sonar-scanner) — both routinely produce further edits — then Step 6
+(Resolve Conversations — REQUIRED before pushing), then in Step 7:
+- **Check whether the tree is dirty after Steps 4.5/5/6**, since they commonly add edits on top
+  of xp-pair's commit: `git status --porcelain`.
+  - **If dirty**: `git add` the new edits and run `./scripts/commit-pr-fixes.sh $PR_NUMBER
+    "$DIRECTIONAL_COUNT"` normally (re-derive `$ROUND`/`$FIXES_FILE`/`$DIRECTIONAL_COUNT` per
+    Step 1's shorthand note if this is a new shell/session) — it creates a proper round-tracked
+    commit on top of xp-pair's and writes `fixes.json` itself. Nothing further needed here.
+  - **If clean** (xp-pair's commit was the whole round): `commit-pr-fixes.sh`'s recovery path
+    can't adopt that commit for you — it only fires when `HEAD`'s subject matches `PR #<n> review
+    feedback (Round <r>)`, which an xp-pair commit won't. Write the round's `fixes.json` entry
+    directly instead, validating inputs and checking the write the same way the script does
+    (`scripts/commit-pr-fixes.sh:22,92-103`) rather than letting a bare `jq` failure pass silently:
+    ```bash
+    [[ "$ROUND" =~ ^[0-9]+$ ]] && [[ "$DIRECTIONAL_COUNT" =~ ^[0-9]+$ ]] || {
+      echo "🛑 ROUND ('$ROUND') or DIRECTIONAL_COUNT ('$DIRECTIONAL_COUNT') is not a plain integer — re-derive both before writing fixes.json (see Step 1's shorthand note)." >&2
+      exit 1
+    }
+    if jq --arg r "$ROUND" --arg sha "$(git rev-parse HEAD)" --argjson d "$DIRECTIONAL_COUNT" \
+        '. + {($r): {commit: $sha, files: [], directional_count: $d, timestamp: now|todate}}' \
+        "$FIXES_FILE" > "$FIXES_FILE.tmp"; then
+      mv "$FIXES_FILE.tmp" "$FIXES_FILE"
+    else
+      echo "🛑 xp-pair commit $(git rev-parse --short HEAD) succeeded but the fixes.json write for round $ROUND failed — directional_count NOT persisted. Step 8 will read the round as absent, not as confirmed-zero, and print an affirmative 'No directional fixes this round' message that is not actually true. Fix and retry before continuing." >&2
+      rm -f "$FIXES_FILE.tmp"
+      exit 1
+    fi
+    ```
 - Still run the Pre-Push Checklist, the Protected-Branch Guard, and
   `git push -u origin "$CURRENT_BRANCH"` — xp-pair's Step 5 commits but never pushes.
 
@@ -1508,33 +1523,46 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
     echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
   elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
     # This re-request would be review #3 or beyond. Before recommending escalation, pair the
-    # raw count with a one-line severity trend of the last 1-2 rounds — a high count with a
-    # DECLINING trend (Critical/High → Medium → Low → doc-only) supports escalating; a high
-    # count where recent rounds are still surfacing genuinely new Critical/High bugs does NOT,
-    # and the user needs to see that to make an informed override (see "Numeric /plan
-    # Escalation" under Convergence Criterion below). Derive the trend from disk, not
-    # conversation memory: Step 2 snapshots this round's severities to
-    # $WORKSPACE_DIR/triage.round-${ROUND}.json — the ${THREADS_FILE}.before-round-N snapshots
-    # do NOT carry severity (only bucket/labels), so triage.round-*.json is the actual source.
+    # raw count with a one-line severity trend of the last 1-2 rounds with an actual snapshot —
+    # a high count with a DECLINING trend (Critical/High → Medium → Low → doc-only) supports
+    # escalating; a high count where recent rounds are still surfacing genuinely new
+    # Critical/High bugs does NOT, and the user needs to see that to make an informed override
+    # (see "Numeric /plan Escalation" under Convergence Criterion below). Derive the trend from
+    # disk, not conversation memory: Step 2 snapshots each round's severities to
+    # $WORKSPACE_DIR/triage.round-N.json — the ${THREADS_FILE}.before-round-N snapshots do NOT
+    # carry severity (only bucket/labels), so triage.round-*.json is the actual source. Glob for
+    # the two most recent EXISTING snapshots rather than computing $ROUND/$((ROUND-1)) directly —
+    # a loop-back to Step 4.1 on new findings skips Step 2 (and therefore this write) for that
+    # pass, so the current $ROUND does not always have its own snapshot.
     PENDING_REVIEW_NUM=$(( $(cat "$COUNT_FILE") + 1 ))
     TREND=""
-    for r in "$ROUND" "$((ROUND - 1))"; do
-      f="$WORKSPACE_DIR/triage.round-${r}.json"
-      [[ -f "$f" ]] || continue
-      TREND="${TREND}round ${r}: $(jq -r '[.[].severity] | group_by(.) | map("\(.[0]):\(length)") | join(", ")' "$f"); "
+    SNAPSHOT_COUNT=0
+    for f in $(ls "$WORKSPACE_DIR"/triage.round-*.json 2>/dev/null | sort -V | tail -2); do
+      R=$(basename "$f" | sed -E 's/triage\.round-([0-9]+)\.json/\1/')
+      SEV=$(jq -r '[.[].severity] | group_by(.) | map("\(.[0]):\(length)") | join(", ")' "$f")
+      TREND="${TREND}round ${R}: ${SEV:-none}; "
+      SNAPSHOT_COUNT=$((SNAPSHOT_COUNT + 1))
     done
-    echo "🛑 This would be Copilot review #${PENDING_REVIEW_NUM} (counter=$(cat "$COUNT_FILE"))."
-    echo "   Severity trend, last rounds available: ${TREND:-no triage.round-*.json snapshots found yet}"
+    echo "Copilot review #${PENDING_REVIEW_NUM} pending (counter=$(cat "$COUNT_FILE"))."
+    if [[ "$SNAPSHOT_COUNT" -gt 0 ]]; then
+      echo "   Severity trend, oldest to newest (${SNAPSHOT_COUNT} most recent snapshot(s)): ${TREND}"
+    else
+      echo "   No triage.round-*.json snapshots exist yet — Step 2 may not have persisted one for"
+      echo "   recent rounds (a loop-back to Step 4.1 on new findings skips Step 2 entirely)."
+    fi
     if [[ "$(cat "$OVERRIDE_FILE" 2>/dev/null)" == "$ROUND" ]]; then
-      echo "   Already overridden for round $ROUND — re-requesting instead of escalating."
+      echo "▶️  Already overridden for round $ROUND — proceeding with review #${PENDING_REVIEW_NUM} instead of escalating."
       do_rerequest
     else
-      echo "   Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
+      echo "🛑 Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
       echo "   Present both to the user now and wait for their decision:"
       echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
-      echo "     - Override: record it — echo \"$ROUND\" > \"$OVERRIDE_FILE\" — then call do_rerequest"
-      echo "       (same counter-advance-on-success rule as a normal re-request). Recording the"
-      echo "       round means a resumed session won't re-prompt for the same round's override."
+      echo "     - Override: record it, then re-run this entire Step 8 block from the top —"
+      echo "       do NOT try to call do_rerequest directly; it's a shell function scoped to"
+      echo "       this one invocation and won't exist in a later turn/shell:"
+      echo "       echo \"$ROUND\" > \"$OVERRIDE_FILE\""
+      echo "       Re-running this block will then take the 'Already overridden' branch above,"
+      echo "       which calls do_rerequest for you with the same counter-advance-on-success rule."
     fi
   else
     do_rerequest
@@ -1706,9 +1734,11 @@ the Convergence Criterion's cross-file yield measures — this escalation is the
 `/adversarial-review`'s round-cap escalation, applied to live Copilot rounds instead of its
 internal review rounds.
 
-When the user overrides instead: Step 8 records the round in `$WORKSPACE_DIR/escalation_override.txt`
-and re-requests through the same shared `do_rerequest` logic as a normal round, so the counter and
-`last_rerequest_round.txt` stay consistent either way.
+When the user overrides instead: record the round in `$WORKSPACE_DIR/escalation_override.txt`,
+then re-run Step 8's re-request block from the top (not by calling `do_rerequest` directly — it's
+a shell function scoped to one invocation and won't exist in a later turn). The re-run takes the
+"already overridden" branch and re-requests through the same shared `do_rerequest` logic a normal
+round uses, so the counter and `last_rerequest_round.txt` stay consistent either way.
 
 ## SonarQube Issue Resolution
 

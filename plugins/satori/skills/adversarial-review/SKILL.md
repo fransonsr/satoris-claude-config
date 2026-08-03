@@ -67,7 +67,14 @@ given, not a check that runs regardless:
 if [ -n "$BASE_BRANCH_ARG" ]; then
   BASE_BRANCH="$BASE_BRANCH_ARG"
 else
-  BASE_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | cut -d/ -f2-)
+  # NOT `@{u}` (the current branch's OWN upstream, e.g. origin/feature-x when ON feature-x) —
+  # that resolves to the current branch itself once it's been pushed with -u, which every round
+  # of /address-pr-issues does, making BASE_BRANCH == CURRENT_BRANCH and every subsequent diff
+  # empty. Ask the PR itself first, then the repo's actual default branch:
+  BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null)
+  if [ -z "$BASE_BRANCH" ]; then
+    BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##')
+  fi
   if [ -z "$BASE_BRANCH" ]; then
     if git show-ref --verify --quiet refs/heads/main; then
       BASE_BRANCH=main
@@ -80,6 +87,19 @@ else
   fi
 fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+echo "BASE_BRANCH=$BASE_BRANCH CURRENT_BRANCH=$CURRENT_BRANCH"
+
+# A resolution bug or a caller-supplied override that happens to match the current branch both
+# produce an empty diff, which every per-class agent would then report as clean — a false
+# CONVERGED verdict over a diff that was never actually examined. Refuse instead:
+if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
+  echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' — refusing to review an empty diff. Supply --base-branch." >&2
+  exit 1
+fi
+if git diff --quiet "origin/$BASE_BRANCH...$CURRENT_BRANCH" 2>/dev/null; then
+  echo "🛑 origin/$BASE_BRANCH...$CURRENT_BRANCH is an empty diff — refusing to report a round as CONVERGED with nothing reviewed. Check BASE_BRANCH/CURRENT_BRANCH above." >&2
+  exit 1
+fi
 ```
 
 ### 4. Pin the comparison refs (run once)
@@ -158,10 +178,11 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
   - `both`: Cross-File Rule Consistency — read full contents of **both** changed source and doc
     files; this lens isn't in either bucket above since a rule can be restated across a doc and a
     code file
-  - A class not named in any bucket above (e.g. one just added via the Pattern-File Update Hook)
-    defaults to `both` — the safe over-read — and `buildPrompt()` logs the class name plus its
-    unrecognized `lensKind` when this fires, so the bucket lists above get updated rather than
-    silently staying out of sync
+  - A class not named in any bucket above (e.g. one just added via the Pattern-File Update Hook):
+    **leave `lensKind` unset** for it — do not guess `both` yourself. `buildPrompt()` defaults an
+    unset/unrecognized `lensKind` to `both` (the safe over-read) and logs the class name so the
+    bucket lists above get updated; setting `lensKind: 'both'` explicitly here would skip that
+    log, since `both` is itself a valid, recognized value
 - `model?` — per Model Selection below
 
 **Model selection** (used as the `model` override when the Workflow script below calls `agent()`;
@@ -267,6 +288,13 @@ const FINDING_SCHEMA = {
 // regardless of how the caller passed it — parse defensively rather than trust the docs here.
 const { classes, priorFindings = [], patternFile, baseBranch, currentBranch, intentBrief } =
   typeof args === 'string' ? JSON.parse(args) : args
+
+// Same defensive posture as the `args`-shape comment above, applied to the individual fields:
+// each is interpolated directly into every class's prompt (buildPrompt below), so a missing one
+// renders literal "undefined" into every agent's diff/read instructions rather than failing loudly.
+if (!patternFile || !baseBranch || !currentBranch || !intentBrief) {
+  log(`missing required arg(s) for this round: patternFile=${patternFile} baseBranch=${baseBranch} currentBranch=${currentBranch} intentBrief=${intentBrief} — every class's prompt will be broken`)
+}
 
 const LENS_INSTRUCTIONS = {
   code: 'Read the full contents of the changed **source** files.',
@@ -493,10 +521,14 @@ converged").
    clean — it's an unresolved gap, distinct from "found real issues" (below). Signal
    **"INCOMPLETE — N class(es) unreviewed: `<names>`"** and present the human a choice:
    - Retry only the missing classes (re-invoke the Workflow with `classes` filtered to just those,
-     and the same `priorFindings`, `patternFile`, `baseBranch`, `currentBranch`, and `intentBrief`
-     values used this round — `buildPrompt()` needs all five, not just `classes`/`priorFindings`;
-     omitting any of them renders literal "undefined" into every retried agent's prompt, which can
-     return a spuriously clean result and falsely promote this round to CONVERGED). **This
+     and the same `patternFile`, `baseBranch`, `currentBranch`, and `intentBrief` values used this
+     round — `buildPrompt()` interpolates all four directly into every prompt; omitting any
+     renders literal "undefined" into it, and the missing-arg guard right after the `args`
+     destructuring will log this if it happens). Also pass the same `priorFindings` used this
+     round — a *different* dependency: the outer script's yield/dedup logic reads it (not
+     `buildPrompt()`), so omitting it doesn't break any prompt, but silently resets every
+     retry-recovered finding's dedup history to empty, making them all register as fresh
+     cross-file yield. **This
      retry does not count as an additional round** for the ">1 round has actually run" test
      below — it completes this round's incomplete data rather than starting a fresh sweep. Treat
      the retry's raw findings exactly like a late-arriving Phase A/B response: merge them into
@@ -590,6 +622,8 @@ Return to the calling session (or present to the user if run standalone):
 ## Adversarial Review Summary — <N> round(s)
 
 **Pattern file**: [global | bundled] (~/.claude/copilot-review-patterns.md or references/)
+**Diff range**: origin/<BASE_BRANCH>...<CURRENT_BRANCH> (<N> files changed) — printed by Setup
+Step 3; a CONVERGED verdict is only meaningful alongside the scope it was computed over
 **Pattern classes swept**: <list from PATTERN_CLASSES>
 **Rounds completed**: <N> / <max>
 

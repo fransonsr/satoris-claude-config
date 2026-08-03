@@ -152,13 +152,17 @@ increased reasoning depth on the design decision itself. It receives:
 - Every discovery agent's findings summary
 - An instruction to resolve and read the pattern file itself: prefer
   `~/.claude/copilot-review-patterns.md`; if absent, fall back to the bundled
-  `plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md` snapshot
-  (mirroring `adversarial-review`'s own Setup Step 1). Enumerate class names with
-  `grep "^### [0-9]" <file>`, pick the classes whose names or `**How to find**` sections match
-  this task's characteristics, and read only those sections — the navigator passes the task
-  description and discovery findings, never the pattern text itself; the agent selects and reads
-  its own sections, for the same context-cost reason `adversarial-review` reads its pattern file
-  per-agent rather than per-orchestrator (see that skill's Setup Step 5)
+  `~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md`
+  snapshot — the fully-qualified path, matching `adversarial-review`'s own Setup Step 1 exactly;
+  a bare relative path won't resolve since this agent's cwd isn't guaranteed to be the plugin
+  root. Enumerate class names with `grep "^### [0-9]" <file> | sed 's/^### [0-9]*\. //'` (the
+  `sed` strips the heading marker and number, matching `adversarial-review`'s own Setup Step 2
+  enumeration — without it you get `### 2. Defensive Guards...` instead of the bare name), pick
+  the classes whose names or `**How to find**` sections match this task's characteristics, and
+  read only those sections — the navigator passes the task description and discovery findings,
+  never the pattern text itself; the agent selects and reads its own sections, for the same
+  context-cost reason `adversarial-review` reads its pattern file per-agent rather than
+  per-orchestrator (see that skill's Setup Step 5)
 
 It returns a design recommendation with explicit tradeoffs, plus a "watch out for" list of edge
 cases sourced from the matching pattern classes — not just "what to build" but "what has broken
@@ -166,8 +170,10 @@ in similar code before." The navigator presents this synthesis as the basis for 
 with the user below — it augments, not replaces, the human sign-off this step already requires.
 
 **Example synthesis** (now produced by the design-synthesis agent, presented by the navigator —
-using two of the real classes in `copilot-review-patterns.md`, not the informal "Things That SEEM
-Simple But AREN'T" list above):
+using two of the real `copilot-review-patterns.md` classes below, not this file's own "Things
+that SEEM simple but consistently hide bugs" list above, and not `address-pr-issues`' similarly-
+named but separate "Things That SEEM Simple But AREN'T" list in its Step 2.5 — three different
+lists, easy to conflate):
 ```
 "Verification complete:
 - Legacy: Uses StringUtils.split(line, ",", 4) — limit param handles commas in data columns

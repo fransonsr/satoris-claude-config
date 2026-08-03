@@ -15,9 +15,12 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 - After implementing a feature but before committing
 - This skill predicts what Copilot will flag BEFORE you push
 - **Self-check (NEW)**: run this even if the user never says a trigger phrase, and even if this
-  skill already ran earlier for the current `HEAD` (compare `git rev-parse HEAD` against
-  `.git/pre-pr-audit-last-sha`, written at the end of a completed run per Step 8 below — skip if
-  unchanged; re-run only if new commits landed since). Before invoking `gh pr create` for a change, run
+  skill already ran earlier for the current tree (compare `git rev-parse HEAD^{tree}` — the
+  *content* hash, which survives a commit made right after auditing, unlike the commit SHA
+  itself — against the marker Step 8 below writes at
+  `"$(git rev-parse --git-dir)/pre-pr-audit-last-audit"`; skip only if it matches **and** the
+  recorded outcome is `CLEAN` — re-run on any other outcome, or if the tree has changed).
+  Before invoking `gh pr create` for a change, run
   `/address-pr-issues`' own Step 2.5 checklist against it (Complexity Indicators + Decision
   Rules — don't hand-copy a subset here; the two lists have drifted before and cite-by-name
   avoids that). Run this skill proactively whenever Step 2.5's own **MUST spawn** rule fires (2+
@@ -45,11 +48,16 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 
 ## Step 1: Determine Base Branch
 
-Ask the user which branch to compare against, or auto-detect:
+Ask the user which branch to compare against, or auto-detect — same resolution
+`adversarial-review`'s own Setup Step 3 uses, so both halves of this audit agree on scope:
 
 ```bash
-# Auto-detect upstream branch
-BASE_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | cut -d/ -f2)
+# NOT `@{u}` (the current branch's OWN upstream) — once this branch is pushed with -u, that
+# resolves to the branch itself, making BASE_BRANCH == CURRENT_BRANCH and every diff empty.
+BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null)
+if [ -z "$BASE_BRANCH" ]; then
+  BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's#.*/##')
+fi
 
 # Fallback to common names
 if [ -z "$BASE_BRANCH" ]; then
@@ -62,12 +70,22 @@ if [ -z "$BASE_BRANCH" ]; then
     echo "Which branch should I compare against? (main/master/other)"
   fi
 fi
+echo "BASE_BRANCH=$BASE_BRANCH"
 ```
 
 ## Step 2: Get Changed Files
 
+Diff against `origin/$BASE_BRANCH`, not a local branch that may be behind — otherwise this
+step and `/adversarial-review`'s own Step 4.7 sweep (which always diffs `origin/$BASE_BRANCH`)
+can silently see different change sets:
+
 ```bash
-CHANGED_FILES=$(git diff --name-only $BASE_BRANCH...HEAD)
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
+  echo "🛑 BASE_BRANCH and CURRENT_BRANCH are both '$BASE_BRANCH' — refusing to audit an empty diff. Supply the correct branch above." >&2
+  exit 1
+fi
+CHANGED_FILES=$(git diff --name-only "origin/$BASE_BRANCH...HEAD")
 CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
 CHANGED_TEST_FILES=$(echo "$CHANGED_JAVA_FILES" | grep -E "(^|/)src/test/" || true)
 CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
@@ -103,22 +121,32 @@ fi
 - Record count validation
 ```
 
-## Step 4: Run Parallel Analysis (Workflow) + Adversarial Review (Direct)
+## Step 4: Adversarial Review (Direct), Then Parallel Analysis (Workflow)
 
-Steps 4, 4.5, 4.6, 4.8, and 4.9 run as parallel workflow agents — not sequentially in this
-session. This keeps the implementation session's context lean: only findings return, not the
-full analysis work. **Step 4.7 (Adversarial Pattern Review) is different and runs separately,
-NOT inside this Workflow batch** — it needs its own live, per-round human review-pause (Phase C)
-before applying fixes, and a `Workflow`-spawned agent runs to completion and returns a result; it
-cannot pause mid-execution to show the orchestrating session's user something and wait for a
-real decision. Only the orchestrating session itself can host that, the same way
-`/address-pr-issues`' Step 3.5 invokes `/adversarial-review` directly rather than through a
-spawned sub-agent.
+**Run Step 4.7 (Adversarial Pattern Review) to a terminal outcome FIRST, then run the Workflow
+batch below — never concurrently.** `adversarial-review` documents an explicit invariant its
+per-round agents rely on: "within a round the tree is frozen until Phase D" (its own Setup Step
+4). The Workflow batch's own Step 6 fix patterns mutate that same working tree. If a
+Workflow-batch fix lands while an adversarial-review round is in flight, that round's per-class
+agents no longer see one consistent tree, and the next round's diff surfaces the Step 6 edit as
+unattributed churn that `PRIOR_FINDINGS` never saw — inflating cross-file yield and blocking
+convergence on noise the review didn't cause.
+
+**Step 4.7 (Adversarial Pattern Review)**: invoke `Skill(adversarial-review, ...)` directly — it
+is its own top-level invocation, not an entry inside the Workflow's `parallel()` call below, and
+it needs its own live, per-round human review-pause (Phase C) before applying fixes. A
+`Workflow`-spawned agent runs to completion and returns a result; it cannot pause mid-execution
+to show the orchestrating session's user something and wait for a real decision — only the
+orchestrating session itself can host that, the same way `/address-pr-issues`' Step 3.5 invokes
+`/adversarial-review` directly rather than through a spawned sub-agent. Run it to a terminal
+outcome (CONVERGED, NOT converged + escalated, INCOMPLETE + accepted, or ABANDONED) — see Step
+4.7 below for the full invocation — before starting the Workflow batch.
 
 **Workflow batch** (Pattern Checks, Consistency Checks, Maven Plugin Checks, Spec-Completeness
-Review, Whole-Document Coherence Walk): use the `Workflow` tool (Claude Code's multi-agent
-orchestration primitive) to spawn these agents simultaneously. Pass each agent the git diff
-output, changed file contents, and project patterns from CLAUDE.md:
+Review, Whole-Document Coherence Walk): once adversarial-review is done touching the tree, use
+the `Workflow` tool (Claude Code's multi-agent orchestration primitive) to spawn these agents
+simultaneously. Pass each agent the git diff output, changed file contents, and project patterns
+from CLAUDE.md:
 
 - **Pattern Checks** — checks described in Step 4 details below
 - **Consistency Checks** — checks described in Step 4.5 details below
@@ -130,14 +158,8 @@ Each agent in this batch returns findings as a list:
 ```json
 [{"severity": "CRITICAL|HIGH|MEDIUM|LOW", "file": "path:line", "description": "...", "recommendation": "..."}]
 ```
-Merge all findings by severity, then present them interactively (Step 5).
-
-**Adversarial Pattern Review** (Step 4.7): invoke `Skill(adversarial-review, ...)` directly —
-nothing stops issuing this call in the same turn as the `Workflow` batch above (they don't depend
-on each other's results), but it is its own top-level invocation, not an entry inside the
-Workflow's `parallel()` call. Its own Phase C presents findings and waits for disposition live,
-round by round, as each round completes — this can happen before, during, or after the Workflow
-batch above returns; the two aren't synchronized. See Step 4.7 below for the full invocation.
+Merge all findings by severity, then present them interactively (Step 5), and apply Step 5/6
+fixes for the Workflow-batch's own findings.
 
 The detailed check instructions for each agent follow below.
 
@@ -666,8 +688,9 @@ The `/adversarial-review` skill handles the full protocol:
 - One review agent per pattern class (parallel, dynamic enumeration from the pattern file)
 - Cascade sweep within each class (every callsite, not just changed lines)
 - Synthesizer deduplication keyed on the `file` string (`path:line` or `path:startLine-endLine`) across classes — colliding recommendations are concatenated with "| ALSO:", not reduced to "the more specific one"
-- Per-round review-pause (Step 5 below receives findings from each round)
-- Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/restore)
+- Per-round review-pause happens live inside the skill (its own Phase C) — findings are not
+  returned to Step 5 below, which covers Workflow-batch findings only (see Step 4/5 above)
+- Git-guardrailed fix agents (PROHIBITED: git reset/rebase/commit/stash/checkout -- <file>/restore)
 - Up to 3 rounds, terminating when a round yields zero new cross-file findings (local findings are reported for disposition but do not block convergence)
 - Escalation at the round cap: if cross-file findings are still surfacing after round 3, the skill recommends a targeted deep-dive agent scoped to the recurring theme (or surfaces the theme to you for a judgment call)
 - If a class's review agent never returns a result even after retries, `/adversarial-review` logs
@@ -710,8 +733,8 @@ agents never see each other's findings, which preserves the walk's independence.
 Operator Spec Completeness findings (here) and Spec Operator Walkthrough findings (Step 4.7) is
 expected; the adversarial-review synthesizer deduplicates by the `file` string.
 
-Spawn a review agent with the full content of each changed spec/doc file and these five Pattern
-#9 checks:
+Spawn a review agent with the full content of each changed spec/doc file and these five Operator
+Spec Completeness checks:
 
 ### Check 1: Scope-Broadening Sweep
 
@@ -867,7 +890,9 @@ Wait for user input before proceeding to the next issue.
 
 **For adversarial-review findings (Step 4.7)**: fixes are applied by the `/adversarial-review`
 skill's own fix agents under strict git guardrails (PROHIBITED: git reset, rebase, commit,
-stash, restore; PERMITTED: Edit/Write, read-only bash, git diff/status). The Intent Brief is
+stash, checkout -- <file>, restore; PERMITTED: Edit/Write, read-only bash, git diff/status). The
+disposition itself happens live inside that skill's own Phase C, not here — this section covers
+applying Workflow-batch findings only (Steps 4, 4.5, 4.6, 4.8, 4.9). The Intent Brief is
 forwarded to every fix agent. Do not apply adversarial-review findings manually — return the
 disposition to the skill so it can apply them under the correct guardrails.
 
@@ -963,24 +988,30 @@ Options:
 If user chooses option 1, resolve this repo's own project key first — never assume a specific
 one:
 
+Resolve the project key AND host in the same shell invocation that runs the analysis below —
+splitting resolution and analysis into separate fenced blocks loses the variable, since shell
+state doesn't persist across separate command invocations (this document's own `$WORKSPACE_DIR`
+shorthand note elsewhere warns about exactly this):
+
 ```bash
 if [ -f "sonar-project.properties" ]; then
   SONAR_PROJECT_KEY=$(grep -m1 '^sonar.projectKey=' sonar-project.properties | cut -d= -f2-)
+  SONAR_HOST=$(grep -m1 '^sonar.host.url=' sonar-project.properties | cut -d= -f2-)
 fi
+SONAR_HOST="${SONAR_HOST:-https://sonarqube.churchofjesuschrist.org}"
+SONAR_HOST="${SONAR_HOST%/}"  # normalize: no trailing slash, added explicitly below
 if [ -z "$SONAR_PROJECT_KEY" ]; then
-  echo "No sonar-project.properties found (or no sonar.projectKey line) — what's this repo's SonarQube project key?"
+  echo "No sonar-project.properties found (or no sonar.projectKey line) — what's this repo's SonarQube project key? Wait for the answer and assign it to \$SONAR_PROJECT_KEY before continuing; do not run the analysis below with an empty key."
+  exit 1
 fi
-```
+echo "SonarQube project: $SONAR_PROJECT_KEY (host: $SONAR_HOST)"
 
-Then run the analysis against that key:
-
-```bash
 # Build first (skip tests for speed)
 mvn clean install -DskipTests
 
 # Run SonarQube analysis
 mvn sonar:sonar \
-  -Dsonar.host.url=https://sonarqube.churchofjesuschrist.org/ \
+  -Dsonar.host.url="$SONAR_HOST/" \
   -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
   -Dsonar.token=$SONAR_TOKEN
 
@@ -990,16 +1021,18 @@ sleep 10
 
 # Check quality gate
 QUALITY_GATE=$(curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-  "https://sonarqube.churchofjesuschrist.org/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
+  "$SONAR_HOST/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
   | jq -r '.projectStatus.status')
 
 if [ "$QUALITY_GATE" = "OK" ]; then
   echo "✅ Quality Gate: PASSED"
+elif [ -z "$QUALITY_GATE" ] || [ "$QUALITY_GATE" = "null" ]; then
+  echo "⚠️  Could not read quality gate for key '$SONAR_PROJECT_KEY' at $SONAR_HOST — this is NOT necessarily a gate failure; check the key/host/\$SONAR_TOKEN before reporting FAILED."
 else
   echo "❌ Quality Gate: FAILED"
   # Fetch and display issues
   curl -s -H "Authorization: Bearer $SONAR_TOKEN" \
-    "https://sonarqube.churchofjesuschrist.org/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&inNewCodePeriod=true&impactSeverities=MEDIUM,HIGH,CRITICAL" \
+    "$SONAR_HOST/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&inNewCodePeriod=true&impactSeverities=MEDIUM,HIGH,CRITICAL" \
     | jq -r '.issues[] | "[\(.impacts[0].severity)] \(.component | split(":")[-1]):\(.line // "N/A") - \(.message)"'
 fi
 ```
@@ -1080,10 +1113,26 @@ OR
 4. Push: `git push`
 ```
 
-**Record the audited commit** — `git rev-parse HEAD > .git/pre-pr-audit-last-sha` — so the
-self-check in "When to Use This Skill" can tell a genuinely new change from a re-trigger on a
-`HEAD` this skill already audited (re-invoking a mandatory `/adversarial-review --rounds 3` sweep
-is the most expensive thing either skill does; don't pay that cost twice for the same commit).
+**Record the audited tree and outcome** so the self-check in "When to Use This Skill" can tell a
+genuinely new change from a re-trigger on content this skill already audited (re-invoking a
+mandatory `/adversarial-review --rounds 3` sweep is the most expensive thing either skill does —
+don't pay that cost twice for the same content), and so it never treats an incomplete run as
+equivalent to a clean one:
+
+```bash
+if [ "$ADVERSARIAL_OUTCOME" = "CONVERGED" ] && [ -z "$BLOCKING_ISSUES" ]; then
+  OUTCOME="CLEAN"
+else
+  OUTCOME="NOT_CLEAN"  # NOT converged, INCOMPLETE, ABANDONED, or blocking pattern/Sonar issues
+fi
+printf '%s %s\n' "$(git rev-parse HEAD^{tree})" "$OUTCOME" > "$(git rev-parse --git-dir)/pre-pr-audit-last-audit"
+```
+
+Use `git rev-parse --git-dir` rather than a literal `.git/` path — in a linked worktree, `.git`
+is a regular file (a `gitdir:` pointer), not a directory, and a bare redirect into it fails with
+"Not a directory". Using the tree hash (not the commit SHA) means the marker written here still
+matches after the "Next Steps" commit below, since committing doesn't change the tree's content —
+only further edits would.
 
 ## Important Notes
 
