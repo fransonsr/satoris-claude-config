@@ -253,9 +253,10 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
 **Model selection** (used as the `model` override when the Workflow script below calls `agent()`;
 omit for Sonnet — it's the default):
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
-- **Fable**: not used for per-class review agents — reserved for the Phase D fix-planning gate
-  (see below) and `xp-pair`'s generative design guidance step, both of which need deeper reasoning
-  on a synthesis/planning task rather than a per-class scan
+- **Fable**: not used for per-class review agents — reserved for Phase D's round-level fix-planning
+  pass (runs once per round, see below), its per-finding fix-planning gate, and `xp-pair`'s
+  generative design guidance step, all of which need deeper reasoning on a synthesis/planning task
+  rather than a per-class scan
 - **Sonnet**: all other classes
 
 `CLASSES` is reused verbatim by every round's Workflow call in the Per-Round Loop below, alongside
@@ -582,13 +583,53 @@ resolved.
 
 ### Phase D — Apply Fixes
 
+**Round-level fix-planning pass (run once per round, before any per-finding gate or fix agent)**:
+Per-finding planning (below) only sees one finding's own `cascade_siblings` — the sites its OWN
+Phase A/B reviewer happened to catch while reviewing that one pattern class. It cannot see that a
+DIFFERENT finding (found by a different class) touches the same underlying mechanism, so a fix for
+one can land cleanly while the other's sibling instance of the same mechanism goes untouched. This
+is an observed, recurring failure mode from this batch's own dogfooding, not a hypothetical: a
+persistence fix for two variables missed a third added in the same commit; a base-branch rewrite
+in one file dropped an override-argument branch structure a sibling file's parallel code already
+had. Both are cross-finding interactions a per-finding planner never sees, because each finding is
+planned in isolation from what the *other* approved findings in the same round are touching.
+
+Spawn one top-level `Agent` call (not `Workflow`/`agent()` — same reasoning as the per-finding gate
+below) with `model: 'fable'`, run once per round regardless of how many findings are approved,
+receiving:
+- **Every** finding dispositioned **Fix** this round (not just complex/cascading ones) — the full
+  batch, each with its `file`, `recommendation`, and `cascade_siblings`
+- The Intent Brief
+- `$PATTERNS_FILE`'s path (read its own relevant sections itself, same as the per-finding gate —
+  never embedded directly)
+- An instruction: for each finding, name the general mechanism it touches (e.g. "base-branch
+  resolution", "diff-range computation", "outcome persistence across bash blocks", "the changed-
+  files enumeration pattern") in one phrase, then grep the **entire current diff** — not just this
+  finding's own file — for every other location implementing or depending on that same mechanism.
+  This is deliberately broader than any single finding's own `cascade_siblings`: it is looking for
+  siblings across the WHOLE round's approved-fix set, not within one finding's own file
+- The same read-only **git guardrails** as the per-finding gate below
+
+It returns, per finding, an expanded site list (a superset of that finding's own
+`cascade_siblings`) the fix must cover, plus a round-level note of any mechanism shared by 2+
+findings that Phase C didn't already link together (so a human disposing findings one at a time
+isn't the only line of defense against two findings turning out to be the same underlying issue
+viewed through different pattern classes).
+
+If it returns nothing usable, proceed with Phase D unchanged (per-finding gate and fix agents use
+only what Phase A/B/C already produced), and record in the round summary that the round-level plan
+was skipped.
+
 **Fix planning gate (complex/cascading findings only)**: before spawning the fix-implementation
-agent, check the approved finding against fields it already carries from Phase A/B — no new data
-required: non-empty `cascade_siblings`, OR `blast_radius == 'cross_file'`, OR `severity` is
-`CRITICAL`/`HIGH`. If any is true, spawn a top-level `Agent` call — not a `Workflow`/`agent()`
-stage, since Phase D runs in the orchestrating session, outside the Workflow script block above —
-with `model: 'fable'` for extra reasoning depth on a fix that spans multiple sites. It receives:
-- The finding + its recommendation + `cascade_siblings` + the Intent Brief
+agent, check the approved finding against fields it already carries from Phase A/B, **plus the
+round-level pass above**: non-empty `cascade_siblings`, OR `blast_radius == 'cross_file'`, OR
+`severity` is `CRITICAL`/`HIGH`, OR the round-level pass identified expanded sites for this finding
+beyond its own `cascade_siblings`. If any is true, spawn a top-level `Agent` call — not a
+`Workflow`/`agent()` stage, since Phase D runs in the orchestrating session, outside the Workflow
+script block above — with `model: 'fable'` for extra reasoning depth on a fix that spans multiple
+sites. It receives:
+- The finding + its recommendation + `cascade_siblings` + **the round-level pass's expanded site
+  list for this finding, when produced** + the Intent Brief
 - `$PATTERNS_FILE`'s path and the finding's `pattern_classes` array (plural — see Phase A/B's
   synthesis step), with an instruction to read its own relevant sections itself. Never embed the
   pattern-class text directly in this prompt — from the orchestrating session, that would require
@@ -597,24 +638,26 @@ with `model: 'fable'` for extra reasoning depth on a fix that spans multiple sit
 - The same **git guardrails** as the fix agent below, minus the PERMITTED Edit/Write clause:
   read-only — no Edit/Write at all; Bash only for reading files or grep/find
 
-It returns a structured fix plan (ordered steps, files touched, how each `cascade_sibling` is
-covered). If it returns nothing usable, fall through to the fix agent with the finding and
-`cascade_siblings` alone, and record it in the Summary Output's **Fix Provenance Notes** — not
-Known Limitations, since the finding still gets fixed; this is a confidence/provenance note, not
-an unaddressed item.
+It returns a structured fix plan (ordered steps, files touched, how each `cascade_sibling` **and**
+each round-level expanded site is covered). If it returns nothing usable, fall through to the fix
+agent with the finding, `cascade_siblings`, and the round-level expanded sites alone, and record it
+in the Summary Output's **Fix Provenance Notes** — not Known Limitations, since the finding still
+gets fixed; this is a confidence/provenance note, not an unaddressed item.
 
 This is a native planning step, not an `xp-pair` invocation — `xp-pair`'s own Step 5 commits and
 shuts down its team as part of finishing a session, which would violate the git guardrails below
 (no `git commit` inside a fix agent) and would drag a heavy, interactive team/driver session into
-what's meant to stay an automated per-round fix-apply step. Findings that don't meet the gate
-(simple, local, no siblings) skip planning entirely and go straight to the fix agent below, same
-as before — this keeps the common case cheap.
+what's meant to stay an automated per-round fix-apply step. Findings the round-level pass didn't
+expand and that don't otherwise meet the gate (simple, local, no siblings) skip per-finding
+planning entirely and go straight to the fix agent below, same as before — this keeps the common
+case cheap; only the one round-level pass runs unconditionally.
 
 For each approved finding, apply the fix. The fix agent receives:
 - The approved finding + its recommendation
-- The finding's `cascade_siblings` — the fix is not complete until it's applied at the primary
-  `file` location **and** every sibling location; a fix that only patches the reported instance
-  leaves the cascade sweep's whole purpose unmet
+- The finding's `cascade_siblings` **and the round-level pass's expanded site list for this
+  finding, when produced** — the fix is not complete until it's applied at the primary `file`
+  location **and** every sibling/expanded-site location; a fix that only patches the reported
+  instance leaves the cascade sweep's whole purpose unmet
 - **The fix plan from the gate above, when the finding met it** — the fix agent follows this plan
   rather than re-deriving the multi-site approach from scratch
 - The Intent Brief
