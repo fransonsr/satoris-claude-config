@@ -51,6 +51,25 @@ Agent(model="opus", ...)    # reserve for hard reasoning; omit to inherit
     the raw line as a bearer credential produces a malformed token that fails downstream auth
     (e.g. CAS) with the same generic error a garbage string would, easy to misdiagnose as a real
     outage rather than a parsing mistake
+- **SonarQube**: server URL and auth token are already present in the environment — applies to all
+  `fs-eng` repositories. Don't report "no Sonar token"/"can't authenticate" as a blocker; the
+  credential is there, look for it (e.g. via the `sonarqube-cli`/`sonar-*` skills' normal auth path)
+  rather than assuming it's missing. `SONARQUBE_CLI_TOKEN` lives in GNOME Keyring (`secret-tool
+  lookup service sonarqube-cli username fransonsr`), exported in `~/.bashrc` *above* the
+  interactive-shell guard so non-interactive/agent shells get it too (previously it lived after the
+  guard and silently went missing for spawned-agent shells specifically — fixed 2026-07-29).
+  **Gotcha**: `export VAR=$(secret-tool lookup ...)` only evaluates once, at shell startup — after
+  rotating the token in the keyring, any shell/session already running (including an in-progress
+  Claude Code session) keeps the stale value until it gets a fresh one. If auth fails right after a
+  known-good rotation, suspect a stale shell before suspecting the new token.
+- **`gh` CLI, verifying a just-pushed PR**: `gh pr diff <n>` and plain `gh pr view <n>` can serve
+  stale/cached content immediately after a push — confirmed twice in one session, each time reading
+  as "the agent hasn't actually pushed yet" when it had. Use the forms that hit the API directly
+  instead: `gh pr view <n> --json body --jq .body` for the description; for branch HEAD / file
+  content, `gh api repos/OWNER/REPO/git/ref/heads/<branch> --jq .object.sha` and
+  `gh api "repos/OWNER/REPO/contents/<path>?ref=<branch>" --jq .content | base64 -d`. When a
+  reported push doesn't show up in a diff/view check, re-check with these before concluding the
+  work wasn't done.
 
 **Task Handoff System**:
 - Handoff documents location: `~/.claude/handoff/`
