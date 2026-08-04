@@ -1,5 +1,100 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-08-02/03 - v1.7.6: Fable Design Guidance, Native Fix-Planning, Base-Branch Bug
+
+**Context**: A follow-on to v1.7.5's PR #171 hardening, this batch spans all four satori review
+skills (`address-pr-issues`, `adversarial-review`, `pre-pr-audit`, `xp-pair`), plus two rounds of
+`/satori:pre-pr-audit` dogfooding against the batch's own changes, which is why the set of fixes
+is broader than the original feature. Added: `xp-pair` gained a Fable-model generative design
+guidance step (Step 2) that reads matching `copilot-review-patterns.md` classes and returns a
+design recommendation plus an edge-case watch-list, augmenting its existing 4 discovery agents;
+`adversarial-review` gained a native (not `xp-pair`) Fable fix-planning gate in Phase D for
+approved findings with `cascade_siblings`, `cross_file` blast radius, or CRITICAL/HIGH severity —
+deliberately not invoking `xp-pair`, since its Step 5 commits and shuts down its team, which would
+violate Phase D's no-commit git guardrails; `adversarial-review`'s Setup Step 5 was rewritten so
+`CLASSES` carries lightweight `{name, lensKind, model?}` metadata instead of full per-class prompt
+text, after discovering the original prose-only "capture it in a shell variable" plan doesn't work
+(`Workflow` args must be literal JSON; Bash shell state doesn't persist across tool calls) — each
+spawned agent now reads its own pattern-file section directly. Round 1 of dogfooding against this
+batch (23 findings, 18 cross-file) fixed: a `lensKind` fallback+log in `buildPrompt()`, a missing
+doc-file enumeration command, `Phase E`'s retry instructions listing all required args, explicit
+guardrails on the fix-planning agent, `--base-branch` actually being honored, `xp-pair`'s
+fictional pattern-class names, `address-pr-issues`' `xp-pair`-fix caveat wrongly saying "resume at
+Step 8" (it was skipping mandatory steps and the push), a severity-trend gate that printed an
+unsubstituted template placeholder, an "Already Decided" thread-closeout bucket, and reduced
+`address-pr-issues/README.md` from a 1696-line stale duplicate of `SKILL.md` to a 103-line
+pointer-based overview. Round 2 (18 more cross-file findings, mostly bugs in round 1's own fixes —
+exactly what this repo's dogfooding recipe warns a single round won't catch) fixed the most
+consequential one: `adversarial-review`'s and `pre-pr-audit`'s base-branch auto-detect used
+`@{u}` (the current branch's *own* upstream), which resolves to the branch itself once pushed
+with `-u` — every round `address-pr-issues` runs — silently producing an empty diff and a false
+CONVERGED verdict; replaced with `gh pr view --json baseRefName` + `git symbolic-ref
+refs/remotes/origin/HEAD`, plus a hard-stop guard on an empty/self-matching diff. Also fixed:
+`xp-pair`'s pattern-file fallback path was relative instead of absolute (silently unresolvable
+outside this repo's own checkout); the escalation-override mechanism referenced a shell function
+that doesn't survive a new turn; `triage.round-N.json`'s writer and reader disagreed on round
+numbers across a Step 4.1 loop-back (glob-based lookup now used instead of round arithmetic);
+`pre-pr-audit`'s Step 4.7/Step 6 still described the pre-restructure "findings return to Step 5"
+model after Step 4/5 were rewritten; and `pre-pr-audit/README.md` / `xp-pair/README.md` were
+confirmed stale by the same mechanism and reduced to pointers alongside `address-pr-issues/README.md`.
+Round 3 (43 findings, provisionalYield 26 — growing, not converging) found the architecturally most
+significant bug in the whole batch: every diff-range computation (`adversarial-review`'s Setup
+Step 3/4, `pre-pr-audit`'s Step 2) used a three-dot commit range (`origin/$BASE...$CURRENT` /
+`origin/$BASE...HEAD`), which can NEVER see uncommitted working-tree changes — directly
+contradicting Phase D's own prohibition on `git commit`ing fix-round changes, so every round after
+the first was silently re-diffing pre-fix content. Fixed by switching every diff-range use to a
+two-dot form against a pinned `$MERGE_BASE`. Also fixed: `pre-pr-audit`'s CLEAN/NOT_CLEAN
+idempotency marker read `$ADVERSARIAL_OUTCOME`/`$BLOCKING_ISSUES`, neither of which was ever
+assigned anywhere, making the marker permanently record `NOT_CLEAN`; the base-branch fallback
+checked local `refs/heads/*` instead of `refs/remotes/origin/*`; and roughly two dozen smaller
+cross-file consistency/documentation-drift findings. Round 4 (27 findings, provisionalYield 18)
+found that round 3's "working-tree-aware" fix still couldn't see brand-new, never-`git add`ed
+files (`git diff`/`git stash create` only ever see tracked content) — fixed by unioning in `git
+ls-files --others --exclude-standard` everywhere a changed-file set or the audited-tree hash is
+computed; that round also found `git fetch origin $BASE_BRANCH` (round 3's own suggested remedy
+for a missing ref) does not actually create the remote-tracking ref in a restricted-refspec clone,
+an unchecked `git merge-base` substitution, the exact same shell-state-doesn't-persist-across-
+blocks bug recurring in round 3's own `$ADVERSARIAL_OUTCOME`/`$TESTS_GREEN` capture (fixed by
+persisting to a marker file instead), a non-deterministic dedup key introduced by round 3's own
+fix (reverted), `pattern_checker.py` (the one piece of this batch that's actual Python, not prose)
+still using a three-dot diff, and a Known-Limitations/Fix-Provenance-Notes miscategorization.
+A separate crash-fix (`067df8a`) landed next: `adversarial-review`'s own Phase A/B script could
+crash the whole round when a per-class agent thunk rejected instead of resolving null (observed
+live — a class hit its StructuredOutput retry cap and threw), discarding the `{name, result}`
+wrapper `parallel()` expects and crashing downstream reads on the resulting bare `null`. Round 5
+(24 findings, provisionalYield 15) found that round 4's untracked-file fix hadn't reached
+`pattern_checker.py`'s own per-line diff logic (a brand-new file's checks were still silently
+skipped) and that round 4's own persistence fix for `$ADVERSARIAL_OUTCOME`/`$TESTS_GREEN`
+reintroduced the identical shell-state-doesn't-persist bug one variable over, for `$BASE_BRANCH`
+(added to the same marker in the same commit) — both now fixed — plus a Phase E retry-yield bug
+that recomputed against already-mutated `PRIOR_FINDINGS`, a `missingClasses` slot-identity gap,
+a `lensKind` misclassification, and roughly a dozen smaller error-message/documentation-drift
+findings across all three skill files.
+
+See commits `cab1a0f` (the Fable/fix-planning feature), `29a594c` (round-1 dogfood fixes),
+`c767eea` (round-2), `842ced8` (round-3), the round-4 commit, `067df8a` (the crash-fix), and this
+round's commit (round-5 dogfood fixes) for the full change.
+
+## 2026-08-02 - v1.7.5: Process Hardening from PR #171 Retrospective
+
+**Context**: `fs-eng/cc-plugins-java-stack#171` (a `logging-migration` regex-based completeness
+gate) ran ~10 reactive `address-pr-issues` rounds without ever running `/pre-pr-audit` first,
+surfacing six gaps in this skill's own process logic. Added a reverse cross-reference to
+`/pre-pr-audit` (Workflow Overview) for PRs that skipped it; accounted for repos that auto-review Copilot on
+every push, not just PR open, and required checking for new comments after every push regardless
+of whether an explicit re-request fired (Step 8); paired the numeric re-request-count escalation
+gate with a qualitative severity-trend summary of the last 1-2 rounds, since this PR's count
+crossed the escalation threshold while still surfacing genuinely new Critical/High bugs each
+round — the user correctly overrode the bare-count recommendation multiple times based on trend,
+not count alone; added an explicit "Already Decided" disposition (Step 3) for findings that
+re-flag a design tradeoff already made and documented in an earlier round, mirroring
+`/adversarial-review`'s own "Contradicts design → Override" category; added a "Mechanism-Level
+Diminishing Returns" signal (Step 8), distinct from Pattern Class Recurrence, for when a single
+detection heuristic (not a single bug class) needs 3+ structurally distinct extensions and may
+warrant replacing rather than continuing to patch; and documented delegating fix implementation
+to a background `Agent` call (Step 4.1) as a third named option alongside Direct Implementation
+and xp-pair, validated across ~7 delegated fixes in this PR's later rounds.
+
 ## 2026-07-08 - v1.7.4: Workflow-ified Adversarial Review, INCOMPLETE Outcome
 
 **Context**: `/adversarial-review`'s per-class review agents were spawned via the ad-hoc

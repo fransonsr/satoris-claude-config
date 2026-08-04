@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, asdict
 from typing import List, Optional, Dict
 from pathlib import Path
@@ -33,25 +34,47 @@ class Issue:
 class PatternChecker:
     """Checks code for common quality issues using pattern matching."""
 
-    def __init__(self, changed_files: List[str], base_branch: str, project_patterns: Optional[str] = None):
+    def __init__(self, changed_files: List[str], merge_base: str, project_patterns: Optional[str] = None):
         self.changed_files = changed_files
-        self.base_branch = base_branch
+        self.merge_base = merge_base
         self.project_patterns = project_patterns
         self.issues: List[Issue] = []
         self.issue_counter = 1
+        self.scanned_count = 0
+        self._diff_cache: Dict[str, tuple] = {}
 
     def check_all(self) -> List[Issue]:
         """Run all pattern checks and return found issues."""
+        self.scanned_count = 0
+        skipped_missing = 0
+        unreadable = 0
+        diff_failed = 0
+        self._diff_cache: Dict[str, tuple] = {}  # file -> (content, lines, diff_lines) — one
+        # read/diff per file across this whole run; _check_parallel_derivation_constants reuses it
+        # below instead of re-reading and re-diffing every file a second time.
         for file in self.changed_files:
             if not os.path.exists(file):
+                skipped_missing += 1
                 continue
 
-            with open(file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                lines = content.split('\n')
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    lines = content.split('\n')
+            except (UnicodeDecodeError, OSError) as e:
+                print(f"⚠️  Could not read {file} ({e}) — skipping this file.", file=sys.stderr)
+                unreadable += 1
+                continue
 
-            # Get git diff to focus on changed lines
-            diff_lines = self._get_changed_lines(file)
+            # Get git diff to focus on changed lines. Counted as "scanned" regardless of whether
+            # the diff itself succeeded — the file's content was read and checks did run against
+            # it; `diff_failed` tracks the degraded-diff-info case separately so the two are never
+            # conflated in the summary below.
+            diff_lines, diff_ok = self._get_changed_lines(file, lines)
+            if not diff_ok:
+                diff_failed += 1
+            self.scanned_count += 1
+            self._diff_cache[file] = (content, lines, diff_lines)
 
             # Run universal checks
             self._check_resource_lifecycle(file, content, lines, diff_lines)
@@ -71,18 +94,61 @@ class PatternChecker:
         # Cross-file checks (run after per-file loop)
         self._check_parallel_derivation_constants()
 
+        # Scan scope, unconditionally — so "no issues found" and "nothing was actually scanned"
+        # are never confused with each other (an empty --changed-files, every path missing on
+        # disk, or every file failing to read/diff all reach a clean-looking empty result). Buckets
+        # sum to len(changed_files): scanned + skipped_missing + unreadable == total (diff_failed
+        # is a subset of scanned, not a fourth bucket, since those files were still checked).
+        detail = []
+        if skipped_missing:
+            detail.append(f"{skipped_missing} missing on disk")
+        if unreadable:
+            detail.append(f"{unreadable} unreadable")
+        if diff_failed:
+            detail.append(f"{diff_failed} diff-failed (checked with no line filter — see warnings above)")
+        print(f"Scanned {self.scanned_count}/{len(self.changed_files)} requested file(s)"
+              + (f" ({', '.join(detail)})" if detail else ""),
+              file=sys.stderr)
+
         # Sort by severity
         severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         self.issues.sort(key=lambda x: severity_order.get(x.severity, 999))
 
         return self.issues
 
-    def _get_changed_lines(self, file: str) -> set:
-        """Get line numbers that were changed in this file."""
+    def _get_changed_lines(self, file: str, lines: List[str]) -> tuple:
+        """Get (line numbers changed in this file, whether diff resolution succeeded).
+
+        All lines count as "changed" for an untracked file. `ok=False` on any failure means the
+        caller should treat the returned (empty) set as degraded information, not as "verified no
+        changes" — distinguishing "diff genuinely found nothing" from "diff computation failed".
+        """
+        # A brand-new, never-`git add`ed file has no tracked history at merge_base to diff against
+        # — `git diff` against it succeeds with empty output, which would otherwise read as "zero
+        # changed lines" and make every diff_lines-gated check silently skip the file entirely.
+        # This is the same untracked-file blind spot round 4's file-enumeration fix closed one
+        # layer up; close it here too, or a brand-new file is enumerated but never actually checked.
         try:
-            # Get diff with line numbers
+            is_untracked = subprocess.run(
+                ['git', 'ls-files', '--others', '--exclude-standard', '--', file],
+                capture_output=True, text=True, check=True
+            ).stdout.strip() != ''
+        except (subprocess.CalledProcessError, OSError, UnicodeDecodeError) as e:
+            # A failed tracked/untracked check must not silently default to "tracked" — that would
+            # route a brand-new file into the git-diff branch below, which is blind to it. Degrade
+            # to "treat as untracked" (checks the whole file) instead, the safer of the two guesses.
+            print(f"⚠️  git ls-files --others -- {file} failed ({e}) — treating {file} as untracked "
+                  f"(checking the whole file) rather than guessing it's tracked.", file=sys.stderr)
+            return set(range(1, len(lines) + 1)), False
+        if is_untracked:
+            return set(range(1, len(lines) + 1)), True
+        try:
+            # Two-dot form (no second ref) against the pinned merge-base, NOT a three-dot
+            # `{base}...HEAD` commit range — three-dot diffs commit-to-commit and can never see
+            # uncommitted working-tree changes, the same bug SKILL.md's own diff-range computations
+            # were fixed to avoid (commit 842ced8). merge_base is resolved once by the caller.
             result = subprocess.run(
-                ['git', 'diff', f'{self.base_branch}...HEAD', '-U0', file],
+                ['git', 'diff', self.merge_base, '-U0', '--', file],
                 capture_output=True, text=True, check=True
             )
 
@@ -96,9 +162,18 @@ class PatternChecker:
                         count = int(match.group(2)) if match.group(2) else 1
                         changed_lines.update(range(start, start + count))
 
-            return changed_lines
-        except subprocess.CalledProcessError:
-            return set()
+            return changed_lines, True
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️  git diff {self.merge_base} -U0 -- {file} failed (exit {e.returncode}): "
+                  f"{e.stderr.strip() if e.stderr else '(no stderr)'} — treating {file} as having "
+                  f"no changed lines; every diff_lines-gated check will silently skip it.",
+                  file=sys.stderr)
+            return set(), False
+        except UnicodeDecodeError as e:
+            print(f"⚠️  git diff output for {file} could not be decoded as UTF-8 ({e}) — "
+                  f"treating {file} as having no changed lines; every diff_lines-gated check will "
+                  f"silently skip it.", file=sys.stderr)
+            return set(), False
 
     def _check_resource_lifecycle(self, file: str, content: str, lines: List[str], diff_lines: set):
         """Check for resource leaks (acquire without release)."""
@@ -477,13 +552,10 @@ class PatternChecker:
         """Flag same numeric literal appearing in multiple changed files (parallel derivation smell)."""
         constant_locations: Dict[str, List[tuple]] = {}
 
-        for file in self.changed_files:
-            if not os.path.exists(file):
-                continue
-            with open(file, 'r', encoding='utf-8') as f:
-                lines = f.read().split('\n')
-            diff_lines = self._get_changed_lines(file)
-
+        # Reuse check_all's per-file cache — this check ran a SECOND read+diff of every file
+        # (once here, once in check_all's own loop) until this fix; a file missing/unreadable/
+        # diff-failed was already logged and counted once there, so don't re-derive or re-warn.
+        for file, (_content, lines, diff_lines) in self._diff_cache.items():
             for i, line in enumerate(lines):
                 line_num = i + 1
                 if line_num not in diff_lines:
@@ -710,7 +782,7 @@ class PatternChecker:
 def main():
     parser = argparse.ArgumentParser(description='Pattern-based code quality checker')
     parser.add_argument('--changed-files', required=True, help='Newline-separated list of changed files')
-    parser.add_argument('--base-branch', required=True, help='Base branch to compare against')
+    parser.add_argument('--merge-base', required=True, help='Merge-base commit to diff against (two-dot form — includes uncommitted working-tree changes)')
     parser.add_argument('--project-patterns', help='Project-specific patterns from CLAUDE.md')
     parser.add_argument('--output', default='json', choices=['json', 'text'], help='Output format')
 
@@ -720,7 +792,7 @@ def main():
     changed_files = [f.strip() for f in args.changed_files.split('\n') if f.strip()]
 
     # Run checks
-    checker = PatternChecker(changed_files, args.base_branch, args.project_patterns)
+    checker = PatternChecker(changed_files, args.merge_base, args.project_patterns)
     issues = checker.check_all()
 
     # Output results
@@ -728,7 +800,10 @@ def main():
         print(json.dumps([asdict(issue) for issue in issues], indent=2))
     else:
         if not issues:
-            print("✅ No issues found!")
+            if checker.scanned_count == 0:
+                print(f"⚠️  0 files scanned — nothing was checked (requested {len(changed_files)}).")
+            else:
+                print(f"✅ No issues found in {checker.scanned_count} file(s)!")
         else:
             print(f"Found {len(issues)} issue(s):\n")
             for issue in issues:

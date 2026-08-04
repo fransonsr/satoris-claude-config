@@ -76,13 +76,13 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 3. **Prioritize**: Categorize issues by severity and present questionable ones to user
 3.5. **Adversarial Review (Delegated)**: When the Step 2.5 gate says yes, run `/adversarial-review --rounds 1` against this round's changes before proceeding to fixes
 3.7. **Pre-fix sweep**: For each confirmed issue class, grep the PR's touched files for the same pattern — fix all instances in this round, not just the flagged one
-4. **Plan & Execute**: Create implementation plan and fix issues using TDD / xp-pair for complex changes
+3.8. **Show Decision Summary**: Present process decisions (test approach, adversarial review, implementation mode) to the user before starting work
+4. **Plan & Execute**: Create implementation plan and fix issues using TDD; Direct implementation, xp-pair, or a delegated background Agent depending on complexity and session context (see Step 4.1)
 4.5. **Post-fix sweep**: Re-sweep fixes for cascading issues they may have introduced — add any hits to this round before committing
 5. **Validate**: Run local sonar-scanner to catch new issues before committing
 6. **Resolve Conversations**: Mark fixed GitHub threads as resolved, reconcile every thread's disposition (NEW)
 7. **Commit & Push**: Protected-branch check, then commit and push to PR branch
-8. **Monitor**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting)
-9. **Repeat**: If new significant issues appear, return to step 4.1; if this is the 3rd+ Copilot review, recommend a `/plan` cycle instead of another blind re-request
+8. **Monitor & Repeat**: Classify each fix as directional or polish; actively re-request Copilot review when any fix was directional (NEW — no more passive waiting); if new significant issues appear, return to Step 4.1 — this repeat/escalate logic lives inside Step 8's own decision tree, not a separate step
 
 **IMPORTANT**: This is an **iterative process**. Expect multiple rounds:
 - Fixing code often introduces new SonarQube issues (e.g., extracted methods should be static)
@@ -91,6 +91,10 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 - **Resolve conversations BEFORE pushing** to keep PR clean and show reviewers what's been addressed
 - **Adversarial review**: For complex bugs with edge cases, spawn reviewer agent to challenge completeness BEFORE implementing fixes (reduces rounds from 5+ to 1-2)
 - **Directional vs. polish (NEW)**: not every fix warrants a fresh Copilot review — only fixes that shift what the PR does
+- **Retroactive `/pre-pr-audit` check (NEW)**: If this is round 1 with few or no prior review
+  comments, and Step 2.5's gate below would fire on the underlying changes, note to the user that
+  `/pre-pr-audit` normally runs before opening a PR like this. Reactive fixing proceeds either
+  way — this is a visibility nudge for the *next* similarly complex PR, not a blocker on this one.
 
 ## Key Features (2026-04-24 Update)
 
@@ -164,6 +168,32 @@ PR_NUMBER="${args:-$(gh pr view --json number -q .number)}"
 # (PR_AUTHOR — needed for Step 1.6's silent-thread classification)
 gh pr view $PR_NUMBER --json number,title,headRefName,baseRefName,url,body,author
 PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)
+# BASE_BRANCH — needed by Step 3.5's --base-branch flag when it invokes /adversarial-review
+BASE_BRANCH=$(gh pr view $PR_NUMBER --json baseRefName -q .baseRefName)
+if [ -z "$BASE_BRANCH" ]; then
+  echo "🛑 Could not resolve BASE_BRANCH from gh pr view — check PR_NUMBER/gh auth before continuing." >&2
+  exit 1
+fi
+if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH^{commit}" >/dev/null; then
+  echo "🛑 origin/$BASE_BRANCH does not exist locally — never fetched? Run 'git fetch origin $BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH'." >&2
+  exit 1
+fi
+# MERGE_BASE — needed by Step 3.7's cascade-sweep grep and Step 4.5's post-fix cascade sweep, so
+# both scope to the PR's full diff (tracked changes since the base branch) rather than only
+# unstaged/uncommitted changes since HEAD, which is all a bare `git diff`/`git diff HEAD` sees.
+MB_ERR=$(git merge-base "origin/$BASE_BRANCH" HEAD 2>&1); MB_RC=$?
+if [ "$MB_RC" -eq 1 ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD found no common ancestor (shallow clone? unrelated histories? run 'git fetch --unshallow origin $BASE_BRANCH') — no diff range can be computed." >&2
+  exit 1
+elif [ "$MB_RC" -ne 0 ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD failed (exit $MB_RC): $MB_ERR" >&2
+  exit 1
+fi
+MERGE_BASE="$MB_ERR"
+if [ -z "$MERGE_BASE" ]; then
+  echo "🛑 git merge-base origin/$BASE_BRANCH HEAD returned nothing — no diff range can be computed." >&2
+  exit 1
+fi
 ```
 
 **Clean working tree**: before making any changes, check `git status --porcelain`. If it
@@ -224,10 +254,14 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 - `$WORKSPACE_DIR/fixes.json` - Fix history per round
 - `$WORKSPACE_DIR/checklist.json` - Pre-commit checklist state
 - `$WORKSPACE_DIR/triage.json` - Step 2's persisted triage results (written in Step 2)
+- `$WORKSPACE_DIR/triage.round-N.json` - per-round severity snapshot, the only on-disk record of
+  that round's severities (written in Step 2)
 - `$WORKSPACE_DIR/copilot_review_count.txt` - Re-review counter (written in Step 8)
 - `$WORKSPACE_DIR/last_rerequest_round.txt` - Round number of the last Copilot re-request
   (written in Step 8) — prevents double-incrementing the counter above if Step 8 is re-entered
   for the same round
+- `$WORKSPACE_DIR/escalation_override.txt` - round marker for a user-confirmed numeric /plan
+  escalation override (written in Step 8)
 
 **Shorthand used throughout this doc**: `$WORKSPACE_DIR` itself is not exported by any
 script — `init-pr-state.sh` and the other wrapper scripts set it only inside their own
@@ -242,7 +276,10 @@ Step 1.6, `$PR_AUTHOR`) re-derived too if those have also gone stale:
 they're shorthand for `$WORKSPACE_DIR/threads.json`, `$WORKSPACE_DIR/checklist.json`,
 `$WORKSPACE_DIR/fixes.json`, and `$(cat "$WORKSPACE_DIR/round.txt")` respectively. Set them
 yourself before running a snippet that uses them, e.g.
-`THREADS_FILE="$WORKSPACE_DIR/threads.json"`.
+`THREADS_FILE="$WORKSPACE_DIR/threads.json"`. `$BASE_BRANCH`/`$MERGE_BASE` are the same kind of
+shorthand too, not exported by any script — re-derive with the guarded two-step form Step 1 uses
+(lines 184-196: `gh pr view ... --json baseRefName`, then `git merge-base "origin/$BASE_BRANCH"
+HEAD` with its existence/failure checks), not a bare re-run of just the second command.
 
 **Benefits**:
 - Faster workflow (no redundant API calls)
@@ -442,7 +479,13 @@ change what the PR does?", not "how bad is it":
 **Persist the merged triage results** to `$WORKSPACE_DIR/triage.json` (an array of the per-issue
 JSON objects above, keyed by `issue_id`) before moving on — this is what Step 4.1 reads back to
 compute `DIRECTIONAL_COUNT`, so it survives a context compaction the same way `threads.json`/
-`fixes.json` do.
+`fixes.json` do. Re-derive `$ROUND` per Step 1's shorthand note if this is a new shell/session
+before either write below — a stale `$ROUND` silently mislabels which round's snapshot this is.
+Also copy it to a round-stamped snapshot, `cp "$WORKSPACE_DIR/triage.json"
+"$WORKSPACE_DIR/triage.round-${ROUND}.json"` — `threads.json`'s own `before-round-N` snapshots
+carry thread metadata (`bucket`, `labels`) but never `severity`, so the round-stamped triage files
+are the only on-disk record of this round's severities; Step 8's severity-trend escalation (under
+"Active Copilot Re-Request") reads them back.
 
 Use the merged triage results to drive Step 3 categorization and the Step 2.5 adversarial review
 decision. **`DIRECTIONAL_COUNT`** is the count of `directional`-classified issues actually fixed
@@ -548,11 +591,22 @@ These patterns consistently hide edge cases - always use adversarial review:
 - Legacy code issues (not touched in this PR)
 - Debatable design patterns
 
+**Already Decided** (no fix — a disposition, not a severity tier): the finding restates a design
+tradeoff already made and documented in an earlier round's commit message or code comment (e.g.,
+"accept some over-matching here because under-matching a real case is worse"). Reply citing the
+existing decision and resolve the thread — do not re-litigate it as a fresh MEDIUM/LOW. This
+mirrors `/adversarial-review`'s own "Contradicts design → Override" disposition for its internal
+findings, applied here to a live Copilot comment. If you're not certain the earlier decision
+covers this exact case, tag it `[already decided?]` and present it to the user instead of
+silently closing it (see the template below).
+
 ### Present Questionable Issues to User
 
 For any MEDIUM or LOW severity issues, or issues you're uncertain about. Carry forward any
-`[outdated]` / `[resolved + new activity]` label from Step 1.6's Bucket 3 in the item header,
-right after the severity tag. **Also always present any issue where the triage agent returned
+`[outdated]` / `[resolved + new activity]` label from Step 1.6's Bucket 3, or `[already decided?]`
+when you're not certain an earlier round's decision covers this exact case (see Already Decided
+above), in the item header, right after the severity tag. **Also always present any issue where
+the triage agent returned
 `unverifiable_provenance: true`**, regardless of its severity — a CRITICAL/HIGH finding on
 unverifiable data does not get auto-fixed like a normal CRITICAL/HIGH would; it goes here
 instead, tagged `[unverifiable: stale cache]` / `[unverifiable: last comment unknown]` /
@@ -581,7 +635,14 @@ I found the following issues that need your input:
    - Impact: The flagged line may have already changed since this comment was posted
    - **Decision needed**: Still applicable, or safe to resolve as stale?
 
-5. **[HIGH] Copilot [unverifiable: last comment unknown]**: Severity assessed from a comment
+5. **[MEDIUM] Copilot [already decided?]**: Re-flags a tradeoff that looks like the one decided
+   in Round 2's commit, but the code shape has since changed slightly
+   - File: `MarkerScanner.java:64`
+   - Impact: May be the same accepted tradeoff, or a genuinely new gap in the same area
+   - **Decision needed**: Confirm this is covered by the earlier decision (reply + resolve as
+     Already Decided) or treat as new
+
+6. **[HIGH] Copilot [unverifiable: last comment unknown]**: Severity assessed from a comment
    body whose author field came back null (deleted/suspended account) — classify-threads.sh
    could not confirm this was the thread's actual latest activity
    - File: `PaymentValidator.java:88`
@@ -612,13 +673,16 @@ This step runs on the diff of an already-open PR's fix round — a single sweep 
 cost/coverage trade-off:
 
 ```
-Skill(adversarial-review, args="--rounds 1 --base-branch <base-branch> --intent-brief \"<intent-brief text>\"")
+Skill(adversarial-review, args="--rounds 1 --base-branch <BASE_BRANCH from Step 1> --intent-brief \"<intent-brief text>\"")
 ```
 
-The `/adversarial-review` skill runs one round of parallel per-class agents, returns findings
-for review-pause (Step 3's categorize-and-prioritize loop serves as the disposition point),
-applies approved fixes under git guardrails (PROHIBITED: git reset, rebase, commit, stash,
-restore; PERMITTED: Edit/Write, read-only bash, git diff/status), then returns a summary.
+The `/adversarial-review` skill runs one round of parallel per-class agents and presents its own
+review-pause **live in this conversation**, using its own 4-way Phase C disposition (Fix /
+Contradicts design / Accepted risk / False positive) — not Step 3's severity-matrix template,
+which is a different vocabulary built for Copilot/SonarQube comments (fix now/defer, apply/
+ignore). It then applies approved fixes itself under git guardrails (PROHIBITED: git reset,
+rebase, commit, stash, checkout -- <file>, restore; PERMITTED: Edit/Write, read-only bash, git
+diff/status), and returns a summary.
 
 If a class's review agent never returns a result (a terminal error even after retries), the
 single round comes back INCOMPLETE rather than a clean pass — since round 1 is always the round
@@ -626,8 +690,18 @@ cap here, this fires immediately rather than waiting for a later round. Treat it
 other finding needing a decision: retry that class, accept the gap as a known limitation, or
 abandon the round.
 
-Use the returned findings to drive the implementation step (Step 4/4.1) and the
-commit-and-push step (Step 7).
+**If the round's test suite is red after fix application**, `/adversarial-review` reports
+TEST_FAILURES — its own Phase E checks this FIRST, before any other outcome. Do not treat the
+round as done and do not proceed to Step 4 with a broken suite; report the failures back to the
+user and resolve them before continuing, the same as any other terminal outcome this step must
+handle, not just CONVERGED/NOT-converged/INCOMPLETE.
+
+**Adversarial review's own findings are already fixed by the time it returns — Step 4/4.1 does
+not re-implement them.** What Step 4/4.1 still handles is Step 2's *original* triaged issues (the
+ones whose complexity triggered the Step 2.5 gate in the first place); adversarial-review's
+summary (cascade siblings, known limitations) informs how you approach those, but the two skills
+aren't fixing the same list twice. Step 7 then commits both adversarial-review's already-applied
+fixes and whatever Step 4/4.1 adds this round, together.
 
 ### When to Skip (Rare — the gate decides)
 
@@ -665,9 +739,17 @@ For each confirmed issue class from Step 3:
 
 2. **Run a two-tier grep**:
 
-   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only.
+   **Tier 3a — Diff-scoped grep** (textual repetition): scope to changed lines only, across the
+   PR's full diff (`$MERGE_BASE` from Step 1) — not a bare `git diff --name-only`, which only
+   sees unstaged changes since HEAD and would silently narrow "the PR's changed files" (the claim
+   the Output section below makes) to whatever happens to be uncommitted right now. Re-derive
+   `$MERGE_BASE = git merge-base "origin/$BASE_BRANCH" HEAD` per Step 1's shorthand note if this is
+   a new shell/session; also union in untracked files (`git ls-files --others --exclude-standard`),
+   since `git diff --name-only` alone only sees tracked content and a brand-new file would
+   otherwise never be swept.
    ```bash
-   git diff --name-only | xargs grep -n "<pattern>"
+   [ -n "$MERGE_BASE" ] || { echo "🛑 \$MERGE_BASE is empty — re-derive it before running this sweep." >&2; exit 1; }
+   { git diff --name-only "$MERGE_BASE"; git ls-files --others --exclude-standard; } | sort -u | xargs grep -n "<pattern>"
    ```
 
    **Tier 3b — File-scoped grep** (structural absence): when the issue involves a property
@@ -696,7 +778,8 @@ For each confirmed issue class from Step 3:
 
 For each issue class swept, report one of:
 - **Hits found**: "Found the same pattern in N additional location(s) — fixing all of them eliminates this issue class rather than surfacing it again next round"
-- **Nothing found (textual)**: "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Nothing found (textual)**: only when the enumerated file list was non-empty — "Sweep complete — no other instances of this pattern in the PR's changed files"
+- **Sweep did not run**: when the enumerated file list was empty (e.g. `$MERGE_BASE` failed to resolve) — "Sweep did not run — no changed files enumerated; verify \$MERGE_BASE before trusting this issue class is clean" — never report this as "nothing found"
 - **Gap found (structural)**: "Diff-scoped grep found nothing, but file-scoped check found N sibling(s) also missing this property — adding to fix list"
 
 ### Examples
@@ -705,7 +788,7 @@ For each issue class swept, report one of:
 Issue flagged: fleet_state.py _load_fleet_state catches JSONDecodeError but not OSError
 
 Sweep pattern: single-exception catch missing companion error type
-Tier 3a grep: git diff --name-only | xargs grep -n "except json\."
+Tier 3a grep: git diff --name-only "$MERGE_BASE" | xargs grep -n "except json\."
 
   fleet_state.py:88 — already in fix list (the original finding)
 
@@ -716,7 +799,7 @@ Result: No additional hits — only one catch site in the changed files.
 Issue flagged: fleet_runner.py ignores return code from cmd_set_merged
 
 Sweep pattern: return code from state-mutation command calls not captured or checked
-Tier 3a grep: git diff --name-only | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
+Tier 3a grep: git diff --name-only "$MERGE_BASE" | xargs grep -n "cmd_set_merged\|cmd_advance\|cmd_block\|cmd_unblock"
 
   fleet_runner.py:719 — already in fix list
   fleet_runner.py:831 — NOT in fix list: rc = cmd_advance(...) assigned but never checked
@@ -729,7 +812,7 @@ Adding fleet_runner.py:831 to fix list (same severity: medium).
 Issue flagged: run_step_analyze missing shutil.which("mvn") preflight
 
 Sweep pattern: run_step_* functions that call mvn lack preflight check
-Tier 3a grep: git diff --name-only | xargs grep -n "shutil.which"
+Tier 3a grep: git diff --name-only "$MERGE_BASE" | xargs grep -n "shutil.which"
   → Nothing found in diff
 
 Tier 3b structural check: grep full file for all run_step_* functions
@@ -767,8 +850,8 @@ Before implementing, present your process decisions to the user:
   - Reason: [why this choice]
 - Adversarial review: [Yes | Skipped]
   - Reason: [why this choice]
-- XP Pair: [Yes | No]
-  - Reason: [why this choice]
+- Implementation mode: [Direct | XP Pair | Delegated background Agent]
+  - Reason: [why this choice; if Delegated, note the round count and context pressure driving it]
 
 **If skipping recommended process steps, I need your approval.**
 
@@ -787,6 +870,10 @@ Based on confirmed issues, create a plan using TDD principles:
 - **Simple** (< 20 lines, obvious fix): Handle directly with test-after
 - **Moderate** (20-100 lines, clear design): Handle directly, choose test-first OR test-after based on clarity
 - **Complex** (> 100 lines OR unclear design): Use xp-pair skill
+- **Any complexity, multiple rounds already handled directly in this session**: consider
+  delegating to a background `Agent` instead (see Step 4.1's "For Context-Constrained Multi-Round
+  Sessions") — orthogonal to the complexity ladder above, driven by session context pressure
+  rather than the size of any single fix
 
 **TDD Decision** (per CLAUDE.md):
 - **Test-First**: When design needs thinking through
@@ -915,22 +1002,94 @@ void shouldHandleNullAccumulator() {
 - Multiple valid design approaches need discussion
 - High-risk code requiring design oversight
 
-**Example**:
+**Example** (real invocation syntax, matching Step 3.5's `Skill(adversarial-review, ...)` pattern
+rather than a placeholder):
 ```
 I'll use xp-pair for Issue 1 (significant refactoring with unclear best approach):
 
-[Invoke xp-pair skill with specific task]
-
-Task: Extract and refactor complex validation logic in RecordProcessor
+Skill(xp-pair, args="Task: Extract and refactor complex validation logic in RecordProcessor
 Acceptance Criteria:
-- [ ] Extract validation into separate, testable methods
-- [ ] Maintain existing behavior (all tests pass)
-- [ ] Improve readability and maintainability
-- [ ] No new SonarQube issues introduced
-- [ ] Tests cover happy path + edge cases + errors
+- Extract validation into separate, testable methods
+- Maintain existing behavior (all tests pass)
+- Improve readability and maintainability
+- No new SonarQube issues introduced
+- Tests cover happy path + edge cases + errors")
 ```
 
+**Caveat**: `xp-pair`'s own Step 5 commits (with an ad-hoc message, not this skill's round-tracked
+one) and shuts down its team — but that **only replaces Step 7's `commit-pr-fixes.sh` sub-step**,
+nothing else. Do not "resume at Step 8" — still run, in order: Step 4.5 (Post-Fix Cascade Sweep,
+MANDATORY) and Step 5 (local sonar-scanner) — both routinely produce further edits — then Step 6
+(Resolve Conversations — REQUIRED before pushing), then in Step 7:
+- **Check whether the tree is dirty after Steps 4.5/5/6**, since they commonly add edits on top
+  of xp-pair's commit: `git status --porcelain`.
+  - **If dirty**: `git add` the new edits and run `./scripts/commit-pr-fixes.sh $PR_NUMBER
+    "$DIRECTIONAL_COUNT"` normally (re-derive `$ROUND`/`$FIXES_FILE` per Step 1's shorthand note,
+    and `$DIRECTIONAL_COUNT` per "Derive DIRECTIONAL_COUNT" below Step 4.1 — that note doesn't
+    cover it — if this is a new shell/session) — it creates a proper round-tracked commit on top
+    of xp-pair's and writes `fixes.json` itself. Nothing further needed here.
+  - **If clean** (xp-pair's commit was the whole round): `commit-pr-fixes.sh`'s recovery path
+    can't adopt that commit for you — it only fires when `HEAD`'s subject matches `PR #<n> review
+    feedback (Round <r>)`, which an xp-pair commit won't. Write the round's `fixes.json` entry
+    directly instead, validating inputs and checking the write the same way the script does
+    (`scripts/commit-pr-fixes.sh:22,92-103`) rather than letting a bare `jq` failure pass silently:
+    ```bash
+    [[ "$ROUND" =~ ^[0-9]+$ ]] && [[ "$DIRECTIONAL_COUNT" =~ ^[0-9]+$ ]] || {
+      echo "🛑 ROUND ('$ROUND') or DIRECTIONAL_COUNT ('$DIRECTIONAL_COUNT') is not a plain integer — re-derive ROUND per Step 1's shorthand note and DIRECTIONAL_COUNT per 'Derive DIRECTIONAL_COUNT' below Step 4.1 before writing fixes.json." >&2
+      exit 1
+    }
+    # Strip leading zeros — bash's arithmetic/test operators treat a leading-zero numeral as
+    # octal, so a value like "08" would otherwise crash `-gt`/`(( ))` elsewhere despite passing
+    # the regex above. Mirrors commit-pr-fixes.sh:28.
+    DIRECTIONAL_COUNT=$((10#$DIRECTIONAL_COUNT))
+    # fixes.json may not exist yet on this PR's first round — initialize it rather than letting
+    # the jq write below fail on a missing file with no forward path. Mirrors commit-pr-fixes.sh:40-42.
+    [[ -f "$FIXES_FILE" ]] || echo '{}' > "$FIXES_FILE"
+    if jq --arg r "$ROUND" --arg sha "$(git rev-parse HEAD)" --argjson d "$DIRECTIONAL_COUNT" \
+        '. + {($r): {commit: $sha, files: [], directional_count: $d, timestamp: now|todate}}' \
+        "$FIXES_FILE" > "$FIXES_FILE.tmp"; then
+      mv "$FIXES_FILE.tmp" "$FIXES_FILE"
+    else
+      echo "🛑 xp-pair commit $(git rev-parse --short HEAD) succeeded but the fixes.json write for round $ROUND failed — directional_count NOT persisted. Step 8's directional_count read will hard-stop with '🛑 fixes.json has no entry for round $ROUND' and abort before the re-request decision. Fix and retry before continuing." >&2
+      rm -f "$FIXES_FILE.tmp"
+      exit 1
+    fi
+    ```
+- Still run the Pre-Push Checklist, the Protected-Branch Guard, and
+  `git push -u origin "$CURRENT_BRANCH"` — xp-pair's Step 5 commits but never pushes.
+
+If only some of this round's fixes went through xp-pair, run xp-pair first and let the remaining
+direct fixes land as follow-up commits in the same round before Step 7's push, rather than mixing
+xp-pair's commit with an uncoordinated second one.
+
 **Note**: For simpler issues (obvious bugs, straightforward refactoring), handle directly without xp-pair.
+
+### For Context-Constrained Multi-Round Sessions (Delegate to Background `Agent`)
+
+**When to use**: a PR has already run several rounds directly in this session and continuing to
+implement every fix inline is consuming context faster than the PR is converging — a third named
+option alongside Direct Implementation and xp-pair, not a replacement for either.
+
+Write a self-contained `Agent` prompt per fix (or per cohesive theme/file-set), then run it in
+the background so the orchestrating session's context holds only the result, not the
+implementation work:
+- The exact finding text plus file/line pointers — don't make the agent re-derive what was flagged
+- Which existing test class to extend (never create a new one — same convention as
+  `adversarial-review`'s "do not create new test classes" rule)
+- The exact test/build command to run and the baseline pass count, so the agent can self-verify
+- Explicit constraints: don't commit, don't push, don't touch GitHub (resolve/reply/re-request)
+
+**After the agent reports back**: read the full resulting diff and re-run the test suite
+yourself before committing — an agent's own "done" report is not verification. This mirrors the
+"never trust an agent's own summary without checking the diff" discipline that applies to any
+delegated work, not something specific to this skill.
+
+**If the agent never reports back** (times out, dies on a terminal API error, or returns nothing
+usable): fall back to implementing the fix directly in this session — the same fallback
+`adversarial-review`'s Phase D fix-planning gate uses when its own delegated agent fails, times
+out, or returns nothing usable (three distinct outcomes there too) — and say so explicitly,
+naming which of the three happened, rather than silently treating the round as done with the fix
+unapplied.
 
 ### Mandate Test-First for Critical Bugs
 
@@ -1019,8 +1178,12 @@ For each fix applied this round, ask:
 Same two-tier grep as Step 3.7, but targeted at code **introduced or modified by the fixes**:
 
 ```bash
-# Tier A — what changed since before the fixes (the fixes themselves)
-git diff HEAD -- <changed files>
+# Tier A — what changed since before the fixes (the fixes themselves). Deliberately scoped to
+# HEAD, not $MERGE_BASE — this tier checks THIS ROUND's fix edits only, not the whole PR's diff
+# (that's Step 3.7's job). `git diff HEAD` only sees TRACKED changes, so union in untracked files
+# too — a fix that added a brand-new file (e.g. Step 4.1's "Add Test Coverage" pattern creating a
+# new test class) would otherwise be invisible here.
+{ git diff HEAD -- <changed files>; git ls-files --others --exclude-standard -- <changed files>; }
 
 # Tier B — structural check: if the fix adds a pattern, enumerate all peer sites
 grep -n "<pattern from fix>" <changed file> | grep -v "<already fixed>"
@@ -1094,7 +1257,7 @@ times out or errors, proceed to manual dashboard review (Option B below).
 
 ### Step 5c: Review Results
 
-**Option A: API Access Available** (preferred) — use the same script as Step 2's fetch:
+**Option A: API Access Available** (preferred) — use the same script as Step 1's fetch:
 ```bash
 ./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
@@ -1164,6 +1327,15 @@ For issues you're not fixing, resolve with a reason instead of leaving the threa
 **Resolving threads is MANDATORY** — it signals to reviewers that you've acknowledged and
 addressed each issue, whether by fixing it or explaining why not.
 
+### Document Already-Decided Dispositions
+
+For Step 3's **Already Decided** findings (a finding that restates a design tradeoff already made
+in an earlier round), resolve citing that earlier decision rather than leaving the thread open:
+
+```bash
+./scripts/resolve-thread.sh $PR_NUMBER "$THREAD_ID" "Already decided: [cite the round/commit that made this call] — not re-litigating."
+```
+
 ### Look Up a Thread's IDs from Cache
 
 `THREADS_FILE` is a plain JSON cache — query it with `jq` for a specific thread's IDs, then hand
@@ -1225,6 +1397,12 @@ status table:
 - `resolved-silent` — handled in Step 1.6's Bucket 2 (Silent)
 - `replied-and-resolved` — fixed or explained in Step 4.1/6
 - `won't-fix-resolved` — documented won't-fix + resolved above
+- `already-decided-resolved` — Step 3's **Already Decided** disposition; replied citing the
+  earlier round's commit/comment and resolved above, with no code change this round. Do not fold
+  into `replied-and-resolved` — that row implies this round's work addressed it, whereas an
+  Already-Decided thread was closed by pointing at *prior* work. If the user resolved an
+  `[already decided?]`-tagged item as genuinely new instead, classify it by its actual outcome
+  (`replied-and-resolved` / `skipped`), not this bucket
 - `skipped` — user chose to skip during Step 3.8 approval
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
 - `kept-unverifiable` — Step 1.6's Bucket 3 with a degraded-data label
@@ -1247,8 +1425,8 @@ explicit acknowledgment or a posted reply. The principle: a thread the user has 
 to leave open is fine; a thread that fell off the workflow without anyone noticing is not.
 
 Only run the full table when there's more than a trivial number of threads — for a single-digit
-round, a one-line summary (`Handled: N already-resolved, M silent, P replied, K won't-fix, all
-threads accounted for.`) is enough.
+round, a one-line summary (`Handled: N already-resolved, M silent, P replied, K won't-fix, Q
+already-decided, all threads accounted for.`) is enough.
 
 ## Step 7: Pre-Push Checklist & Commit
 
@@ -1346,6 +1524,26 @@ git push -u origin "$CURRENT_BRANCH"
 
 ### Active Copilot Re-Request (NEW — replaces passive waiting)
 
+**Some repos auto-review on every push, not just PR open.** The counter below only increments on
+a *confirmed explicit* re-request — it does not know whether this repo also triggers a fresh
+Copilot review automatically after every push. One tell: new Copilot comments show up in "Check
+for New Copilot Comments" below on a round where this counter was **not** incremented. But rule
+out the other explanations for that same tell before concluding auto-review is the cause — the
+counter also doesn't increment when `DIRECTIONAL_COUNT == 0` (this skill deliberately skipped the
+re-request), when the `gh pr edit` call failed (the `else` branch below intentionally leaves it
+unchanged), or when `gh pr edit` succeeded but the `gh api` reviewer-list readback came back
+unconfirmed (the "gh pr edit reported success but copilot isn't in the reviewer list" branch below
+— this legitimately fires whenever Copilot already delivered its review before the readback ran,
+since GitHub clears `requested_reviewers` on submission, not just on a genuine mutation failure) —
+and comments from a *previous* round's re-request can land late, during this round's
+wait. Only if none of those apply — no skip, no failed `gh` call, no unconfirmed readback, and the previous round's
+re-request was already answered before this round's comments appeared — say so once: "this repo
+appears to auto-review Copilot on every push; the count below reflects explicit re-requests only,
+so the true review-cycle count **may be** higher." That changes how the numeric gate just below
+should be read: such a repo can reach real review #3+ before the explicit counter does. Either
+way, run "Check for New Copilot Comments" after every push regardless of whether this round sent
+an explicit re-request — don't gate it behind the re-request branch.
+
 Re-derive `$ROUND` and `$FIXES_FILE` if this is a new shell/session (see the shorthand note in
 Step 1 — they don't persist from an earlier command invocation any more than `$CURRENT_BRANCH`
 does below): `ROUND=$(cat "$WORKSPACE_DIR/round.txt")`,
@@ -1353,7 +1551,20 @@ does below): `ROUND=$(cat "$WORKSPACE_DIR/round.txt")`,
 for the round just committed (persisted by `commit-pr-fixes.sh` in Step 7) rather than trusting
 conversation memory — this survives a context compaction or a resumed session:
 ```bash
-DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0' "$FIXES_FILE")
+# Distinguish "this round was never recorded" from "it recorded zero" — `// 0` collapses both to
+# the same value, which would make a missing entry (a commit-pr-fixes.sh failure, a wrong $ROUND,
+# a $WORKSPACE_DIR re-derived to the wrong PR, /tmp cleanup) print the same false affirmative
+# "No directional fixes this round" message that a genuinely confirmed-zero round gets. Check the
+# FILE first — a missing $FIXES_FILE makes jq print nothing to stdout (error goes to stderr, exit
+# 2), which matches neither "absent" nor "null" below and would otherwise slip through as DC="".
+[[ -f "$FIXES_FILE" ]] || { echo "🛑 $FIXES_FILE does not exist — wrong \$WORKSPACE_DIR/\$PR_NUMBER, a /tmp cleanup, or Step 7's commit never ran; this is NOT confirmed-zero." >&2; exit 1; }
+DC=$(jq -r --arg round "$ROUND" '.[$round].directional_count // "absent"' "$FIXES_FILE") || { echo "🛑 jq failed reading $FIXES_FILE (corrupt JSON?)." >&2; exit 1; }
+if [ "$DC" = "absent" ] || [ "$DC" = "null" ] || [ -z "$DC" ]; then
+  echo "🛑 fixes.json has no entry for round $ROUND — directional_count was never persisted; this is NOT confirmed-zero. Fix the Step 7 commit/write before deciding on a re-request." >&2
+  exit 1
+fi
+[[ "$DC" =~ ^[0-9]+$ ]] || { echo "🛑 fixes.json's directional_count for round $ROUND ('$DC') is not a plain integer." >&2; exit 1; }
+DIRECTIONAL_COUNT="$DC"
 ```
 
 - **If `DIRECTIONAL_COUNT >= 1`**: at least one fix shifted what the PR does — but check the
@@ -1363,32 +1574,49 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
   action it gates, not several sections later where it's easy to skip in practice. Three
   outcomes, checked as one if/elif/else chain (not as separate steps — the ordering matters):
   ```bash
+  # A missing/empty marker file reads as "" from `cat ... 2>/dev/null` — indistinguishable from
+  # an empty $ROUND on the read side below. Validate $ROUND first so a stale/unset value can never
+  # false-match a missing marker and silently claim a re-request or override that never happened.
+  [[ "$ROUND" =~ ^[0-9]+$ ]] || { echo "🛑 ROUND ('$ROUND') is not a plain integer — re-derive it (see Step 1's shorthand note) before running this block." >&2; exit 1; }
+
   COUNT_FILE="$WORKSPACE_DIR/copilot_review_count.txt"
   LAST_REREQUEST_ROUND_FILE="$WORKSPACE_DIR/last_rerequest_round.txt"
+  OVERRIDE_FILE="$WORKSPACE_DIR/escalation_override.txt"
   # Initialize to 1 on first use — the PR's automatic review on open counts as review #1
   [[ -f "$COUNT_FILE" ]] || echo 1 > "$COUNT_FILE"
+  # Validate the same way $ROUND was validated above — a non-integer value here (e.g. from manual
+  # editing or a prior partial write) makes `[[ "abc" -ge 2 ]]` silently evaluate false (bash reads
+  # it as 0), disarming the escalation gate below, and `$(( abc + 1 ))` on the increment path
+  # would reset the counter to 1 instead of erroring.
+  [[ "$(cat "$COUNT_FILE")" =~ ^[0-9]+$ ]] || { echo "🛑 $COUNT_FILE ('$(cat "$COUNT_FILE")') is not a plain integer — fix it by hand before continuing." >&2; exit 1; }
 
-  if [[ "$(cat "$LAST_REREQUEST_ROUND_FILE" 2>/dev/null)" == "$ROUND" ]]; then
-    # Step 8 is being re-entered for a round that already re-requested successfully (e.g.
-    # after a context compaction or a resumed session) — re-requesting again would
-    # double-count a single round's request.
-    echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
-  elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
-    # This re-request would be review #3 or beyond — stop. Follow "Numeric /plan Escalation"
-    # under Convergence Criterion below: draft an actual /plan prompt naming this PR's
-    # recurring themes and wait for the user, instead of blindly re-requesting again.
-    echo "🛑 This would be Copilot review #3+ — escalating to /plan instead of re-requesting."
-  else
-    # Capture gh's own error output rather than assuming why it failed. Use exact spelling
-    # @copilot; no REST fallback.
+  # Shared by the normal re-request (else, below) and an escalation override (elif, below) so
+  # the two paths can't drift into different counter-advance behavior.
+  do_rerequest() {
     if GH_ERR=$(gh pr edit $PR_NUMBER --add-reviewer @copilot 2>&1); then
-      # Only advance the counter and the round marker on a CONFIRMED successful re-request —
-      # advancing them on failure would record a re-request that never happened, which both
-      # blocks a legitimate retry this round (the check above would then falsely think this
-      # round is done) and inflates the /plan-escalation count past actual review activity.
-      echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
-      echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
-      echo "✅ Re-requested Copilot review for round $ROUND (review #$(cat "$COUNT_FILE"))."
+      # `gh pr edit`'s exit code alone isn't proof the mutation applied — it's documented in this
+      # environment as able to report success while silently not applying an edit (the --body
+      # case on Projects-classic repos). Read the reviewer list back before trusting "confirmed" —
+      # via `gh api`, not `gh pr view`, which this same environment has shown to serve stale/cached
+      # content immediately after a mutation. Match case-insensitively against the exact login
+      # "copilot" — not a prefix — the actual login is "Copilot" (capital C) per GitHub's REST
+      # payload; `ascii_downcase` alone handles that. A prefix match would also match any reviewer
+      # whose login happens to start with "copilot" (a bot named "copilot-review-bot", say) as a
+      # false confirmation. This file already uses exact matching for the same actor elsewhere
+      # ("copilot-pull-request-reviewer" at the NEW_THREADS filter below) — mirror that convention.
+      COPILOT_REQUESTED=$(gh api "repos/{owner}/{repo}/pulls/$PR_NUMBER" --jq '[.requested_reviewers[].login // ""] | map(ascii_downcase) | any(. == "copilot")' 2>/dev/null || echo "unknown")
+      if [ "$COPILOT_REQUESTED" = "true" ]; then
+        # Only advance the counter and the round marker on a CONFIRMED successful re-request —
+        # advancing them on failure would record a re-request that never happened, which both
+        # blocks a legitimate retry this round (the check above would then falsely think this
+        # round is done) and inflates the /plan-escalation count past actual review activity.
+        echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
+        echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
+        echo "✅ Re-requested Copilot review for round $ROUND (review #$(cat "$COUNT_FILE"))."
+      else
+        echo "⚠️  gh pr edit reported success but copilot isn't in the reviewer list afterward (or the readback failed) — treating as unconfirmed, not advancing the counter/marker."
+        echo "✅ Re-request submitted (not verified) for round $ROUND."
+      fi
     else
       echo "⚠️  Copilot re-review couldn't be triggered via CLI (gh reported: $GH_ERR)."
       echo "    If this is 422/user-not-found, use the 'Re-request review' button next to"
@@ -1398,6 +1626,73 @@ DIRECTIONAL_COUNT=$(jq -r --arg round "$ROUND" '.[$round].directional_count // 0
       echo "    Neither the counter nor the round marker advanced — a retry this round is"
       echo "    still permitted once the underlying problem is fixed."
     fi
+  }
+
+  if [[ -f "$LAST_REREQUEST_ROUND_FILE" ]] && [[ "$(cat "$LAST_REREQUEST_ROUND_FILE")" == "$ROUND" ]]; then
+    # Step 8 is being re-entered for a round that already re-requested successfully (e.g.
+    # after a context compaction or a resumed session) — re-requesting again would
+    # double-count a single round's request.
+    echo "ℹ️  Already re-requested Copilot review for round $ROUND. Not re-requesting again."
+  elif [[ "$(cat "$COUNT_FILE")" -ge 2 ]]; then
+    # This re-request would be review #3 or beyond. Before recommending escalation, pair the
+    # raw count with a one-line severity trend of the last 1-2 rounds with an actual snapshot —
+    # a high count with a DECLINING trend (Critical/High → Medium → Low → doc-only) supports
+    # escalating; a high count where recent rounds are still surfacing genuinely new
+    # Critical/High bugs does NOT, and the user needs to see that to make an informed override
+    # (see "Numeric /plan Escalation" under Convergence Criterion below). Derive the trend from
+    # disk, not conversation memory: Step 2 snapshots each round's severities to
+    # $WORKSPACE_DIR/triage.round-N.json — the ${THREADS_FILE}.before-round-N snapshots do NOT
+    # carry severity (only bucket/labels), so triage.round-*.json is the actual source. Glob for
+    # the two most recent EXISTING snapshots rather than computing $ROUND/$((ROUND-1)) directly —
+    # a loop-back to Step 4.1 on new findings skips Step 2 (and therefore this write) for that
+    # pass, so the current $ROUND does not always have its own snapshot.
+    PENDING_REVIEW_NUM=$(( $(cat "$COUNT_FILE") + 1 ))
+    TREND=""
+    SNAPSHOT_COUNT=0
+    for f in $(ls "$WORKSPACE_DIR"/triage.round-*.json 2>/dev/null | sort -V | tail -2); do
+      R=$(basename "$f" | sed -E 's/triage\.round-([0-9]+)\.json/\1/')
+      if SEV=$(jq -r '[.[].severity] | group_by(.) | map("\(.[0]):\(length)") | join(", ")' "$f" 2>/dev/null); then
+        TREND="${TREND}round ${R}: ${SEV:-none}; "
+      else
+        TREND="${TREND}round ${R}: unreadable (jq failed on $f); "
+      fi
+      SNAPSHOT_COUNT=$((SNAPSHOT_COUNT + 1))
+    done
+    echo "Copilot review #${PENDING_REVIEW_NUM} pending (counter=$(cat "$COUNT_FILE"))."
+    if [[ "$SNAPSHOT_COUNT" -gt 0 ]]; then
+      echo "   Severity trend, oldest to newest (${SNAPSHOT_COUNT} most recent snapshot(s)): ${TREND}"
+    else
+      echo "   No triage.round-*.json snapshots found in $WORKSPACE_DIR — either Step 2 never"
+      echo "   persisted one (a loop-back to Step 4.1 on new findings skips Step 2 entirely), or"
+      echo "   \$WORKSPACE_DIR/\$PR_NUMBER is wrong, or the state dir was cleaned — verify the path"
+      echo "   before reading this as 'no severity history'."
+    fi
+    if [[ -f "$OVERRIDE_FILE" ]] && [[ "$(cat "$OVERRIDE_FILE")" == "$ROUND" ]]; then
+      echo "▶️  Already overridden for round $ROUND — proceeding with review #${PENDING_REVIEW_NUM} instead of escalating."
+      do_rerequest
+    elif [[ "$SNAPSHOT_COUNT" -eq 0 ]]; then
+      echo "🛑 Escalating to /plan instead of re-requesting — no severity trend is available (see above), so override only if you have other evidence real Critical/High findings are still recurring."
+      echo "   Present both to the user now and wait for their decision:"
+      echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
+      echo "     - Override: record it, then re-run this entire Step 8 block from the top —"
+      echo "       do NOT try to call do_rerequest directly; it's a shell function scoped to"
+      echo "       this one invocation and won't exist in a later turn/shell:"
+      echo "       echo \"$ROUND\" > \"$OVERRIDE_FILE\""
+      echo "       Re-running this block will then take the 'Already overridden' branch above,"
+      echo "       which calls do_rerequest for you with the same counter-advance-on-success rule."
+    else
+      echo "🛑 Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
+      echo "   Present both to the user now and wait for their decision:"
+      echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
+      echo "     - Override: record it, then re-run this entire Step 8 block from the top —"
+      echo "       do NOT try to call do_rerequest directly; it's a shell function scoped to"
+      echo "       this one invocation and won't exist in a later turn/shell:"
+      echo "       echo \"$ROUND\" > \"$OVERRIDE_FILE\""
+      echo "       Re-running this block will then take the 'Already overridden' branch above,"
+      echo "       which calls do_rerequest for you with the same counter-advance-on-success rule."
+    fi
+  else
+    do_rerequest
   fi
   ```
 
@@ -1494,6 +1789,30 @@ a sweep scoped to one known theme, not a broad re-run of all review classes.
 after you already fixed `git fetch` in Round 1. Widen from PR-changed-files to full file.
 Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class is closed.
 
+### Mechanism-Level Diminishing Returns
+
+This is a different signal from Pattern Class Recurrence above — that section covers the same
+*bug shape* recurring at a new callsite. This one covers a single detection/heuristic
+**mechanism** that keeps needing new, structurally different extensions, each one closing a
+different *kind* of gap rather than a new instance of the same gap.
+
+**How to recognize it**: a regex, string-matching, or other non-parser heuristic your PR relies
+on (e.g., a hand-rolled scanner for a code pattern) has needed 3+ structurally distinct
+extensions within this PR — not "the same missing guard at a new file," but "a new *kind* of
+input shape the heuristic didn't anticipate" (e.g., bare identifier → dotted reference → inline
+call → cross-file declaration → symlinked path → negative count). Each round's fix is correct in
+isolation, yet the underlying grammar the mechanism is trying to express is unbounded, so new
+shapes keep surfacing.
+
+**Response**: don't just keep extending it. Ask whether the codebase already has, or should
+build, a more robust replacement — a real parser/AST tool, or an existing library already used
+elsewhere in the repo — instead of continuing to patch the current heuristic round after round.
+Surface this explicitly to the user rather than silently taking a 9th pass at the same scanner;
+it's a design conversation, not another fix to implement. This mirrors
+`/adversarial-review`'s own Phase E escalation guidance about possible underlying causes at its
+round cap — see that skill's Phase E for the same signal viewed from its internal round-cap
+angle.
+
 ### Convergence Criterion
 
 Convergence is measured by cross-file yield, not zero findings. A round's yield is the count
@@ -1523,15 +1842,30 @@ not a round cap.
 In addition to the qualitative signs above, Step 8's re-request gate (see "Active Copilot
 Re-Request") checks `$WORKSPACE_DIR/copilot_review_count.txt` inline, at the point of the
 re-request decision itself, rather than deferring the check here: `-ge 2` means the pending
-re-request would be review #3 or beyond, and Step 8 stops before sending it. When that happens,
-recommend a `/plan` cycle instead: draft the actual `/plan` prompt — not a placeholder — naming
-this PR's recurring themes (e.g. "error handling across rounds," "repeated null-check gaps in
-the export module"), with thread IDs and affected scope where available. Present it to the user
-and wait for their response before continuing. This turns "just keep fixing what Copilot flags"
-into a deliberate checkpoint once a PR has clearly outgrown reactive rounds. A recurring theme
-across rounds is exactly what the Convergence Criterion's cross-file yield measures — this
-escalation is the same move as `/adversarial-review`'s round-cap escalation, applied to live
-Copilot rounds instead of its internal review rounds.
+re-request would be review #3 or beyond, and Step 8 stops before sending it. The count alone
+isn't the whole signal, though — Step 8 pairs it with a one-line severity trend read from
+`$WORKSPACE_DIR/triage.round-*.json` (persisted per round by Step 2) before recommending
+anything, since a high count with new Critical/High findings still surfacing supports overriding
+the escalation, not accepting it. Also account for repos that auto-review Copilot on every
+push (see Step 8's note above the re-request gate) — the explicit-re-request counter can
+understate the true review-cycle count there, so the gate can fire "late" relative to the real
+number of reviews.
+
+When escalation stands (no override, or the user declines one): recommend a `/plan` cycle
+instead: draft the actual `/plan` prompt — not a placeholder — naming this PR's recurring themes
+(e.g. "error handling across rounds," "repeated null-check gaps in the export module"), with
+thread IDs and affected scope where available. Present it to the user and wait for their response
+before continuing. This turns "just keep fixing what Copilot flags" into a deliberate checkpoint
+once a PR has clearly outgrown reactive rounds. A recurring theme across rounds is exactly what
+the Convergence Criterion's cross-file yield measures — this escalation is the same move as
+`/adversarial-review`'s round-cap escalation, applied to live Copilot rounds instead of its
+internal review rounds.
+
+When the user overrides instead: record the round in `$WORKSPACE_DIR/escalation_override.txt`,
+then re-run Step 8's re-request block from the top (not by calling `do_rerequest` directly — it's
+a shell function scoped to one invocation and won't exist in a later turn). The re-run takes the
+"already overridden" branch and re-requests through the same shared `do_rerequest` logic a normal
+round uses, so the counter and `last_rerequest_round.txt` stay consistent either way.
 
 ## SonarQube Issue Resolution
 
@@ -1571,8 +1905,11 @@ starting points:
 # Full fix history across all rounds
 cat "$FIXES_FILE"
 
-# Rounds + threads resolved + files changed, one line per round
-jq -r 'to_entries[] | "\(.key): \(.value.threads_resolved | length) threads, \(.value.files_changed | length) files"' "$FIXES_FILE"
+# Rounds + files changed + directional-fix count + commit, one line per round — matches the
+# actual schema commit-pr-fixes.sh writes ({commit, files, directional_count, timestamp}); there
+# is no threads_resolved/files_changed field on this object (threads_resolved lives on
+# checklist.json as a boolean, not a per-round list — see State Files Created above)
+jq -r 'to_entries[] | "\(.key): \(.value.files | length) files, directional=\(.value.directional_count), \(.value.commit[0:8])"' "$FIXES_FILE"
 ```
 
 **Cleanup after merge**: `rm -rf "/tmp/pr-${PR_NUMBER}"`, or archive it first with

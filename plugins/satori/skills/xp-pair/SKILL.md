@@ -1,7 +1,7 @@
 ---
 name: xp-pair
 description: XP pair programming with navigator (design oversight) and driver (implementation). Use for complex features requiring design oversight, TDD coaching, or high-quality code with continuous review.
-argument-hint: [task-description]
+argument-hint: [task-description | "Task: ... Acceptance Criteria: ..."]
 ---
 
 # XP Pair Programming
@@ -9,6 +9,23 @@ argument-hint: [task-description]
 Creates a two-person XP pairing team:
 - **Navigator** (you): Design oversight, architectural decisions, code review, TDD enforcement
 - **Driver** (subagent): Implementation, coding, following TDD discipline
+
+## Inputs
+
+`args` is either a bare task description, or a structured payload of the form:
+```
+Task: <one-line summary of what to build>
+Acceptance Criteria:
+- <criterion>
+- <criterion>
+...
+```
+When the `Acceptance Criteria:` block is present, its first line's `Task:` text becomes the
+`TaskCreate` subject in Step 1 below, and the criteria become that task's description checklist
+verbatim — skip re-deriving them. When `args` is only a bare description (no `Acceptance
+Criteria:` block), the navigator derives the acceptance criteria itself in Step 1, same as before
+this structured form existed. `address-pr-issues`' Step 4.1 is the caller that sends the
+structured form, via `Skill(xp-pair, args="Task: ...\nAcceptance Criteria:\n- ...")`.
 
 ## When to Use
 
@@ -120,17 +137,63 @@ Spawn these agents simultaneously, each receiving the task description and relev
 - **Codebase patterns agent**: What similar patterns exist in the current codebase that the implementation should follow?
 - **Handoff/docs agent**: What do handoff documents, READMEs, and inline comments say about constraints or decisions?
 
-Each agent returns a brief findings summary. Synthesize into the architecture discussion with the user.
+Each agent returns a brief findings summary.
 
 **Why this matters**: Assumptions discovered to be wrong during implementation require rework and wasted TDD cycles. Five minutes of parallel verification saves thirty minutes of pivot.
 
-**Example synthesis:**
+**Generative Design Guidance (Fable)**
+
+The discovery agents above only gather facts — nothing yet turns those facts into an actual
+design recommendation; historically the navigator did that synthesis directly, at whatever model
+the session happens to be running. Once the discovery agents return and the Workflow call has
+returned to the navigator, spawn this design-synthesis agent as a **separate top-level `Agent`
+call** — not a second `phase()` inside the same `Workflow` script the four discovery agents ran
+in — with `model: 'fable'` for increased reasoning depth on the design decision itself (mirroring
+`adversarial-review`'s Phase D fix-planning gate, which makes the same "top-level `Agent` call,
+not a `Workflow`/`agent()` stage" distinction explicit for the same reason). It receives:
+- The task description
+- Every discovery agent's findings summary
+- An instruction to resolve and read the pattern file itself: prefer
+  `~/.claude/copilot-review-patterns.md`; if absent, fall back to the bundled
+  `~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md`
+  snapshot — the fully-qualified path, matching `adversarial-review`'s own Setup Step 1 exactly;
+  a bare relative path won't resolve since this agent's cwd isn't guaranteed to be the plugin
+  root. **If neither path resolves, report that explicitly in the returned synthesis** (e.g. "no
+  pattern classes available — design recommendation given without a watch-out-for list") rather
+  than silently proceeding as if the edge-case list were simply empty. Enumerate class names with `grep "^### [0-9]" <file> | sed 's/^### [0-9]*\. //'` (the
+  `sed` strips the heading marker and number, matching `adversarial-review`'s own Setup Step 2
+  enumeration — without it you get `### 2. Defensive Guards...` instead of the bare name), pick
+  the classes whose names or `**How to find**` sections match this task's characteristics, and
+  read only those sections — the navigator passes the task description and discovery findings,
+  never the pattern text itself; the agent selects and reads its own sections, for the same
+  context-cost reason `adversarial-review` reads its pattern file per-agent rather than
+  per-orchestrator (see that skill's Setup Step 5)
+
+It returns a design recommendation with explicit tradeoffs, plus a "watch out for" list of edge
+cases sourced from the matching pattern classes — not just "what to build" but "what has broken
+in similar code before." The navigator presents this synthesis as the basis for the discussion
+with the user below — it augments, not replaces, the human sign-off this step already requires.
+
+**If this agent fails, times out, or returns nothing usable**: fall back to the navigator
+synthesizing the discovery agents' findings directly — the pre-existing behavior before this
+step existed — and say so explicitly to the user rather than silently proceeding with an empty
+synthesis or blocking on a single agent call.
+
+**Example synthesis** (now produced by the design-synthesis agent, presented by the navigator —
+using two of the real `copilot-review-patterns.md` classes below, not this file's own "Things
+that SEEM simple but consistently hide bugs" list above, and not `address-pr-issues`' similarly-
+named but separate "Things That SEEM Simple But AREN'T" list in its Step 2.5 — three different
+lists, easy to conflate):
 ```
 "Verification complete:
 - Legacy: Uses StringUtils.split(line, ",", 4) — limit param handles commas in data columns
 - Data format: S3 key pattern is {prefix}/{yyyy}/{MM}/{dd}/{recordId}.json (confirmed from sample)
 - Codebase: CollectionMetadataReader uses DataStorage abstraction — PartitionMetadataReader should match
 - Docs: Handoff says 'cross-account S3 access requires DataStorage, not S3Client directly'
+- Watch out for (Defensive Guards (null / type / encoding) pattern class): delimiters appearing
+  inside data columns, trailing empty fields, and lines with fewer columns than expected —
+  also (Semantic Correctness / Logical Completeness): confirm the split's limit parameter still
+  matches the schema if the column count ever changes
 
 Decision: Use StringUtils.split approach with DataStorage abstraction."
 ```
@@ -165,6 +228,10 @@ For a data processing task:
 ```
 
 This prevents the driver from making architectural decisions post-facto and ensures alignment upfront.
+
+**Model selection**: design-synthesis agent (above) → `fable`. The 4 discovery agents stay on the
+session default — omit a `model` override for them — pure fact-finding doesn't need the extra
+reasoning depth; only the step that turns facts into a decision does.
 
 ### Step 3: Spawn Driver
 
