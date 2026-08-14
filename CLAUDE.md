@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-06-16
+**Last Updated**: 2026-08-14
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -406,6 +406,89 @@ After updating, refresh the bundled snapshot:
 cp ~/.claude/copilot-review-patterns.md \
   ~/github/satoris-claude-config/plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md
 ```
+
+## Writing for Humans: Short-Form Artifacts
+
+**Scope**: artifacts a person reads start-to-finish in one sitting — PR descriptions, Jira tickets,
+Confluence pages, release notes, changelog entries, incident write-ups, PR review replies.
+
+**Not in scope.** These are read by lookup, by a machine, or under diagnostic pressure, and none of
+them get shorter:
+
+- **Agent-resumed artifacts** — everything under `~/.claude/handoff/` (including `-PROGRESS.md`
+  docs), `/satori:continue` continuation docs, audit manifests, PR-state workspace JSON,
+  agent-to-agent contracts, and the word-budgeted Intent Brief. In these, an explicit "none yet" is
+  required content, not a placeholder to trim.
+- **Test code, code comments, and Javadoc** — DRY vs "Moist" and the Refactoring Checklist govern
+  there; "Clarity > Conciseness" still holds.
+- **Log, exception, and operator-facing error strings** — these optimize for diagnosis, not brevity
+  (see the Operator Observability lens in `copilot-review-patterns.md`).
+- **SKILL.md, README, and spec/reference documents** — reference material, consulted by lookup
+  rather than read start-to-finish.
+
+**Universal rules, whatever the artifact:**
+
+- **Audience test**: write for a person who was not in this conversation. If a sentence exists to
+  help an LLM re-derive context rather than to help a person understand the change, cut it from
+  here — and route it (below) rather than delete it.
+- **No process narration**: skip "I checked A, then B, then realized C" unless a specific dead end
+  is itself a decision the reader needs.
+- **No restating metadata**: the title, linked ticket, and diff are already on screen.
+- **State confidence once**, in plain language — "confirmed via X" or "likely — worth checking Y".
+  No stacked hedging.
+- **Proportional length**: a typo, dep bump, or config tweak gets 1–2 sentences, not a filled-out
+  template. A PR description is not a design doc; a Jira ticket is not an investigation log.
+
+**These rules never override an existing obligation:**
+
+- **Mandated disclosures.** Proportional length never removes content another skill marks MUST or
+  verbatim for that artifact: Known Limitations, accepted-risk findings, and coverage gaps appear
+  in full in the PR description even for a one-sentence change. Omission is a claim it was
+  addressed.
+- **Verbatim blocks are copied, not rewritten.** If such a block reads badly, fix it at its source
+  in the round summary before it is copied — never by editing it in the PR description.
+- **A review reply's disposition is payload, not metadata.** The prefix (Fixed / Won't fix /
+  Already decided) and its cited commit, round, or reason are the substance of the reply; never cut
+  them under the no-restating-metadata rule.
+- **A skill's own scale-to-situation rule wins.** This section authorizes compressing prose, never
+  skipping an accountability step.
+
+**Default shape for defect/change artifacts** (bug tickets, PR descriptions, incident write-ups):
+
+1. **Problem**, from the reader's vantage point — what a real user sees or experiences. Lead with
+   symptom and impact, not internals.
+2. **Brief technical analysis** — root cause and the key decision points, only enough for the
+   reader to trust the conclusion.
+3. **Solution** — enough detail that someone else could implement or verify it.
+4. **Summary** — optional, only if the artifact is long enough to need one.
+
+**Other artifact kinds keep their native shape**: feature/story ticket = need → outcome →
+acceptance criteria; ADR = context → decision → consequences; runbook = purpose → content; release
+notes = terse bullets, no analysis section.
+
+**Where a skill already owns an artifact's template, that template wins on structure and this
+section governs voice** — `/golden-pr:create` for PR descriptions. For PR review replies,
+`address-pr-issues`' Reply Tone contract and reply templates control; this section adds only the
+audience test and the no-narration and no-stacked-hedging rules on top.
+
+### Context Routing
+
+Compressing an artifact for a human does not discard context; it files it where its actual reader
+will look. Every rule above assumes the cut material lands somewhere:
+
+| Context being cut | Goes to |
+|---|---|
+| Change-level rationale that outlives the PR but doesn't warrant a handoff doc | **Commit message body** — travels with the change forever; `git log`/`git blame` are the authoritative lookup path |
+| Resumable working state — what's done, what's next, dead ends, verbatim next action | **Handoff or `/satori:continue` doc** — verbose by design |
+| Durable cross-session facts — surprising constraints, validated approaches, gotchas | **Auto-memory** |
+| The full investigation path a reviewer doesn't need but the issue's history should keep | **A comment on the linked ticket**, not the PR body |
+
+Terseness that strands context is a regression, not an improvement. Wanting to keep detail in a PR
+description "so a future agent can reason about it" is the signal to write a commit body or a
+handoff doc — not to pad the PR.
+
+**Remember**: the human artifact and the agent artifact are different documents with different
+readers. One document trying to serve both serves neither.
 
 ## Decision Override Protocol
 
