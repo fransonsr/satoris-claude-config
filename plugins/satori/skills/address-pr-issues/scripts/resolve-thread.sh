@@ -39,7 +39,7 @@ CAPABILITY=$(cat "$API_CAPS_FILE")
 
 if [[ "$CAPABILITY" == "enabled" ]]; then
   echo "Adding threaded reply: $MESSAGE"
-  if try_threaded_reply "$COMMENT_ID" "$MESSAGE"; then
+  if try_threaded_reply "$PR_NUMBER" "$COMMENT_ID" "$MESSAGE"; then
     echo "✅ Threaded reply added"
   else
     echo "⚠️  Threaded reply failed, falling back to direct resolution"

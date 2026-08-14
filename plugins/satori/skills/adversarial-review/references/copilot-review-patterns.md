@@ -320,6 +320,25 @@ when implementation was changed but the adjacent comment was not updated.
 5. **ADF / external-format rendering**: For any code that generates content for Jira or Confluence
    ADF (Atlassian Document Format), verify that text nodes do NOT use Markdown syntax (`[text](url)`,
    `**bold**`, etc.) — ADF text nodes render Markdown syntax literally. Use raw URLs for auto-linking.
+6. **Escalate on safety rationale or absolute claims**: if a doc-accuracy finding concerns a
+   safety/correctness rationale (a comment justifying why a risk is accepted, or an invariant the
+   code is claimed to guarantee) or contains an absolute claim ("gives no path to X", "certainly
+   was not created", "can never happen"), do not close it as a wording fix. Trace the actual code
+   paths the claim depends on before reclassifying — the false sentence is usually the symptom of
+   a wrong invariant, not stale prose, and a future reader will reason from the (false) sentence to
+   conclude a change is safe when it isn't.
+
+**Provenance note (heuristic 6)**: derived from a single sls-locking-service PR (RS-4420) where a
+"Documentation Accuracy" lens hit three real correctness defects in a row, each initially read as
+a wording nit: (a) two store methods compared a canonicalized key against a raw one — the doc said
+they used "the UUID key" as if interchangeable; (b) a comment claimed a network create-or-fail
+call "certainly was not created" on failure, which is false for a request that times out after the
+server-side write succeeds, leaking a lock for the rest of its TTL; (c) an accepted-risk paragraph
+justified an ABA window with "the create API gives no path to this," true of that one API but false
+of three other real paths (an admin bulk-delete, a same-key bulk-unlock, and TTL expiry) that
+reach the identical state. All three were reachable, none were cosmetic, and the common tell was
+that the "doc" in question was a safety rationale or contained an unqualified absolute rather than
+a plain behavioral description.
 
 **Example — regex docstring mismatch** (Round 15, fleet_runner.py):
 ```python
@@ -815,4 +834,4 @@ counts, no thread totals.
 - Provenance note
 - Relationship to the nearest adjacent class (to prevent overlap drift)
 
-*Last updated: 2026-07-01.*
+*Last updated: 2026-08-12.*

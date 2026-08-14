@@ -121,14 +121,15 @@ resolve_thread() {
 
 # Try to add a threaded reply to a review comment
 # Returns 0 if successful, 1 if API not available
-# Usage: try_threaded_reply <comment_id> <body>
+# Usage: try_threaded_reply <pr_number> <comment_id> <body>
 try_threaded_reply() {
-  local comment_id="$1"
-  local body="$2"
+  local pr_number="$1"
+  local comment_id="$2"
+  local body="$3"
 
   get_repo_info || return 1
 
-  if gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/comments/$comment_id/replies" \
+  if gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$pr_number/comments/$comment_id/replies" \
       -f body="$body" 2>&1 | grep -q "404"; then
     return 1  # API not available
   fi
@@ -159,28 +160,42 @@ react_to_comment() {
 }
 
 # Test if threaded reply API is available
-# Usage: test_threaded_reply_api <threads_file>
+# Usage: test_threaded_reply_api <pr_number> <threads_file>
 # Returns: Writes "enabled" or "disabled" to stdout
 test_threaded_reply_api() {
-  local threads_file="$1"
+  local pr_number="$1"
+  local threads_file="$2"
 
   get_repo_info || return 1
 
+  # threads_file is JSON Lines (one object per line), not a JSON array — matching the
+  # convention used correctly elsewhere in this codebase (e.g. resolve-thread.sh's
+  # `select(...)` extraction). `.[0]` fails on this shape with "Cannot index object with
+  # number", which jq sends to stderr while still exiting 0 — silently yielding an empty
+  # test_comment_id and reporting "disabled" for the wrong reason.
   local test_comment_id
-  test_comment_id=$(jq -r '.[0].commentId // empty' "$threads_file" 2>/dev/null)
+  test_comment_id=$(jq -r '.commentId' "$threads_file" 2>/dev/null | head -1)
 
   if [[ -z "$test_comment_id" ]]; then
     echo "disabled"
     return 0
   fi
 
-  if gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/comments/$test_comment_id/replies" \
-      -f body="test" 2>&1 | grep -q "404"; then
+  local reply_response reply_id
+  reply_response=$(gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$pr_number/comments/$test_comment_id/replies" \
+      -f body="test" 2>&1)
+
+  if echo "$reply_response" | grep -q "404"; then
     echo "disabled"
   else
-    # Delete test reply
-    gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/comments/$test_comment_id/replies" \
-        --method DELETE 2>/dev/null || true
+    # Delete the reply we just created, by its own comment id (not test_comment_id, and
+    # not the /replies suffix — a reply is a normal review comment, deleted via the plain
+    # pulls/comments/{id} endpoint using the id the create call just returned).
+    reply_id=$(echo "$reply_response" | jq -r '.id // empty' 2>/dev/null)
+    if [[ -n "$reply_id" ]]; then
+      gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/comments/$reply_id" \
+          --method DELETE 2>/dev/null || true
+    fi
     echo "enabled"
   fi
 }

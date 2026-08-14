@@ -43,7 +43,7 @@ echo "   ✅ Cached $COPILOT_COUNT Copilot threads"
 # Test API capabilities (threaded replies)
 API_CAPS_FILE="$WORKSPACE_DIR/api-capabilities.txt"
 echo "   Testing API capabilities..."
-CAPABILITY=$(test_threaded_reply_api "$THREADS_FILE")
+CAPABILITY=$(test_threaded_reply_api "$PR_NUMBER" "$THREADS_FILE")
 echo "$CAPABILITY" > "$API_CAPS_FILE"
 
 if [[ "$CAPABILITY" == "enabled" ]]; then

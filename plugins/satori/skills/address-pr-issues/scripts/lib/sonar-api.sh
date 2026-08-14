@@ -18,8 +18,15 @@ get_sonar_config() {
     return 1
   fi
 
+  # This environment's SonarQube credential is provisioned under SONARQUBE_CLI_TOKEN (and the
+  # matching server as SONARQUBE_CLI_SERVER), not SONAR_TOKEN/SONAR_HOST — fall back to it
+  # rather than requiring every session to re-export under this script's name.
+  if [[ -z "${SONAR_TOKEN:-}" && -n "${SONARQUBE_CLI_TOKEN:-}" ]]; then
+    SONAR_TOKEN="$SONARQUBE_CLI_TOKEN"
+  fi
+
   if [[ -z "${SONAR_TOKEN:-}" ]]; then
-    echo "ERROR: SONAR_TOKEN environment variable not set" >&2
+    echo "ERROR: SONAR_TOKEN environment variable not set (also checked SONARQUBE_CLI_TOKEN)" >&2
     return 1
   fi
 }
