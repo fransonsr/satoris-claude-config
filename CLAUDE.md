@@ -11,22 +11,112 @@
 ## Model Access & Selection
 
 **License:** Claude Enterprise (migrated off Amazon Bedrock, June 2026). All current
-Claude models are authorized — Opus 4.8, Sonnet 4.x, Haiku 4.5, etc. The old Bedrock-era
+Claude models are authorized — Fable 5, Opus 5, Sonnet 5, Haiku 4.5, etc. The old Bedrock-era
 restriction pinning agents to Opus 4.6 (and the "Opus 4.7 causes auth errors" / retry-loop
 issue) no longer applies.
 
 **Enterprise rate limits:** there are 5-hour and weekly token usage limits. Spend the budget
-deliberately — Opus draws far more from it than Sonnet.
+deliberately — heavier model tiers and higher effort levels both draw the budget down faster;
+Fable runs roughly 2x Opus's per-token cost, and xhigh/max effort spends more than low/medium at
+any tier.
 
 **Default model:** `opusplan` (set in `~/.claude/settings.json`) — Opus for plan mode, Sonnet
 for execution.
 
-**When spawning agents:** no need to pin a model. Let agents inherit the session model unless a
-task warrants otherwise — prefer Sonnet for routine search/exploration/mechanical work, and Opus
-for genuinely complex reasoning. Pin a model only when the task clearly calls for it:
+**When spawning agents:** no need to pin a model — let agents inherit the session model unless a
+task warrants otherwise.
+
+**Verified 2026-08-14, re-check before trusting if stale:** claims about which model/tier is
+currently strongest age in weeks, not months — a claim here reversed after just three weeks once
+already. Re-verify via web search before a consequential model-selection call if this note looks
+old.
+
+- **Haiku** is the tier for high-volume, mechanical, low-judgment work: simple lookups, log/data
+  parsing, classification, boilerplate edits repeated across many files — especially the individual
+  fan-out legs of a `parallel()`/`pipeline()` call in the `Workflow` tool, where a dozen cheap agents
+  running concurrently beats one expensive agent running serially. ~90% of Sonnet's coding quality
+  at roughly a third of the cost and 2x+ the speed (per Anthropic's own comparison), so the bar for
+  reaching for it is "is this task simple," not "is this task urgent."
+- **Sonnet** covers routine search/exploration/mechanical work that still needs real judgment —
+  the current session default, and the right choice when a task doesn't clearly call for a tier
+  above or below it.
+- **Opus** is the default ceiling for hard reasoning — pin it for genuinely complex agentic coding
+  or enterprise-grade work.
+- **Fable is not "a smarter Opus."** As of the verification date above, Opus 5 (released
+  2026-07-24) matches or beats Fable 5 on nearly every relevant benchmark at roughly half Fable's
+  per-token price. Don't pin Fable expecting better results on typical dev work. Its actual edge is
+  narrow and behavioral, not general intelligence: genuinely multi-day autonomous runs, dense
+  technical-image/vision work, and specialized long-horizon scientific research. Reach for it only
+  when a task matches one of those, not as an escalation path from Opus.
+- **Effort level** is a separate, cheaper-to-try dial than switching model tier: `low`/`medium`/
+  `high`/`xhigh`/`max`, exposed today via the `Workflow` tool's per-agent `effort` option (the plain
+  `Agent` tool doesn't expose it). Default is `high`; drop to `low`/`medium` for routine work
+  (meaningful cost/latency savings, no perceptible quality loss); reserve `xhigh`/`max` for problems
+  where `high` demonstrably falls short. Try raising effort before reaching for a pricier model.
+- **A common combined pattern**: Sonnet or Opus decomposes a problem and orchestrates, while many
+  Haiku instances run the resulting subtasks in parallel — Anthropic's own recommended pairing for
+  Haiku, and a natural fit for this environment's `Workflow` `pipeline()`/`parallel()` helpers.
+
+Pin a model only when the task clearly calls for it:
 ```
-Agent(model="opus", ...)    # reserve for hard reasoning; omit to inherit
+Agent(model="opus", ...)     # reserve for hard reasoning; omit to inherit
+Agent(model="haiku", ...)    # high-volume, mechanical, or parallel-fan-out work
 ```
+
+### Fable-Specific Prompting Patterns
+
+The full set of behavioral tuning patterns from Anthropic's dedicated Fable prompting guide, for
+whenever a task actually pins Fable — its behavior differs enough from Opus/Sonnet that prompts
+tuned for those models tend to under- or over-shoot on Fable:
+
+- **Reasoning stays out of response text.** Never ask any model to narrate or echo its reasoning in
+  visible output. On Fable this can trigger a `reasoning_extraction` refusal and an unwanted
+  fallback to Opus — thinking blocks are for reasoning visibility, response text is not.
+- **Ground long-run progress claims in tool results.** On unattended runs, instruct it to audit
+  each progress claim against an actual tool result before reporting status; Anthropic found this
+  nearly eliminates fabricated progress reports.
+- **Anti-overplanning.** Fable can over-survey options, especially at high effort. This harness's
+  own instructions already carry a version of this ("act once you have enough information; give a
+  recommendation, not an exhaustive survey"); worth an explicit repeat in a Fable-specific prompt
+  since it's the model most prone to needing it.
+- **Terse while working, plain on the final summary.** Fable can produce dense arrow-chain
+  shorthand or references to unseen thinking in its final message. This harness's end-of-turn
+  conventions already cover the general case; on Fable specifically, an explicit reminder that the
+  final summary is "someone's first look," not a continuation of working shorthand, still helps.
+- **State the boundaries.** Fable can take unrequested actions (drafting things nobody asked for,
+  defensive git-branch backups). When the user is thinking out loud or asking a question, the
+  deliverable is the assessment — don't apply a fix until asked. Before a state-changing command,
+  check that the evidence actually supports that specific action.
+- **Pause only when genuinely necessary.** Define the bar explicitly — a destructive/irreversible
+  action, a real scope change, or input only the user can supply — rather than enumerating every
+  case; Fable follows a brief boundary instruction reliably.
+- **Parallel subagents, asynchronously.** Fable delegates to subagents more readily than prior
+  models; prefer keeping it working while subagents run rather than blocking on each one, and favor
+  long-lived subagents that keep context across subtasks over short-lived ones.
+- **Memory system construction.** Fable performs well when given a place to record lessons across
+  sessions (one lesson per file, corrections and confirmed approaches alike, update in place rather
+  than duplicate). This environment's existing auto-memory system already implements this pattern —
+  external validation that it's the right shape, not a reason to add a second one.
+- **Rare early-stopping.** Deep into a long session Fable can occasionally end a turn on a stated
+  intent without the matching tool call, or ask permission when it already has enough to proceed.
+  For autonomous pipelines, an explicit reminder helps: the user isn't watching in real time, so
+  proceed on reversible actions without asking, and check the last paragraph before ending a turn —
+  if it's a plan, question, or unfulfilled promise, do that work now instead of stopping.
+- **Context-budget reassurance.** Avoid surfacing a remaining-token countdown to Fable where
+  possible; if the harness must show one, pair it with reassurance not to stop, summarize, or
+  suggest a new session on account of it.
+- **Give the reason, not just the request.** Fable performs better when it understands *why* —
+  brief context on the larger task and who it's for measurably helps it connect the request to
+  relevant information instead of guessing intent.
+- **Scaffolding**: start it on harder tasks than you'd hand Opus, make self-verification explicit
+  (a fresh-context verifier subagent checking work against spec tends to outperform self-critique),
+  and audit prior-model prompts/skills for over-prescriptiveness — instructions tuned for Opus are
+  often more detailed than Fable needs, and can degrade its output.
+- **`send_to_user` tool (custom-harness integration only)**: for a long asynchronous agent built on
+  the raw API, a client-side tool that displays a message to the user verbatim without ending the
+  turn is Anthropic's recommended pattern for surfacing progress mid-task. Not directly applicable
+  inside Claude Code today (this harness has its own progress/messaging mechanisms) — noted for
+  completeness if ever building a separate Fable-based agent harness.
 
 **Path Mappings**:
 - WSL home from Windows: `\\wsl.localhost\Ubuntu\home\fransonsr`
