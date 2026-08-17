@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-08-14
+**Last Updated**: 2026-08-17
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -65,58 +65,13 @@ Agent(model="haiku", ...)    # high-volume, mechanical, or parallel-fan-out work
 
 ### Fable-Specific Prompting Patterns
 
-The full set of behavioral tuning patterns from Anthropic's dedicated Fable prompting guide, for
-whenever a task actually pins Fable — its behavior differs enough from Opus/Sonnet that prompts
-tuned for those models tend to under- or over-shoot on Fable:
+Fable's behavior differs enough from Opus/Sonnet that prompts tuned for those models tend to under-
+or over-shoot on it (reasoning-in-response refusals, over-surveying, unrequested actions, rare
+early-stopping). The full set of behavioral tuning patterns from Anthropic's Fable prompting guide
+lives in `~/.claude/fable-prompting-patterns.md`.
 
-- **Reasoning stays out of response text.** Never ask any model to narrate or echo its reasoning in
-  visible output. On Fable this can trigger a `reasoning_extraction` refusal and an unwanted
-  fallback to Opus — thinking blocks are for reasoning visibility, response text is not.
-- **Ground long-run progress claims in tool results.** On unattended runs, instruct it to audit
-  each progress claim against an actual tool result before reporting status; Anthropic found this
-  nearly eliminates fabricated progress reports.
-- **Anti-overplanning.** Fable can over-survey options, especially at high effort. This harness's
-  own instructions already carry a version of this ("act once you have enough information; give a
-  recommendation, not an exhaustive survey"); worth an explicit repeat in a Fable-specific prompt
-  since it's the model most prone to needing it.
-- **Terse while working, plain on the final summary.** Fable can produce dense arrow-chain
-  shorthand or references to unseen thinking in its final message. This harness's end-of-turn
-  conventions already cover the general case; on Fable specifically, an explicit reminder that the
-  final summary is "someone's first look," not a continuation of working shorthand, still helps.
-- **State the boundaries.** Fable can take unrequested actions (drafting things nobody asked for,
-  defensive git-branch backups). When the user is thinking out loud or asking a question, the
-  deliverable is the assessment — don't apply a fix until asked. Before a state-changing command,
-  check that the evidence actually supports that specific action.
-- **Pause only when genuinely necessary.** Define the bar explicitly — a destructive/irreversible
-  action, a real scope change, or input only the user can supply — rather than enumerating every
-  case; Fable follows a brief boundary instruction reliably.
-- **Parallel subagents, asynchronously.** Fable delegates to subagents more readily than prior
-  models; prefer keeping it working while subagents run rather than blocking on each one, and favor
-  long-lived subagents that keep context across subtasks over short-lived ones.
-- **Memory system construction.** Fable performs well when given a place to record lessons across
-  sessions (one lesson per file, corrections and confirmed approaches alike, update in place rather
-  than duplicate). This environment's existing auto-memory system already implements this pattern —
-  external validation that it's the right shape, not a reason to add a second one.
-- **Rare early-stopping.** Deep into a long session Fable can occasionally end a turn on a stated
-  intent without the matching tool call, or ask permission when it already has enough to proceed.
-  For autonomous pipelines, an explicit reminder helps: the user isn't watching in real time, so
-  proceed on reversible actions without asking, and check the last paragraph before ending a turn —
-  if it's a plan, question, or unfulfilled promise, do that work now instead of stopping.
-- **Context-budget reassurance.** Avoid surfacing a remaining-token countdown to Fable where
-  possible; if the harness must show one, pair it with reassurance not to stop, summarize, or
-  suggest a new session on account of it.
-- **Give the reason, not just the request.** Fable performs better when it understands *why* —
-  brief context on the larger task and who it's for measurably helps it connect the request to
-  relevant information instead of guessing intent.
-- **Scaffolding**: start it on harder tasks than you'd hand Opus, make self-verification explicit
-  (a fresh-context verifier subagent checking work against spec tends to outperform self-critique),
-  and audit prior-model prompts/skills for over-prescriptiveness — instructions tuned for Opus are
-  often more detailed than Fable needs, and can degrade its output.
-- **`send_to_user` tool (custom-harness integration only)**: for a long asynchronous agent built on
-  the raw API, a client-side tool that displays a message to the user verbatim without ending the
-  turn is Anthropic's recommended pattern for surfacing progress mid-task. Not directly applicable
-  inside Claude Code today (this harness has its own progress/messaging mechanisms) — noted for
-  completeness if ever building a separate Fable-based agent harness.
+**When to use**: read that file whenever a task actually pins Fable — which, per the tier guidance
+above, should be rare. It is not needed for Opus/Sonnet/Haiku work.
 
 **Path Mappings**:
 - WSL home from Windows: `\\wsl.localhost\Ubuntu\home\fransonsr`
@@ -279,7 +234,8 @@ Load LSP tool: ToolSearch(query="select:LSP")
 - Forces edge case enumeration during RED phase
 - Reveals incorrect assumptions before implementation
 - Prevents writing tests that confirm bias
-- Evidence: PR #8's 38 issues came from test-after on "simple" code
+- Evidence: past work has generated dozens of review-round issues from test-after on code that
+  looked "simple" at the time
 
 **When you think "test-after is fine here":**
 - This is when you most need test-first
@@ -587,15 +543,14 @@ readers. One document trying to serve both serves neither.
 **⚠️ STOP. This is a red flag.**
 
 "Straightforward" is the word I use before:
-- Missing edge cases (receiver normalization: 4 rounds)
-- Skipping test-first (inheritance: 5 rounds)
-- Avoiding adversarial review (type resolution: 3 rounds)
+- Missing edge cases
+- Skipping test-first
+- Avoiding adversarial review
 - Writing tests that confirm my bias instead of challenging it
 
-**Evidence from PR #8**: 38 Copilot issues across 16 rounds, primarily from:
-- "Straightforward prefix stripping" → missed super., nested, fully-qualified
-- "Obvious name matching" → missed HashMap nondeterminism, collisions
-- "Simple type resolution" → missed wildcards, fully-qualified patterns
+Repeatedly, on past work, the tasks that took the most review rounds to converge were the ones
+first described as straightforward, obvious, or simple — string/prefix handling, name matching,
+and type resolution especially. Treat the word itself as a stop sign, not a status report.
 
 ### Protocol When Tempted to Skip Process
 
@@ -650,7 +605,9 @@ Prefer false positives (extra process) over false negatives (missed bugs).
 ### Code Structure
 - [ ] Is each method doing ONE thing at ONE level of abstraction?
 - [ ] Are methods short (<20 lines ideally, <50 lines maximum)?
-- [ ] Can any complex logic be extracted into well-named helper methods?
+- [ ] Can any complex logic be extracted into well-named helper methods? (A cohesive block past
+      ~10-15 lines wants its own name — that's the extraction trigger; the 20/50 figures above are
+      the finished method's total length. Different measures, not competing limits.)
 - [ ] Are there any magic numbers/strings that should be constants?
 - [ ] Is there duplicated code that can be extracted?
 
@@ -819,51 +776,37 @@ public class SlsBIClientConfig {
 
 ## Notes to Claude Code
 
-When working on fransonsr's projects:
+Everything above applies when working on fransonsr's projects. This section is not a recap of it —
+it holds only the pointers worth having at the end of the file, plus the two clarifications that
+live nowhere else.
 
-1. **Every production code change MUST have tests**
-   - Choose test-first OR test-after based on complexity
-   - Before marking work complete, verify all production code has tests
-   - Tests must cover happy path + edge cases + errors
+1. **Tests are non-negotiable, and "done" has a definition.** Core Principles §2 — the rule itself,
+   the Mandatory Test Coverage list, and the Verification Checkpoint to run before calling any work
+   complete.
 
-2. **Practice relentless refactoring**
-   - Refactor after GREEN/TEST phase, never skip
-   - Extract methods when logic is >10-15 lines
-   - Apply Single Responsibility Principle aggressively
-   - Multiple refactoring passes are normal and encouraged
+2. **Test-first vs. test-after is decided by the checklist, not by how the code feels.** Core
+   Principles §2. Test-after requires *all six* boxes; a single unchecked box means test-first. If
+   the word "straightforward" is doing the deciding, see the Decision Override Protocol instead.
 
-3. **For complex/unclear problems:**
-   - Use test-first approach (RED-GREEN-REFACTOR)
-   - Tests help think through requirements and design
+3. **Flag SOLID violations, with the explanation attached.** Core Principles §4 for the principles;
+   the Refactoring Checklist's SOLID sub-list for the questions to read code against.
 
-4. **For obvious implementations:**
-   - Test-after is acceptable (IMPLEMENT-TEST-REFACTOR)
-   - Still requires comprehensive test coverage
-   - Refactoring still mandatory
+4. **The two method-length numbers measure different things.** Extract a cohesive block of logic
+   into its own named method once it passes ~10-15 lines; a finished method's *total* length should
+   still land under 20 lines ideally, 50 maximum. The extraction trigger and the length ceiling are
+   not competing limits (Refactoring Checklist → Code Structure).
 
-5. **Flag violations of SOLID principles** with explanations
-   - SRP violations: method/class doing multiple things
-   - Long methods (>20 lines) that need extraction
-   - Poor naming that obscures intent
+5. **Build-environment changes need unscoped validation.** The Pre-Commit Validation recipe in TDD
+   Workflow Examples → Example 3 runs `mvn clean compile test -pl <module>`; when the change touches
+   a POM, a dependency, or build configuration, drop the `-pl` scope and validate the full build.
 
-6. **Don't over-abstract tests** - clarity is key
+6. **Already stated in full elsewhere** — go there rather than working from a summary: relentless
+   refactoring as part of the cycle (Core Principles §2); don't over-abstract tests (§3, "Moist");
+   long constructor parameter lists → config objects (Anti-Patterns → Production Code Smells);
+   module dependency direction (Code Review Checklist); immutability and value objects (Tools and
+   Practices → Best Practices); self-documenting code, comments explaining WHY not WHAT
+   (Refactoring Checklist → Naming, Documentation).
 
-7. **Question constructor parameter lists** - suggest config objects
-
-8. **Ensure module dependencies flow in the right direction**
-
-9. **Prefer immutability and value objects**
-
-10. **Write self-documenting code** - comments explain "why", not "what"
-    - Suggest extracting methods to replace comments
-    - Improve names to eliminate need for documentation
-
-11. **Always validate build before commit**
-   - Run `mvn clean compile test` before any commit (not just `mvn test`)
-   - Flag critical Error Prone warnings (IntLongMath, DefaultCharset, UnusedVariable, MissingOverride)
-   - Don't commit code with compilation errors or test failures
-   - Build environment changes (POM, dependencies) require full validation
-   - Prevents broken builds and catches bugs before CI/CD
 ## References
 
 - **TDD**: Kent Beck's "Test Driven Development: By Example"
