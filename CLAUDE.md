@@ -123,6 +123,27 @@ above, should be rare. It is not needed for Opus/Sonnet/Haiku work.
 - Use `/satori:handoff` skill to create handoff documents for complex tasks
 - Handoff documents contain: executive summary, technical specs, implementation plan, acceptance criteria, testing strategy, reference materials
 
+**Multi-Agent Dispatch Communication**: the same file-based discipline as the Task Handoff System
+above, generalized to agent-to-agent dispatch — subagents spawned via `Agent`, `Workflow`
+`agent()`/`pipeline()`/`parallel()` calls, or forked-terminal processes.
+- Route detailed content — instructions, context, findings, results — through a **shared file**
+  both sides read/write, not through the message/prompt payload itself (a `SendMessage` body, an
+  `agent()` prompt, a subagent's final-text return value). Keep messages themselves as terse
+  control-plane pointers: "start by reading `<path>`", "`<path>` updated, please re-read", "task
+  done, report is in `<path>`".
+- **Why:** traced to recurring communication breakdowns between dispatched agents/workflows and
+  their orchestrator, caused by passing detailed context inline instead of through a durable shared
+  artifact — the same reasoning behind the Task Handoff System above and `propagate`'s
+  `.propagation/<upstream>--<target>.json` state file. This is a design choice for this
+  environment's orchestration patterns, not a workaround for a broken feature: Anthropic's
+  cross-session-messaging docs confirm `SendMessage` intentionally carries plain text only, never
+  files or conversation history, and delivery isn't guaranteed (a receiving session can hold or
+  refuse it, and undelivered messages cap at 100 before the oldest are dropped) — exactly why
+  detailed state belongs in a file the message merely points to.
+- A useful side effect: reduces how often a persistent/forked-terminal ("tmux-backed") agent is
+  actually needed, since a fresh dispatch can reconstruct full context by reading the shared files
+  rather than requiring a live process to remember it.
+
 ## Development Tools
 
 ### LSP (Language Server Protocol) Integration
