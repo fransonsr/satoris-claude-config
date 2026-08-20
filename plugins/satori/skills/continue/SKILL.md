@@ -80,7 +80,8 @@ boundaries — without waiting to be asked:
 
 ## PROGRESS Docs: Link, Don't Duplicate
 
-The continuation doc distinguishes two kinds of in-session findings:
+The continuation doc distinguishes two kinds of in-session findings — plus a third case,
+the handoff that launched this session:
 
 **In-conversation subagents** (Explore/Plan/general agents spawned *directly* in this
 session):
@@ -94,6 +95,28 @@ session):
   blockers flagged) and the **actual, verified path** to the PROGRESS doc
 - **Do NOT** re-summarize PROGRESS doc content into the continuation — that creates
   two sources of truth
+
+### The Session's Own Originating Handoff
+
+Distinct from both cases above — those are handoffs *this* session created for *other*
+workers. This third case is the handoff that launched *this* session: the spec this
+session is itself implementing.
+
+When one exists, the continuation records only the **delta**:
+- The **actual, verified path** to the originating handoff doc (so the "re-anchor on
+  compaction" rule in global `CLAUDE.md` has something to act on)
+- Actual progress since (PRs opened / merged / status, commits landed)
+- Decisions or scope corrections discovered during implementation (e.g. a ticket's
+  originally-assumed fix shape turning out to be wrong once pulled live)
+- Implementation-specific dead ends
+- The verbatim next action
+
+**Do NOT** restate the handoff's Mission, Verified Context, Scope Clarity, Implementation
+Plan, or Acceptance Criteria — including any process mandate it carries (`/satori:xp-pair`
+per production commit, test-first, and the like). Those are recovered by re-reading the
+handoff itself on resume. Copying them creates a second source of truth that can drift —
+or be silently dropped at the next checkpoint, which is exactly how a binding process
+mandate gets lost.
 
 ### Why Verified Paths Matter
 
@@ -117,10 +140,15 @@ paths exist before writing.
    - Open questions or blockers awaiting the user
    - The exact, verbatim next action
 
-2. **Gather handoff references** (if any active handoffs):
-   - Scan `~/.claude/handoff/active/` to locate actual handoff docs
+2. **Gather handoff references** (delegated *and* originating):
+   - Scan `~/.claude/handoff/active/` to locate actual handoff docs delegated OUT by this
+     session
    - For each: find the actual PROGRESS doc path (do not assume the name)
    - Summarize orchestrator-side status from the PROGRESS doc; do not copy its content
+   - **Identify this session's own originating handoff**, if any — the `/satori:handoff`
+     document *this* session was launched to implement. Record its **verified** path in the
+     template's `Originating Handoff` field and record only the delta in the body (see
+     "The Session's Own Originating Handoff" above)
 
 3. **Run `mkdir -p ~/.claude/handoff/continue`** (idempotent)
 
@@ -156,6 +184,10 @@ paths exist before writing.
 - [ ] **Active handoff paths verified** — for each `active-handoffs` entry:
       `handoff:` path exists on disk; `progress:` path exists on disk (or explicit
       "none yet" if the implementing session hasn't created it)
+- [ ] **Originating handoff linked, not duplicated** — if an originating `/satori:handoff`
+      document exists for this session, its path is recorded and verified on disk, and its
+      content is not duplicated in this continuation doc — only linked and delta-recorded
+      (or explicitly "none" if this session was not launched from a handoff)
 - [ ] **Re-entry instruction present** at top of body section
 - [ ] **`last-checkpointed` is current** (today's date)
 - [ ] **No TODO/placeholder sections** remain
@@ -168,7 +200,11 @@ paths exist before writing.
 - [ ] **No skill instruction content** — no methodology, workflow steps, or quality gates
       from any skill (`address-pr-issues`, `xp-pair`, `golden-pr`, etc.). Capture work
       *state* only. Skill process is always re-loaded via explicit invocation in the new
-      session.
+      session. **This exclusion does not cover a task-specific mandate to *invoke* a
+      skill** ("this task requires `/satori:xp-pair` for every production commit") — that
+      is a binding requirement, not methodology. If it came from the originating handoff,
+      leave it there and rely on the re-read rule; if it came from the user with no
+      originating handoff, it is live state — record it.
 
 If any Critical item fails: fix it before writing. Do not write a continuation doc
 with known gaps.

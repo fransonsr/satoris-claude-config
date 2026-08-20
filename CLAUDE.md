@@ -122,6 +122,19 @@ above, should be rare. It is not needed for Opus/Sonnet/Haiku work.
 - Naming convention: `<task-id>-<slug>.md` (e.g., `task-4.16.2-collection-indices-writer.md`)
 - Use `/satori:handoff` skill to create handoff documents for complex tasks
 - Handoff documents contain: executive summary, technical specs, implementation plan, acceptance criteria, testing strategy, reference materials
+- **Re-anchor on compaction.** If a session's work is being driven by a `/satori:handoff`
+  document, re-read that handoff document in full immediately upon receiving a post-compaction
+  summary — whether from automatic compaction or a `/satori:continue` resume — before taking any
+  further action.
+- **Why:** the compaction summary is lossy by construction; the handoff file is the durable,
+  authoritative source for the session's scope, decisions, and binding requirements — including
+  process mandates like `/satori:xp-pair` per production commit or test-first for higher-risk
+  fixes. Observed failure mode: a handoff's explicit `/satori:xp-pair` mandate was silently
+  dropped across one mid-implementation compaction and never followed for the rest of a 5-PR
+  effort, surfacing only after every PR had merged. Re-reading one file costs little next to
+  silently drifting from what it specifies, and re-deriving everything from the single stable
+  source of truth is more durable than trying to enumerate every category of thing compaction
+  could drop (process mandates, scope boundaries, decision authority, and so on).
 
 **Multi-Agent Dispatch Communication**: the same file-based discipline as the Task Handoff System
 above, generalized to agent-to-agent dispatch — subagents spawned via `Agent`, `Workflow`

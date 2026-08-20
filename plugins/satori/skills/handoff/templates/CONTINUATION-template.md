@@ -8,6 +8,14 @@
 **Branch**: `{git branch or "none"}`
 **Budget Directive**: `{e.g. "+500k" | none}`
 **Workflow Run ID**: `{wf_abc123 — for resumeFromRunId | none}`
+**Originating Handoff**: `{~/.claude/handoff/active/<task>.md — the handoff THIS session was launched to implement | none}`
+
+*(When Originating Handoff is set, that document is the authoritative source for Mission,
+Verified Context, Scope Clarity, Implementation Plan, Acceptance Criteria, and any process
+mandate it carries — `/satori:xp-pair` per production commit, test-first, and the like. Do
+NOT duplicate those here. This doc records only the delta: progress since, decisions and
+scope corrections found during implementation, dead ends, and the next action. The path
+must be verified on disk, not assumed.)*
 
 **Active Handoffs**:
 
@@ -28,6 +36,9 @@ action.**
 - **Do NOT** re-derive anything listed in "Established Facts" — it is already verified.
 - **Do NOT** retry anything listed in "Dead Ends" — it was already rejected.
 - **Your immediate next action is in "Next Action"** — execute it verbatim.
+- **If "Originating Handoff" is set above, re-read that document in full before acting** —
+  it holds this session's binding scope, acceptance criteria, and process mandates, and is
+  deliberately not copied into this doc.
 
 Resume by executing **Next Action**.
 
@@ -36,6 +47,10 @@ Resume by executing **Next Action**.
 ## Mission
 
 {North-star goal in 1–2 sentences. Not a task list — the reason this session exists.
+
+If an Originating Handoff is set in the frontmatter, keep this to a single orienting line
+and let the handoff carry the full Mission — do not restate its Mission section here.
+
 Example:}
 
 Build the `handoff:continue` skill: a second skill in the handoff plugin that produces

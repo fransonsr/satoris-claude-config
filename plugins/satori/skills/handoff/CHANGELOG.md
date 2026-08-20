@@ -5,6 +5,41 @@ All notable changes to the Handoff plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-08-20
+
+### Added
+
+- **`continue`: originating-handoff case** — a third case in "PROGRESS Docs: Link, Don't
+  Duplicate", distinct from the two existing ones (which cover handoffs *this* session
+  delegated OUT). When the checkpointed session is itself implementing a `/satori:handoff`
+  document, the continuation records only the delta: verified handoff path, progress since,
+  decisions and scope corrections found during implementation, implementation-specific dead
+  ends, and the verbatim next action
+  - **Do NOT** restate the handoff's Mission, Verified Context, Scope Clarity,
+    Implementation Plan, or Acceptance Criteria — including any process mandate it carries
+    (`/satori:xp-pair` per production commit, test-first). Those are recovered by re-reading
+    the handoff on resume, per the "re-anchor on compaction" rule in global `CLAUDE.md`
+  - Root cause addressed: a handoff's `/satori:xp-pair` mandate was silently dropped across
+    a mid-implementation compaction and never followed for a 5-PR effort. Copying a mandate
+    into a checkpoint doc is how it drifts or disappears; never copying it is what makes it
+    survive
+- **`How It Works` step 2** — now covers delegated *and* originating handoffs; added the
+  step to identify this session's own originating handoff and record its verified path
+- **CONTINUATION-template.md `Originating Handoff` field** — singular frontmatter field
+  (this session's own handoff) alongside the existing delegated-out Active Handoffs table,
+  with an inline note that Mission/Scope/Plan/Acceptance Criteria are not duplicated when it
+  is set; Re-Entry Instruction gained a re-read bullet, and the Mission section a note to
+  stay to one orienting line when the field is set
+
+### Changed
+
+- **Quality Gate Critical checklist** — added: "Originating handoff linked, not duplicated"
+  (path verified on disk; content delta-recorded only, or explicitly "none")
+- **Quality Gate Essential "No skill instruction content"** — clarified that the exclusion
+  covers skill *methodology*, not a task-specific mandate to *invoke* a skill; such a mandate
+  stays in the originating handoff (recovered by re-read) or, absent one, is live state and
+  must be recorded
+
 ## [2.5.0] - 2026-06-28
 
 ### Added
