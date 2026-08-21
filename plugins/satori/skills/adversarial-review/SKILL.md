@@ -414,6 +414,12 @@ function buildPrompt(c) {
   }
   return `Review the current diff against the "${c.name}" pattern class only.
 
+**You are READ-ONLY. Do not use Edit or Write, and do not run any mutating git command (reset,
+rebase, commit, stash, checkout --, restore).** If you want to test whether a mutation would be
+caught (e.g. "would the test suite catch this regression"), reason about it structurally from the
+code you've read — do not actually make the edit. A finding based on an untested mutation
+hypothesis is still reportable; state the reasoning in \`description\` instead of demonstrating it.
+
 1. Read ${patternFile} and extract the section for pattern class "${c.name}" (a "### N. ${c.name}" heading) — that section defines what to look for.
 2. Run \`git diff ${range}\` once for orientation. \`git diff\`/\`git diff --name-only\` only see
    TRACKED content, so every enumeration below unions in \`git ls-files --others --exclude-standard\`
