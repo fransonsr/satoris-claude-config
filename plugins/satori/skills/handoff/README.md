@@ -194,107 +194,30 @@ Set expectations for when the implementing session should stop and ask rather th
 
 ### How It Works
 
-1. **Context Gathering**:
-   - Reads task details from `docs/implementation/implementation-tasks.md`
-   - Searches codebase for similar patterns
-   - Reviews existing implementations
-   - Extracts architectural decisions from CLAUDE.md
-   - **VERIFIES** facts (no assumptions)
+Four steps — full mechanics (including the YAML frontmatter template, the SKILL.md Writing
+Disciplines template, and the Quality Gate checklist) live in `SKILL.md`'s own "How It Works"
+section, not duplicated here, so this summary can't drift out of sync with it again:
 
-2. **Document Generation**:
-   - Run `mkdir -p ~/.claude/handoff/active` (idempotent)
-   - Creates `~/.claude/handoff/active/<task-id>-<slug>.md`
-   - Begin document with YAML frontmatter (generate from gathered context):
-     ```yaml
-     ---
-     task-id: <task-id>
-     task-type: <implementation | port | fix | research | refactor>
-     repo: <org/repo-name>
-     branch-from: <branch name>
-     plugin-version: <if applicable, e.g. "0.5.0">
-     key-files:
-       - <path/to/file.java>
-       - <path/to/other.java>
-     dependencies-complete: <true | false — are all prerequisite tasks done?>
-     estimated-complexity: <trivial | small | medium | large>
-     ---
-     ```
-   - Verify all `key-files` paths exist before writing — fail if any path is wrong
-   - Follows comprehensive template for prose sections
-   - Includes verified context with citations
-   - Lists explicit unknowns for implementer to discover
-   - **If any `key-files` are SKILL.md files**, include a **SKILL.md Writing Disciplines** section
-     in the generated handoff document, placed after the numbered context sections (1-5 above)
-     and before Complexity Signal (6). This delegates the pre-write disciplines to the
-     implementing session — the orchestration session does NOT execute them. Use this template:
-
-     ```markdown
-     ## SKILL.md Writing Disciplines
-
-     This handoff involves editing a SKILL.md file. Before writing any new content, the
-     implementing session must complete these disciplines in order:
-
-     **1. Scope-term grep pre-flight** (do this FIRST, before touching the file):
-     - Identify every term that describes the current scope (e.g., the call categories,
-       phase names, or step references that the change will broaden or rename)
-     - Grep the full SKILL.md for each old term and list all hits explicitly
-     - Mark each hit as "update needed" or "no change needed" before writing anything
-     - This sweep is a precondition of the edit, not a post-condition
-
-     **2. Branch enumeration** (do this before writing any conditional step):
-     - For every decision point the new content introduces, list all branches explicitly:
-       found / not-found, per-type distinctions, combined conditions (X=0 AND Y non-empty)
-     - Write the prose for each branch only after the full branch set is enumerated
-     - A branch with no documented path is a Copilot finding waiting to happen
-
-     **3. Pre-commit operator read** (do this before committing):
-     - Read the modified sections linearly, top to bottom, as an operator who has never
-       seen this document and has no knowledge of what was intended
-     - Flag every step where you cannot proceed without guessing
-     - Fix before committing — this is the cheapest moment to catch these gaps
-     ```
-
-   - **Note**: The implementing agent should create a progress document on first session:
-     - Location: `~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md`
-     - Template: `IMPLEMENTATION-PROGRESS-template.md` in this skill's own `templates/`
-       directory (resolve relative to wherever this SKILL.md is installed — the plugin's
-       skill directory, not a fixed absolute path)
-     - Pattern: Implementing agent reads handoff (stable), updates progress (mutable)
-
-3. **Quality Gate** (do not write the file until all pass — the same items as "Quality
-   Checklist" near the end of this document, enforced here rather than just described there):
-
-   **Critical (MUST pass)**:
-   - [ ] All file paths in `key-files` and "What to Change" verified to exist
-   - [ ] All line number references checked for accuracy (read the file, confirm lines)
-   - [ ] No "TODO", "fill this in", or placeholder sections remain
-   - [ ] No invented commit hashes or unverified references
-   - [ ] Explicit unknowns listed — if a fact could not be verified, it is in "Explicit Unknowns"
-   - [ ] Scope boundaries present (what to change AND what NOT to change)
-   - [ ] Decision authority explicit (what implementer decides vs asks)
-   - [ ] Pause-and-ask conditions explicit
-   - [ ] If any `key-files` are SKILL.md files: SKILL.md Writing Disciplines section is present
-
-   **Essential (REQUIRED)**:
-   - [ ] YAML frontmatter complete and all paths verified
-   - [ ] Prior work referenced with file:line citations
-   - [ ] Complexity signal present with specific indicators (not "MEDIUM" alone)
-   - [ ] Acceptance criteria are checkable (not "tests pass" — specific test names or commands)
-
-   If any Critical item fails: fix the handoff before writing. Do not write a
-   handoff with known gaps and leave them as TODOs.
+1. **Context Gathering** — reads task details, searches the codebase for similar patterns,
+   extracts architectural decisions, verifies facts (no assumptions).
+2. **Document Generation** — writes the handoff to `~/.claude/handoff/active/<task-id>-<slug>.md`
+   with YAML frontmatter (`key-files`, `verified-from`, and — if dispatched — a `dispatch:`
+   block), a standard `## Before You Start` section, and the numbered context sections below.
+3. **Quality Gate** — critical items must pass before the file is written (verified paths,
+   no placeholders, explicit unknowns, scope boundaries, decision authority, pause-and-ask
+   conditions).
+4. **Live Dispatch (Optional)** — if the `aoe` CLI is present, optionally launches a real,
+   separately-running `claude` sub-session and dispatches the handoff to it directly, instead of
+   leaving that to a human. Always asked, never silently defaulted either way; see `SKILL.md`
+   step 4 for the full branch-by-branch mechanics (path/worktree/naming resolution, readiness
+   polling, dispatch-metadata recording, and the documented permission-prompt-stall limitation).
 
 ### File Naming Convention
 
-Handoff documents are saved as:
-```
-~/.claude/handoff/active/<task-id>-<slug>.md
-```
-
-**Examples**:
-- `active/task-4.16.2-collection-indices-writer.md`
-- `active/bug-123-null-pointer-fix.md`
-- `active/feature-kafka-retry-logic.md`
+Handoff documents are saved as `~/.claude/handoff/active/<task-id>-<slug>.md` (e.g.
+`active/task-4.16.2-collection-indices-writer.md`). The same `<task-id>-<slug>` also doubles as
+the aoe session title (optionally `~`-prefixed when parent-linked — see `SKILL.md`) and worktree
+branch name if Live Dispatch runs.
 
 ### Key Philosophy
 
@@ -349,6 +272,7 @@ A good handoff document enables a fresh Claude session to:
 - ✅ Follow project patterns and standards
 - ✅ Make its own informed process decisions (TDD approach, xp-pair) from the complexity signal
 - ✅ Know when to pause and ask rather than push forward
+- ✅ Optionally, start working immediately via Live Dispatch instead of waiting on a human
 
 ### When to Use This Skill
 
@@ -366,124 +290,17 @@ A good handoff document enables a fresh Claude session to:
 
 ### Inter-Agent Communication Pattern
 
-This skill implements the **Handoff + Progress** pattern for inter-agent communication.
+This skill implements the **Handoff + Progress** pattern for inter-agent communication: the
+handoff document is the stable spec (updated only on fundamental changes); the `-PROGRESS.md`
+file is the mutable, primary channel the implementing agent uses to report decisions, progress,
+and blockers back to the orchestrator — **never Claude memory**, which is for durable
+cross-project preferences, not task-level state. If the implementing session was live-dispatched
+(see Live Dispatch above), `aoe send` is available as a secondary, backup nudge channel — never a
+substitute for updating the progress doc, which remains what actually gets read.
 
-#### Two-File Approach
-
-> **⚠️ Do NOT use Claude memory for inter-agent communication.**  
-> Progress, decisions, blockers, and questions belong in the `-PROGRESS.md` file — not in memory.  
-> Memory is for durable cross-project preferences, not task-level noise that would clutter future sessions.
-
-**Handoff Document (Stable — updated only per "When to Update Handoff Document" below)**:
-- Location: `~/.claude/handoff/active/{task-slug}.md`
-- Purpose: Original specification for implementing agent
-- Content: Executive summary, technical specs, architecture, implementation guide, acceptance criteria
-- Update policy: Only on fundamental architecture changes
-
-**Implementation Progress (Mutable)**:
-- Location: `~/.claude/handoff/active/{task-slug}-PROGRESS.md`
-- Purpose: Track implementation evolution, decisions, blockers, and feedback to the orchestrating session
-- Content: Architectural decisions, progress checklist, blockers, questions
-- Update policy: Implementing agent updates frequently — this is the communication channel back to the orchestrator
-
-#### Responsibility Model
-
-**Orchestrating Agent (this skill)**:
-- Creates handoff document with complete specification
-- Does NOT create progress document (implementing agent creates it)
-- Reviews progress document to answer questions
-- Updates handoff only on fundamental changes
-
-**Implementing Agent (reads handoff)**:
-- Reads handoff document (does not modify)
-- Creates progress document on first session
-- Updates progress document frequently — **this is the only feedback channel back to the orchestrator**
-- Records decisions, progress, blockers, questions in progress document (NOT in memory)
-- May request handoff updates for fundamental changes
-- **Does NOT archive** — leave both files in `active/` when done; the orchestrating session archives after verifying
-
-#### When to Update Handoff Document
-
-**Orchestrating agent updates handoff only when**:
-- Fundamental architecture changes invalidate original spec
-- Major scope changes require new implementation approach
-- Technology stack changes
-- Integration patterns change
-
-**Examples**:
-- Change: "Use PostgreSQL" → "Use MongoDB" (update handoff)
-- Change: "Analyze skill creates conversion-inventory.json" → "Maven plugin creates it" (update handoff)
-
-**NOT reasons to update handoff**:
-- Implementation details (Java class structure)
-- Progress notes
-- Questions/blockers
-- Tactical decisions within original architecture
-
-(These go in progress document)
-
-#### When Implementing Agent Updates Progress
-
-**Update progress document for**:
-- Architectural decisions made during implementation
-- Progress on tasks
-- Current blockers
-- Questions for orchestrating agent
-- Deviations from spec (with rationale)
-
-**Update after**:
-- Completing a task or phase
-- Making an architectural decision
-- Encountering a blocker
-- Discovering ambiguity in spec
-
-**Distinguish blockers from observations**: Use `### Blockers` for items requiring
-orchestrator reply before work continues. Use `### Observations` for corrections,
-surprises, or lessons that don't block progress. The orchestrating session will scan
-`### Blockers` first.
-
-#### Benefits
-
-- **Clean Specification**: Handoff remains readable, focused on "what to build"
-- **Clear Progress**: Progress document tracks "how we're building it"
-- **Better Communication**: Implementing agent can ask questions without polluting spec
-- **Audit Trail**: Decisions captured with date, rationale, impact
-
-#### Handoff Lifecycle (Orchestrating Session Responsibility)
-
-Handoff documents are **task-scoped** — they live in `active/` while a task is in flight and move to `archive/` when complete.
-
-**Directory layout**:
-```
-~/.claude/handoff/
-  active/    ← in-progress tasks (small, scannable)
-  archive/   ← completed tasks (audit trail preserved)
-```
-
-**When creating a handoff**, write it to `active/`:
-```
-~/.claude/handoff/active/<task-id>-<slug>.md
-~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md  (created by implementing agent)
-```
-
-**When to archive**: Once the orchestrating session confirms the result is complete and accurate (all acceptance criteria met, output verified), move both files to `archive/`:
-
-```bash
-SLUG="<task-id>-<slug>"
-mkdir -p ~/.claude/handoff/archive
-mv ~/.claude/handoff/active/${SLUG}.md ~/.claude/handoff/archive/
-mv -f ~/.claude/handoff/active/${SLUG}-PROGRESS.md ~/.claude/handoff/archive/ 2>/dev/null || true
-```
-
-**When NOT to archive**:
-- Implementation is still in progress (progress document shows incomplete items)
-- Acceptance criteria have not been verified by the orchestrating session
-- The implementing session flagged blockers or open questions
-
-**Verification before archiving**: Read the PROGRESS document and confirm:
-- [ ] All acceptance criteria checklist items are checked
-- [ ] No open blockers or questions remain
-- [ ] The orchestrating session has verified the output (not just taken the implementing agent's word)
-
-> **Why archive rather than delete?** Completed handoff docs preserve the *why* behind design decisions, anti-patterns to avoid on re-entry, and scope constraints that aren't obvious from the code. Archiving keeps `active/` small and scannable while retaining the audit trail.
+Full detail — the two files' exact contents and update policies, the orchestrator/implementer
+responsibility split, precisely when the handoff itself may be updated (including the `dispatch:`
+frontmatter carve-out), blockers-vs-observations conventions, and the archive lifecycle
+(`active/` → `archive/`, including clearing a live-dispatched session's aoe color on archive) —
+lives in `SKILL.md`'s "Inter-Agent Communication Pattern" section, not duplicated here.
 
