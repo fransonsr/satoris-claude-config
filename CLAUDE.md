@@ -157,6 +157,39 @@ above, generalized to agent-to-agent dispatch — subagents spawned via `Agent`,
   actually needed, since a fresh dispatch can reconstruct full context by reading the shared files
   rather than requiring a live process to remember it.
 
+**Concurrent Agents & Shared Mutable State**: guards against two more failure shapes distinct from
+the dispatch-communication issue above — agents racing on scratch files, and a mutation whose
+success is assumed rather than checked.
+- **Namespace ad hoc temp files by task, not by content type.** A generic name like
+  `/tmp/pr-body.md` is the obvious filename for the obvious task, which is exactly why two
+  unrelated concurrent agents on the same machine can independently choose it and silently
+  overwrite each other's content — including well after the file was first written, since a
+  command like `gh pr edit --body-file <path>` re-reads the path at execution time, not when it
+  was originally written, so any gap between writing and a later re-read is a window a second
+  writer can land in. Prefer a name that encodes the specific task: repo/PR number and a PID or
+  similar, e.g. `/tmp/<repo>-pr<number>-body-$$.md`. (This session's own scratchpad directory,
+  when one is provided, already avoids this by construction.)
+- **Never trust a mutation command's exit code or returned artifact (URL, ID, "success") as proof
+  the payload landed correctly.** After any `gh pr edit`/`gh pr create`/similar mutation, re-fetch
+  the live state and assert on content known to be present — ideally a byte-level diff against a
+  known-good reference, not just a substring/`grep` check, since a substring check can pass by
+  coincidence on contaminated content too.
+- **Chain a precondition with `&&`, not a separate sequential statement**, whenever a later
+  command's execution must depend on an earlier check's success — e.g. `validate.py && do_thing`,
+  not `validate.py; do_thing`, where a non-zero exit from `validate.py` (even from its own internal
+  `assert`) needs to actually stop `do_thing` rather than being trusted to propagate on its own.
+- **Why:** traced to a live incident where two independent agents in the same session, each
+  opening an unrelated PR in a different repo, both wrote to `/tmp/pr-body.md`; a later `gh pr
+  edit` by one of them silently picked up the other's content and replaced a PR's description
+  wholesale, caught only because that agent re-fetched and diffed content after every mutation
+  rather than trusting the CLI's return value. The same investigation separately found an
+  unchained validation-then-mutation sequence that ran the mutation regardless of whether the
+  validation had failed.
+- **How to apply:** whenever writing a script or ad hoc shell sequence that (a) uses a predictable
+  temp path outside a per-task workspace dir, (b) mutates shared external state (a PR, an issue, a
+  ticket) and trusts the command's own success signal, or (c) sequences a validation step before a
+  mutating one.
+
 ## Development Tools
 
 ### LSP (Language Server Protocol) Integration
