@@ -82,18 +82,16 @@ Before deciding to skip xp-pair, complete this checklist:
 
 ## Setup
 
-1. Create a team for this pairing session
-2. Spawn a driver subagent with explicit instructions
-3. Define acceptance criteria before driver starts coding
-4. Review code after each RED-GREEN-REFACTOR cycle
+1. Spawn a driver subagent with explicit instructions
+2. Define acceptance criteria before driver starts coding
+3. Review code after each RED-GREEN-REFACTOR cycle
 
 ## Instructions
 
-### Step 1: Create Team and Tasks
+### Step 1: Define Tasks
 
-```
-TeamCreate with team_name like "feature-name-dev"
-```
+The harness has a single implicit team — there is no team to create or delete. Track work with
+`TaskCreate`/`TaskUpdate` directly.
 
 Break the work into clear tasks with acceptance criteria:
 
@@ -236,9 +234,8 @@ reasoning depth; only the step that turns facts into a decision does.
 ### Step 3: Spawn Driver
 
 ```
-Task(
+Agent(
   subagent_type="general-purpose",
-  team_name="<your-team-name>",
   name="driver",
   prompt="<driver instructions below>"
 )
@@ -290,15 +287,20 @@ You are the DRIVER in an XP pair programming session with the navigator.
 
 ## Communication Protocol
 
+Message the session that spawned you — typically `"main"` if the navigator running this skill is
+itself the top-level session. If the navigator was itself spawned as a named agent (e.g. as part
+of a larger multi-agent setup), message that name instead. Don't message `"team-lead"` — there is
+no agent under that name unless one was deliberately spawned that way.
+
 **After completing each task:**
 1. **FIRST**: Use TaskUpdate to mark the task as completed
-2. **THEN**: Send completion message to "team-lead"
+2. **THEN**: Send completion message to the invoking session
 
-**For unit-testable code (Test-First approach):** After EACH RED-GREEN-REFACTOR cycle completes, send a message to "team-lead".
+**For unit-testable code (Test-First approach):** After EACH RED-GREEN-REFACTOR cycle completes, send a message to the invoking session.
 
-**For unit-testable code (Test-After approach):** After IMPLEMENT-TEST-REFACTOR completes, send a message to "team-lead".
+**For unit-testable code (Test-After approach):** After IMPLEMENT-TEST-REFACTOR completes, send a message to the invoking session.
 
-**For non-unit-testable code:** After each logical unit (complete feature, script, or tightly coupled set of features), send a message to "team-lead".
+**For non-unit-testable code:** After each logical unit (complete feature, script, or tightly coupled set of features), send a message to the invoking session.
 
 **Message format (Test-First):**
 ```
@@ -424,6 +426,28 @@ Driver will go idle frequently between tool calls and after sending messages. **
 - Use `SendMessage` tool with `to: "driver"` parameter
 - Keep messages concise and actionable
 - Example: "Good refactoring. Continue to next test."
+
+**⚠️ IMPORTANT: Never edit the driver's worktree directly**
+
+The driver owns its worktree and commits; the navigator's role is review and direction, not
+direct file operations. A driver reported as "done" or observed idle may still be mid-`git
+commit` — there is no reliable signal that it isn't, since idle notifications fire between tool
+calls generally, not specifically around commit operations. If the navigator edits a file in the
+driver's worktree at that moment (even a one-line, deliberately temporary change — e.g.
+reverting a fix to confirm a test genuinely fails without it), the driver's next `git add`/`git
+commit` can silently sweep the navigator's uncommitted edit into its own commit. `git status`/`git
+diff` show a clean tree afterward either way — there is no "uncommitted change" signal that
+anything went wrong.
+
+- **Don't** use Edit/Write/Bash to modify files in the driver's worktree from the navigator
+  session, even for "just checking." If you need to independently verify something (e.g. confirm
+  a test fails without the fix), ask the driver to do it, or check out a **separate** worktree/
+  clone of the same branch instead — this avoids the collision entirely.
+- If you must touch the driver's worktree directly, first `SendMessage` the driver and get explicit
+  confirmation it has no in-flight commit before editing anything.
+- After any navigator-side hands-on verification that touched the driver's worktree, diff the
+  driver's next commit against what you expected before treating it as clean — don't rely on
+  the tree looking clean as proof nothing leaked in.
 
 **Handling Scope Changes (Navigator-Initiated)**
 
@@ -613,10 +637,8 @@ SendMessage(
 )
 ```
 
-Then:
-```
-TeamDelete  # Cleans up team resources
-```
+There is no team to delete — the harness has a single implicit team, so no cleanup step is needed
+beyond shutting down the driver.
 
 ---
 
@@ -655,20 +677,20 @@ For projects with multiple related tasks, consider breaking work into small, rev
 
 **Session 1: Task #1**
 ```
-1. TeamCreate → TaskCreate (#1-#5) → Spawn driver
+1. TaskCreate (#1-#5) → Spawn driver
 2. Driver completes Task #1
 3. Pre-commit validation → Commit → Push → Create PR 1
-4. Shutdown driver → TeamDelete
+4. Shutdown driver
 5. Wait for PR 1 merge
 ```
 
 **Session 2: Task #2** (after PR 1 merged)
 ```
 1. Pull latest master
-2. TeamCreate → TaskCreate (#2-#5) → Spawn driver
+2. TaskCreate (#2-#5) → Spawn driver
 3. Driver completes Task #2
 4. Pre-commit validation → Commit → Push → Create PR 2
-5. Shutdown driver → TeamDelete
+5. Shutdown driver
 6. Wait for PR 2 merge
 ```
 
@@ -677,7 +699,7 @@ For projects with multiple related tasks, consider breaking work into small, rev
 ### Task List Continuity
 
 Tasks carry forward across sessions:
-- Task list stored in `~/.claude/tasks/{team-name}/`
+- Task list stored per-session under the harness's task tracking
 - Create all tasks upfront in Session 1 (Task #1-#5)
 - Later sessions reference same task IDs
 - Mark tasks completed as you go
@@ -869,11 +891,10 @@ Track ideas for improving this skill:
 - Acceptable for complex features where quality matters
 
 **Team Structure:**
-- Team name: `<feature>-dev`
-- Navigator: Main agent (you)
+- Navigator: Main agent (you) — the harness has a single implicit team, no team name to manage
 - Driver: Subagent with `general-purpose` type (has all tools including Edit, Write)
 
 **Communication:**
-- Driver uses SendMessage to team-lead after each cycle
+- Driver uses SendMessage to the invoking session (typically `"main"`) after each cycle
 - Navigator responds via text (automatically delivered to driver)
 - Use SendMessage for shutdown requests
