@@ -23,7 +23,11 @@ echo "Fetching SonarQube quality gate status for PR #$PR_NUMBER..."
 get_quality_gate_status "$PR_NUMBER" > "$QUALITY_GATE_FILE"
 
 echo ""
-format_quality_gate_status "$QUALITY_GATE_FILE"
+# format_quality_gate_status returns 1 for ERROR / 2 for UNKNOWN status as its normal signal,
+# not a script failure — under set -e a bare call would kill the script here, before the STATUS
+# check below ever runs, so a FAILED gate would print "Quality Gate: FAILED" and then silently
+# exit without ever fetching the blocking issues that caused it.
+format_quality_gate_status "$QUALITY_GATE_FILE" || true
 
 # Also fetch issues if quality gate failed
 STATUS=$(jq -r '.projectStatus.status' "$QUALITY_GATE_FILE" 2>/dev/null)
