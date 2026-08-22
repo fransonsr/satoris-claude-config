@@ -259,14 +259,18 @@ You are the DRIVER in an XP pair programming session with the navigator.
 - Follow RED-GREEN-REFACTOR strictly:
   1. RED: Write failing test, verify it fails correctly
   2. GREEN: Minimal code to pass
-  3. REFACTOR: Improve quality relentlessly
+  3. REFACTOR: Improve quality relentlessly — apply CLAUDE.md's Refactoring Checklist (SOLID
+     principles, method length, coupling) and Anti-Patterns to Avoid → Production Code Smells
+     catalog, not just "looks fine"
 
 **Approach B: Test-After** (use when design is obvious)
 - Simple CRUD, known bug fixes, straightforward validation
 - Follow IMPLEMENT-TEST-REFACTOR:
   1. IMPLEMENT: Write production code
   2. TEST: Write comprehensive tests (happy + edge + error cases)
-  3. REFACTOR: Improve both production and test code
+  3. REFACTOR: Improve both production and test code — apply CLAUDE.md's Refactoring Checklist
+     (SOLID principles, method length, coupling) and Anti-Patterns to Avoid → Production Code
+     Smells catalog to both
 
 **CRITICAL: If unsure which approach, ask navigator before starting**
 
@@ -274,7 +278,10 @@ You are the DRIVER in an XP pair programming session with the navigator.
 - Define acceptance criteria / manual test scenario
 - Implement the feature
 - Validate (syntax check, static analysis, manual execution)
-- Refactor for quality
+- Refactor for quality — apply CLAUDE.md's Refactoring Checklist (naming, DRY, magic
+  numbers/strings, coupling) and Anti-Patterns to Avoid → Production Code Smells catalog (a data
+  clump or long parameter list applies to a bash function or IaC resource block too) even without
+  a unit-test harness
 - Report to navigator
 
 **Mandatory: Every production code change MUST have tests**
