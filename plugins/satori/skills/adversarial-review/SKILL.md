@@ -245,8 +245,8 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
   instruction to embed for this class:
   - `code`: State Machine / Control Flow Logic, Defensive Guards (null / type / encoding),
     Operator Observability / Error Message Accuracy, Provenance / Identity Discrimination,
-    Infrastructure / Environment Handling, Test Integrity — read the full contents of changed
-    **source** files
+    Infrastructure / Environment Handling, Test Integrity, Code Smells / SOLID & Structural
+    Quality — read the full contents of changed **source** files
   - `doc`: Documentation Accuracy, Operator Spec Completeness, Spec Operator Walkthrough — read
     the full contents of changed **doc** files; read source files only if the lens explicitly
     requires cross-referencing code (e.g., Documentation Accuracy's doc-vs-code checks)
@@ -947,9 +947,9 @@ confidence/provenance information, distinct from Known Limitations above.>
 - **Language-agnostic**: The source file glob covers all common languages. The pattern-class
   heuristics are implementation-language-independent; they describe code logic patterns.
 - **Model cost**: Opus agents for the two highest-ROI classes (State Machine, Operator
-  Observability) are deliberate. Sonnet handles the rest. Budget one agent per pattern class
-  (currently 11 — the count comes from `$PATTERNS_FILE`, so it grows as classes are added), plus
-  up to one Fable fix-planning agent per qualifying finding in Phase D.
+  Observability) are deliberate. Sonnet handles the rest. Budget one agent per pattern class (the
+  count comes from `$PATTERNS_FILE`, so it grows as classes are added), plus up to one Fable
+  fix-planning agent per qualifying finding in Phase D.
 - **Cascade sweep is mandatory on first find**: The sweep rule is not optional — it prevents
   the "sibling miss" failure mode where a bug class is fixed in the reported instance but its
   identical siblings in the same diff survive.

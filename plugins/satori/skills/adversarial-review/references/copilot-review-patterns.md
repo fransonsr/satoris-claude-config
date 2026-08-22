@@ -798,6 +798,141 @@ Severity: when the canonical side is executable, default to MEDIUM even with no 
 
 ---
 
+### 12. Code Smells / SOLID & Structural Quality
+
+**Description**: Code that behaves correctly today but is structurally unsound — a method or
+class doing more than one job, a design closed against extension, tight coupling to concretions,
+or a named code smell (God class, primitive obsession, feature envy, data clump, long parameter
+list) that will make the next change harder or riskier than it needs to be. Unlike the
+correctness-focused classes above, this lens does not ask "does this do what it claims?" — it asks
+"will this be easy to safely change later?" The canonical definitions of every check below live in
+`~/.claude/CLAUDE.md` (this environment's global coding-standards file, loaded into every project);
+this class applies them as a review lens rather than restating them.
+
+*Lens type: heuristic-based.*
+
+*Provenance: proactive — none of the other existing classes check structural/design quality; all are
+correctness-bug lenses (state machine bugs, defensive guards, error messages, documentation drift,
+etc.). `~/.claude/CLAUDE.md` already defines a full Refactoring Checklist, a SOLID Principles
+section, and an Anti-Patterns catalog, but no adversarial-review lens applied them. Added directly
+from that gap, not from an observed PR round. If a project's own CLAUDE.md defines an equivalent
+checklist instead (or in addition), apply that project's version — the check is "does this
+project's stated design-quality bar exist and hold," not specifically this file's wording.*
+
+**How to find**:
+
+0. **Locate the checklist to apply**: check the reviewed project's own CLAUDE.md first (repo root,
+   or nearest ancestor) for an equivalent Refactoring Checklist / Anti-Patterns / SOLID Principles
+   section. If the project has one, use it in place of (or alongside, if it adds project-specific
+   items) the sections below — the goal is "does this project's own stated design-quality bar
+   hold," not specifically this file's wording. Fall back to `~/.claude/CLAUDE.md` (this
+   environment's global coding-standards file) only when the project defines no such section of
+   its own. The rest of this section names `~/.claude/CLAUDE.md`'s section headings as the default
+   reference; substitute the project's own section names when step 0 finds one.
+1. **Method length & extraction**: for every new or changed method, does it satisfy
+   `~/.claude/CLAUDE.md` → `## Refactoring Checklist` → `### Code Structure`'s length and
+   extraction thresholds? If not, flag for extraction.
+2. **Magic numbers/strings**: for every new or changed literal used in a conditional, threshold,
+   or repeated more than once, ask: "should this be a named constant?"
+3. **Duplicated logic**: does a new or changed block closely mirror logic that already exists
+   elsewhere in the same file or module? (This is about duplicated *implementation*, not a
+   restated *rule* across files or docs — see Relationship to adjacent classes below for the
+   boundary with Class 11.)
+4. **SOLID principles** (`~/.claude/CLAUDE.md` → `## Core Principles` → `### 4. SOLID Principles`),
+   for every new or substantially modified class:
+   - **SRP**: does it have more than one unrelated reason to change (e.g., it both parses input
+     and persists results, or both computes business logic and formats output)?
+   - **OCP**: does adding a new case require editing an existing `if`/`switch` chain rather than
+     extending via configuration, a strategy, or polymorphism?
+   - **LSP**: does an override narrow the base contract — throwing where the base guarantees a
+     value, returning `null` where the base guarantees non-null, or requiring stricter
+     preconditions than the base declares?
+   - **ISP**: does an interface force an implementor to provide a method it cannot meaningfully
+     support (an empty body, an `UnsupportedOperationException`)?
+   - **DIP**: does a high-level module construct or directly reference a concrete low-level
+     implementation (`new SomeConcreteClass()`, a static call, a service locator) instead of
+     depending on an injected abstraction?
+5. **Named smells** (definitions: `~/.claude/CLAUDE.md` → `## Anti-Patterns to Avoid` → `###
+   Production Code Smells`): does the change introduce or extend an instance of God class,
+   primitive obsession, feature envy, a data clump, or a long parameter list?
+6. **Dependency & coupling**: are dependencies received via constructor injection, or reached via
+   a static/global, an inline `new` of a concrete class, or a service locator? Is coupling to an
+   interface/abstraction, or to a concrete implementation?
+
+**Severity & blast_radius calibration** (this lens finds design-improvability, not confirmed
+defects — the generic severity/blast_radius rules embedded in every adversarial-review agent
+prompt default toward "confirmed bug" framing that doesn't fit here):
+- **Severity**: default LOW; use MEDIUM only when the structural issue will make a specific,
+  already-planned upcoming change materially harder or riskier. Reserve HIGH/CRITICAL for cases
+  where the structural issue itself causes or masks a correctness problem (at which point a
+  correctness-focused class above likely already covers it too).
+- **blast_radius**: default `local`. Report `cross_file` only when the *identical* structural
+  defect is provably duplicated in another file's source (e.g., the same God-class split needed in
+  two places) — "other callers of this constructor exist elsewhere" describes an opportunity for a
+  cleaner design, not a defect spreading across files, and is not on its own grounds for
+  `cross_file`.
+- **Disposition**: adversarial-review's Phase C has no separate bucket for "deferred design
+  improvement" — a Class 12 finding a reviewer defers still goes through the standard **Accepted
+  risk** disposition like any other finding, and lands in the PR description's Known Limitations
+  the same way. The `blast_radius` default above (`local`) is what actually keeps most Class 12
+  findings out of a round's confirmed cross-file yield and out of that PR-description obligation
+  in the first place; reserve `cross_file` — and therefore inclusion in the yield count — for the
+  rare case where the same structural defect is genuinely duplicated elsewhere, not for every
+  finding this lens produces.
+
+**Example — feature envy resolved by moving the method** (illustrative):
+```java
+// BEFORE: applyDiscount reads two of Customer's fields to decide something about
+// Customer — the logic belongs on Customer, not on the class computing invoice totals
+class InvoiceProcessor {
+    void applyDiscount(Customer customer, Invoice invoice) {
+        if (customer.getLoyaltyYears() > 5 && customer.getTotalSpend() > 10000) {
+            invoice.setTotal(invoice.getTotal() * 0.9);
+        }
+    }
+}
+
+// AFTER: the eligibility check moves to the class whose data it actually uses
+class Customer {
+    boolean isEligibleForLoyaltyDiscount() {
+        return loyaltyYears > 5 && totalSpend > 10000;
+    }
+}
+class InvoiceProcessor {
+    void applyDiscount(Customer customer, Invoice invoice) {
+        if (customer.isEligibleForLoyaltyDiscount()) {
+            invoice.setTotal(invoice.getTotal() * 0.9);
+        }
+    }
+}
+```
+
+**Example — data clump / long parameter list resolved by a config object** (illustrative):
+```java
+// BEFORE: five parameters always travel together and will grow with the next field addition
+void createShipment(String street, String city, String state, String zip, String country) { ... }
+
+// AFTER: the recurring group becomes its own value object
+void createShipment(Address address) { ... }
+```
+
+**Relationship to adjacent classes**:
+- **Class 1 (State Machine / Control Flow Logic)** and **Class 8 (Semantic Correctness / Logical
+  Completeness)**: both ask whether code *behaves correctly*. This class assumes the code already
+  behaves correctly and asks whether it is *well-designed* — whether the next change will be easy
+  or risky. A method can pass every check in Classes 1 and 8 while still being a 200-line God
+  method; that's this class's finding, not theirs.
+- **Class 11 (Cross-File Rule Consistency)**: also flags duplication, but Class 11's target is a
+  *stated rule, procedure, or contract* restated across files (docs, or a script reproduced
+  inline) that can drift from its canonical source. This class's duplication check (item 3 above)
+  is about repeated *implementation logic within the same file or module* that should be
+  extracted into a shared method — no cross-file canonical source is involved.
+- **Class 6 (Documentation Accuracy)**: checks whether a project's own docs match its code or
+  other docs. This class doesn't check that — it reads CLAUDE.md only to source its checklist
+  definitions (step 0 above), then evaluates the structure of the *code* itself, not documentation.
+
+---
+
 ## Update Protocol
 
 This is a **living document** — its lenses accumulate across all projects and all PRs, not just
@@ -820,10 +955,20 @@ vs. extending an existing one:
 - **Extend existing**: the finding is a new instance or sharper example of an existing lens; add
   it as an additional example or refine the heuristic
 
-**Step 3 — Sync CLAUDE.md.** If the class list here has changed (new class added, class renamed,
-or description materially changed), update the "PR Review Issue Patterns" summary in
-`~/.claude/CLAUDE.md`. The summary should list class names and one-line descriptions only — no
-counts, no thread totals.
+**Step 3 — Sync CLAUDE.md.** `~/.claude/CLAUDE.md`'s "PR Review Issue Patterns" section is a
+pointer only, by design — it does not enumerate class names or descriptions, since doing so would
+itself be a Class 11 restatement of this file's own class list, drifting the same way every other
+cross-file restatement does. When a class is added, renamed, or materially changed, no edit to
+that pointer's *text* is needed; just verify `~/.claude/copilot-review-patterns.md` and
+`plugins/satori/skills/adversarial-review/references/copilot-review-patterns.md` are still the two
+paths CLAUDE.md names, and its `cp` command between them still resolves correctly.
+
+**Note — a third, plugin-cached copy can exist outside both paths above**: an installed Claude
+Code plugin can cache its own snapshot of this file, separate from either path Step 3 names.
+`adversarial-review/SKILL.md`'s own Setup Step 1 resolves — and echoes — exactly which copy a
+given review actually reads; check that echoed path (not this Note, which doesn't implement that
+resolution) before trusting a review's verdict on a class added or changed since the cache was
+last refreshed.
 
 **When adding a new class**, include:
 - Name
@@ -834,4 +979,4 @@ counts, no thread totals.
 - Provenance note
 - Relationship to the nearest adjacent class (to prevent overlap drift)
 
-*Last updated: 2026-08-12.*
+*Last updated: 2026-08-22.*
