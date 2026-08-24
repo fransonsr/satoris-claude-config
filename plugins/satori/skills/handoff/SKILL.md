@@ -488,37 +488,33 @@ Set expectations for when the implementing session should stop and ask rather th
    - The launch→send race is real: a fresh `claude` process opening a directory it's never
      opened before shows a first-run folder-trust dialog, and a message sent before that's
      resolved can end up answering the trust dialog instead of reaching the agent.
-   - `aoe session show --json`'s `status` field does **not** distinguish "blocked on the
-     first-run trust dialog" from "genuinely ready at its prompt" — both empirically report
-     `"idle"` (verified: polled a throwaway scratch session every second for 10s while it sat at
-     the trust dialog; `status` stayed `"idle"` throughout; confirmed via direct pane capture
-     that it was, in fact, still showing the dialog; after accepting the dialog and reaching a
-     normal ready prompt, `status` still read `"idle"` — identical to the blocked state).
-     `status` does correctly flip to `"running"` while the agent is actively generating and back
-     to `"idle"` on completion — useful, but orthogonal to this check.
-   - **The check must be positive, not just an absence check.** A pane captured in its first
-     fraction of a second — before the trust dialog, or anything else, has even drawn — contains
-     no trust-dialog markers either, and a purely negative check ("ready once markers are
-     absent") would wrongly call that blank capture ready, sending straight into a dialog that
-     simply hadn't rendered yet. Require **both**: (1) trust-dialog markers absent (e.g. "trust
-     this folder" / "Enter to confirm · Esc to cancel"), **and** (2) a positive ready-signal
-     present — the normal input-prompt box (a line starting with `❯`) together with the bottom
-     status/mode line below it. Treat an empty or too-short-to-tell capture as *not ready*, never
-     as a pass by default.
-   - Wait at least ~2s after creation before the first poll, so the terminal UI has had time to
-     draw something at all — polling immediately after `--launch` returns is exactly how a
-     purely-negative check passes vacuously on a still-blank pane.
-   - Poll pane content: `aoe session capture <id> --strip-ansi -n 20`, every ~2s for up to ~30s
-     total.
-   - Handle `aoe session capture` (and, in (e), `aoe list --json`) exiting non-zero explicitly —
-     an errored check is not a pass. Retry a small number of times; if it keeps failing, treat it
-     the same as the timeout below rather than silently treating a failed check as "ready."
-   - On timeout without reaching ready (dialog never clearing, or the check itself repeatedly
-     erroring): do not send blind. Print the exact `aoe send <id> "<message>"` command (and
-     `aoe session attach <id>` as an alternative) for a human to run once whatever's blocking it
-     is cleared. Do not reach for `--yolo` / `--trust-hooks` to make this problem go away —
-     establishing a default trust/permission-bypass policy for dispatched sessions is a separate,
-     explicitly deferred follow-on, not a decision made here.
+   - **`aoe session show --json`'s `status` field is the check — poll that, not pane content.**
+     Verified directly against a real trust dialog (dispatched into a genuinely fresh directory
+     never opened before — a worktree of an *already-trusted* repo doesn't reproduce this; trust
+     is inherited at the repo level, confirmed by two dispatches that landed in a new worktree of
+     a trusted repo and never saw the dialog at all): `status` reads `"waiting"` while the trust
+     dialog is showing, `"running"` immediately after it's answered, then settles to `"idle"`
+     once genuinely ready. `"waiting"` isn't specific to the trust dialog either — sending a
+     request that triggered an unrelated, later permission prompt (reading a file outside the
+     project directory) reproduced the identical `"waiting"` reading. Ready = `status == "idle"`;
+     `"waiting"` or `"running"` = not ready yet.
+   - Wait at least ~2s after creation before the first poll regardless — this hasn't been
+     independently verified as immune to the same blank-pane-at-t=0 risk a pure pane-content check
+     has (nothing may have rendered yet, which could plausibly read as `"idle"` falsely for the
+     same reason an empty pane capture would wrongly read as "no dialog markers present"). Keep
+     the settle delay as a cheap defensive margin rather than assume the field can't have an
+     equivalent bootstrap gap.
+   - Poll `aoe session show <id> --json`, every ~2s for up to ~30s total.
+   - Handle `aoe session show` (and, in (e), `aoe list --json`) exiting non-zero explicitly — an
+     errored check is not a pass. Retry a small number of times; if it keeps failing, treat it the
+     same as the timeout below rather than silently treating a failed check as "ready."
+   - On timeout without reaching `"idle"` (still `"waiting"`/`"running"` after ~30s, or the check
+     itself repeatedly erroring): do not send blind. Print the exact `aoe send <id> "<message>"`
+     command (and `aoe session attach <id>` as an alternative) for a human to run once whatever's
+     blocking it is cleared. Do not reach for `--yolo` / `--trust-hooks` to make this problem go
+     away — establishing a default trust/permission-bypass policy for dispatched sessions is a
+     separate, explicitly deferred follow-on, not a decision made here, and cuts against the point
+     below: permission prompts are supposed to reach the user, not be routed around.
 
    **i. Kickoff message**:
    - Once ready: `aoe send <id> "<terse pointer — e.g. 'Read
@@ -528,12 +524,15 @@ Set expectations for when the implementing session should stop and ask rather th
      Communication" section for why detailed content routes through the shared file rather than
      the message payload.
 
-   **Known limitation (not solved here)**: a dispatched session can stall indefinitely on any of
-   its *own later* permission prompts (tool-use approval, MCP trust, etc.) since nobody is
-   watching it live. The readiness poll in (h) only covers the one prompt guaranteed to appear at
-   launch — the first-run folder-trust dialog. It does not generalize to arbitrary later prompts.
-   If a dispatched session goes quiet, check on it manually (`aoe session capture <id>` or
-   `aoe session attach <id>`).
+   **By design, not a limitation: Live Dispatch is a convenience for starting the session, not an
+   unattended/autonomous-execution mechanism.** The readiness poll in (h) exists only to protect
+   the one thing this step automates without a human present — the single kickoff message in
+   (i). It deliberately does not extend into a standing "watch for later prompts" loop, even
+   though `status` (per (h)) would technically support one. Once the kickoff lands, the model is
+   the same as any session the user started by hand: the user is expected to shift attention to
+   the dispatched session (`aoe session attach <id>` or the aoe dashboard) and grant whatever
+   permissions it asks for as they come up. A later permission prompt is the normal, expected
+   interaction — not a stall to detect, poll for, or work around.
 
 ## File Naming Convention
 
