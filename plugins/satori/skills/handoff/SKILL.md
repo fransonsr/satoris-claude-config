@@ -371,8 +371,21 @@ Set expectations for when the implementing session should stop and ask rather th
      dispatch from.
 
    **c. Worktree decision**:
-   - Existing fleet worktree convention detected at the confirmed path's workspace root — check
-     explicitly, e.g. `test -f "<workspace-root>/repos/worktree.sh"` or
+   - **First check whether the confirmed path from (b) *is* the fleet workspace root itself**
+     (fired via (b)'s `default path = cwd` branch, or the no-safe-default branch resolving to it)
+     rather than a `<workspace-root>/repos/<group>/<repo-name>/` subpath. If so, a
+     `repos/worktree.sh`-style convention does not apply to this launch even though it exists
+     somewhere under this root: it worktrees named *member* repos, not the container repo, and
+     there is no `<repo-name>` to hand it when the launch target already is the container. Treat
+     this exactly like "no existing convention detected" below — skip straight to that bullet.
+     Don't conflate "a convention exists somewhere under this root" with "a convention applies to
+     this launch": that conflation is what let three live-dispatched sessions land directly in a
+     shared, un-worktreed workspace-root checkout with no worktree question ever asked, which then
+     collided with each other on Claude Code's directory-keyed session identity (aoe silently
+     reattached one session's conversation to a different session's — see the aoe
+     shared-directory-session-collision write-up for the mechanism).
+   - Otherwise, existing fleet worktree convention detected at the confirmed path's workspace
+     root — check explicitly, e.g. `test -f "<workspace-root>/repos/worktree.sh"` or
      `ls -d "<workspace-root>/repos/"*"-worktrees" 2>/dev/null` for a pre-existing
      `<repo>-worktrees/` sibling. Found → defer to it: name the exact command to run (e.g.
      `repos/worktree.sh add <task-id>-<slug> <repo-name>`), then re-resolve the launch path to

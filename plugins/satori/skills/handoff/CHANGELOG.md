@@ -5,6 +5,24 @@ All notable changes to the Handoff plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.2] - 2026-08-28
+
+### Fixed
+
+- **Worktree decision (4c) silently no-opped when the launch path was the fleet workspace root
+  itself** — (b)'s `default path = cwd` branch can resolve the confirmed launch path to a fleet
+  container repo's own root rather than a `repos/<group>/<repo-name>/` subpath. (c)'s convention
+  check (`test -f "<workspace-root>/repos/worktree.sh"`) still found the script — it's right there
+  under that root — and deferred to it, but a `repos/worktree.sh`-style convention worktrees named
+  *member* repos, not the container itself, and there's no `<repo-name>` to hand it when the
+  launch target already is the container. Confirmed in production: three live-dispatched sessions
+  landed directly in a shared, un-worktreed workspace-root checkout with no worktree question ever
+  asked, then collided with each other on Claude Code's directory-keyed session identity (aoe
+  silently reattached one session's conversation to a different session's). Added an explicit
+  carve-out at the top of (c): if the confirmed path is the workspace root itself, treat it like
+  "no existing convention detected" and fall through to offering aoe's own worktree creation,
+  instead of deferring to a convention with no derivable repo name
+
 ## [2.7.1] - 2026-08-24
 
 ### Fixed
