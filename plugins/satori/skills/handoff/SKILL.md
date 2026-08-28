@@ -391,14 +391,16 @@ Set expectations for when the implementing session should stop and ask rather th
      `repos/worktree.sh add <task-id>-<slug> <repo-name>`), then re-resolve the launch path to
      the worktree it creates. Do not drive it via aoe's own worktree flags — a repo that already
      has a worktree convention doesn't need a second, competing one.
-   - No existing convention detected → offer aoe's own worktree creation as the recommended
-     default via `AskUserQuestion`: `-w <branch-name> -b --base-branch <branch-from>` (using the
-     frontmatter's own `branch-from` as the base). `<branch-name>` is `<task-id>-<slug>` — or that
-     value plus whatever disambiguation suffix (e) below ends up appending to the title, if it
-     does; the branch name and the session title must move together, since a mismatched pair is
-     confusing on its own and can independently collide on `-b` if a prior run already created the
-     un-suffixed branch. User may decline and dispatch directly against the resolved path with no
-     worktree.
+   - No existing convention detected → **always** create the session in an aoe-managed worktree:
+     `-w <branch-name> -b --base-branch <branch-from>` (using the frontmatter's own `branch-from`
+     as the base). `<branch-name>` is `<task-id>-<slug>` — or that value plus whatever
+     disambiguation suffix (e) below ends up appending to the title, if it does; the branch name
+     and the session title must move together, since a mismatched pair is confusing on its own and
+     can independently collide on `-b` if a prior run already created the un-suffixed branch. This
+     is not asked about (no `AskUserQuestion`, no decline path) — a live-dispatched session sharing
+     an un-worktreed directory with any other session is exactly the identity-collision bug the
+     carve-out above exists to prevent, and that risk doesn't go away just because a human declined
+     the worktree for this one dispatch.
    - **Re-run case**: if the worktree directory or branch from a prior dispatch of this exact
      task already exists (`repos/worktree.sh add` erroring that the target exists, or aoe's `-b`
      failing because the branch survived an earlier run), don't treat that as a fresh-creation
@@ -561,8 +563,8 @@ Handoff documents are saved as:
 
 The same `<task-id>-<slug>` doubles as the `aoe` session title (optionally `~`-prefixed — see
 step 4(e) — when the session is parent-linked; the prefix is display-only and never appears in
-the branch name) and, when a worktree is created, the git branch name if Live Dispatch (How It
-Works step 4) runs — one identifier, reused rather than invented fresh at dispatch time.
+the branch name) and the git branch name of the worktree Live Dispatch (How It Works step 4)
+always creates when it runs — one identifier, reused rather than invented fresh at dispatch time.
 
 ## Key Philosophy
 

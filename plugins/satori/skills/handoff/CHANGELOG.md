@@ -5,6 +5,19 @@ All notable changes to the Handoff plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-08-28
+
+### Changed
+
+- **Live Dispatch's worktree creation is no longer optional** — step 4c's "no existing convention
+  detected" branch used to offer aoe's own worktree creation via `AskUserQuestion`, with the user
+  free to decline and dispatch directly against the resolved path. That decline path is removed:
+  a worktree (via aoe's own `-w`/`-b` flags) is now always created, with no question asked. A
+  human declining the worktree for one dispatch doesn't make the underlying risk go away — a
+  live-dispatched session sharing an un-worktreed directory with any other session is exactly the
+  Claude-Code-directory-keyed identity collision the 2.7.2 carve-out above already exists to
+  prevent for the workspace-root case specifically; this closes the same gap for the general case
+
 ## [2.7.2] - 2026-08-28
 
 ### Fixed
