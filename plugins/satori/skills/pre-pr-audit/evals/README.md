@@ -64,7 +64,47 @@ tests that the finding reaches the user — but it is slower and needs a real se
 
 ## Known coverage gaps
 
-- `_check_resource_lifecycle`'s project-pattern branch (`project_patterns` argument) is not
-  covered by any case below.
-- No case asserts the *absence* of a finding on clean input, so a checker method that fired
-  unconditionally would still pass every case here. Worth adding.
+Corrected 2026-08-29 after a `/satori:reasoning-audit` pass found both original bullets factually
+wrong. Recorded here rather than quietly rewritten, because a gap list that misstates the gaps is
+worse than none — it reads as "we know about this hole and chose not to test it."
+
+- **`--project-patterns` is not an untested branch — it is dead code.** `project_patterns` is
+  accepted at `pattern_checker.py:37`, assigned at `:40`, passed in from `main()` at `:795`, and
+  never read again. `_check_resource_lifecycle` takes no such parameter. No case can cover it
+  because there is nothing to cover. Meanwhile `SKILL.md:270` passes the flag and `SKILL.md:322-324`
+  advertises the capability — so the feature is documented, wired, and inert. Implement it or remove
+  it along with those two SKILL.md sites.
+- **`_check_resource_lifecycle`'s third branch is genuinely uncovered**: `FileInputStream` /
+  `BufferedReader` / `Files.newBufferedReader` without try-with-resources (`:225-253`, HIGH).
+  `resource-lifecycle.md` exercises only the Spark persist/broadcast branches. That is the only
+  branch relevant outside Spark codebases.
+- **No case runs a wholly clean file end to end.** The original bullet claimed no case asserts the
+  *absence* of a finding, which is false — at least 6 of the 10 carry a negative-control criterion
+  ("produces no finding", "clears the finding"). What is missing is narrower: a file with no planted
+  defect at all, which is what would catch a check that fired unconditionally on every input.
+- **Java checks run against Python files and nothing asserts either way.** `check_all`
+  (`:80-92`) gates only `_check_python_subprocess_safety` on `.py`; the other nine run on Python
+  source, and `SKILL.md:170-172` deliberately feeds Python in. `_check_edge_cases`' `.get\s*\(`
+  will fire on an ordinary `d.get(k)` and emit a Java recommendation.
+- **Severity and category are unpinned** in `resource-lifecycle.md` and `try-finally-scope.md`,
+  where the other eight cases pin both. A severity regression in either would pass.
+
+## Defects found by the 2026-08-29 audit, not yet fixed
+
+These are checker bugs, not case bugs. Listed here so a first run does not mistake them for its
+own failures; each needs a test alongside the fix.
+
+- **`:442` tests `'/src/main/java/' in file` — with a leading slash.** `git diff --name-only`
+  returns repo-relative paths, so a single-module Java repo never matches and has silently received
+  zero test-coverage findings. `mod/src/main/java/...` works; `src/main/java/...` does not.
+- **`_has_cleanup_in_scope` matches the literal `.unpersist()`**, empty parens included, so the
+  common `unpersist(true)` form reads as no-cleanup and fires a CRITICAL false positive.
+- **`:336` counts commas in an 11-line window** to decide `Collectors.toMap` arity. Any other comma
+  within ±5 lines suppresses the finding, so `edge-cases.md`'s second half can pass or fail on
+  incidental layout.
+- **`silent-failures.md`'s documented keyword list disagrees with `:259-260`.** The case names
+  "missing" and "malformed", which the implementation lacks; the implementation has "corrupt",
+  "conflict", "mismatch", which the case omits. Decide which is intended.
+- **`narrow-catch.md` is satisfiable only by a fully-qualified call.** The check greps the preceding
+  5 lines for a `java`/`org.apache` token, and idiomatic Java puts that in an import at the top — so
+  the check almost never fires in production and the case passes without noticing. Worth adding.

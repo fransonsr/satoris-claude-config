@@ -229,9 +229,13 @@ only after a grep-based attempt already came up short. Verified working in this 
 type — `ToolSearch(query="select:LSP")` loads it):
 - Java (`jdtls-lsp`) and Python (`pyright-lsp`) — the two languages actually used for skill
   scripts and production code in this environment; both confirmed working.
-- Also enabled, for whatever a project needs: C/C++ (`clangd-lsp`), C# (`csharp-lsp`), Go
-  (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP (`php-lsp`), Ruby (`ruby-lsp`), Rust
-  (`rust-analyzer-lsp`), Swift (`swift-lsp`), TypeScript/JavaScript (`typescript-lsp`).
+- **Available in the marketplace but NOT currently enabled** — `enabledPlugins` holds only the two
+  above, so these need enabling before they will do anything: C/C++ (`clangd-lsp`), C#
+  (`csharp-lsp`), Go (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP (`php-lsp`), Ruby
+  (`ruby-lsp`), Rust (`rust-analyzer-lsp`), Swift (`swift-lsp`), TypeScript/JavaScript
+  (`typescript-lsp`). Verified 2026-08-29. This bullet previously read "Also enabled," which would
+  lead an agent to reach for LSP on a Go or TypeScript file, get nothing, and conclude LSP is broken
+  rather than not enabled for that language.
 - **Bash/shell has no LSP server in this environment.** Use `shellcheck <file>` (installed at
   `/usr/bin/shellcheck`) for static analysis instead — it catches unused vars, quoting bugs, and
   unsafe patterns. It's a linter, not a language server, so there's no goToDefinition/

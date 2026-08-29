@@ -70,6 +70,20 @@ DATED_TABLE_ROW = re.compile(
     r"^\s*\|[^|]+\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(PASS|FAIL|PENDING)\b",
     re.IGNORECASE,
 )
+# The same row shape with an empty or dashed date cell — "never run". Worse than
+# stale, and invisible until this was added: the em-dash is the cc-plugins
+# convention, so every un-run eval README read as clean (found 2026-08-29).
+UNRUN_TABLE_ROW = re.compile(
+    r"^\s*\|[^|]+\|\s*[—–-]?\s*\|\s*(PASS|FAIL|PENDING)\b",
+    re.IGNORECASE,
+)
+# A dated section header: `## Key Improvement (2026-04-17)`. Carries no
+# verification keyword, so the inline pattern above cannot see it.
+DATED_HEADER = re.compile(r"^\s*#{1,6}\s+.*\((\d{4}-\d{2}-\d{2})\)")
+# An undated novelty marker: `(NEW)`, `(NEW - 2026-04-27)`. It cannot expire, so
+# past a couple of them it stops carrying information.
+NOVELTY_MARKER = re.compile(r"\(NEW\b[^)]*\)")
+NOVELTY_MARKER_THRESHOLD = 2
 CITATION_CUES = (
     "see ", "per ", "documented in", "described in", "defined in",
     "refer to", "for the", "listed in", "specified in",
@@ -417,25 +431,87 @@ def check_self_dated_claims(path: pathlib.Path, text: str, max_age_days: int,
                             today: datetime.date) -> List[Finding]:
     """Flag text carrying its own validation date whose re-check window has passed."""
     findings = []
+    unrun_lines = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        for keyword, datestr in _dated_claims_on(line):
-            claimed = _parse_date(datestr)
-            if claimed is None:
-                continue
-            age = (today - claimed).days
-            if age > max_age_days:
-                findings.append(Finding(
-                    str(path), lineno, "self-dated",
-                    f"'{keyword}' claim dated {datestr} is {age} days old "
-                    f"(window {max_age_days}); unverified rather than wrong — due for re-check"))
+        findings.extend(_check_one_dated_line(path, lineno, line, max_age_days, today))
+        if _is_unrun_row(line):
+            unrun_lines.append(lineno)
+
+    findings.extend(_check_unrun_rows(path, unrun_lines))
+    findings.extend(_check_novelty_markers(path, text))
     return findings
 
 
+def _check_one_dated_line(path, lineno, line, max_age_days, today) -> List[Finding]:
+    """Judge a line by its NEWEST dated claim.
+
+    Only the newest date governs: "Verified X, re-verified Y" is a maintained claim,
+    not a stale one, and reading the older date produced a false positive at tight
+    windows (observed 2026-08-29).
+    """
+    dated = [(k, ds, _parse_date(ds)) for k, ds in _dated_claims_on(line)]
+    dated = [(k, ds, d) for k, ds, d in dated if d is not None]
+    if not dated:
+        return []
+
+    keyword, datestr, claimed = max(dated, key=lambda item: item[2])
+    age = (today - claimed).days
+    if age <= max_age_days:
+        return []
+    return [Finding(str(path), lineno, "self-dated",
+                    f"'{keyword}' claim dated {datestr} is {age} days old "
+                    f"(window {max_age_days}); unverified rather than wrong — "
+                    "due for re-check")]
+
+
+def _is_unrun_row(line: str) -> bool:
+    """A results row with no date, and no dated claim to explain it."""
+    return bool(UNRUN_TABLE_ROW.match(line)) and not _dated_claims_on(line)
+
+
+def _check_unrun_rows(path: pathlib.Path, linenos: List[int]) -> List[Finding]:
+    """Report never-run results rows once per file, with a count.
+
+    One sentence repeated per row is noise; a reader needs to know the suite has
+    never run, not to read the same finding ten times.
+    """
+    if not linenos:
+        return []
+    where = (f"line {linenos[0]}" if len(linenos) == 1
+             else f"lines {linenos[0]}-{linenos[-1]}")
+    return [Finding(str(path), linenos[0], "self-dated",
+                    f"{len(linenos)} results row(s) have no date ({where}) — those cases "
+                    "have never been run. A suite that has never reported bad news has not "
+                    "demonstrated it can; 'never run' is a weaker position than 'run once, "
+                    "long ago'")]
+
+
+def _check_novelty_markers(path: pathlib.Path, text: str) -> List[Finding]:
+    """Flag a thicket of undated '(NEW)' markers, once per file.
+
+    One marker on genuinely new content is normal. Nineteen, the oldest 4.5 months
+    old and labelling the central mechanism, is the signal — reported once with a
+    count rather than once per line, so the finding stays readable.
+    """
+    lines = text.splitlines()
+    hits = [i for i, line in enumerate(lines, 1) if NOVELTY_MARKER.search(line)]
+    if len(hits) < NOVELTY_MARKER_THRESHOLD:
+        return []
+    return [Finding(str(path), hits[0], "self-dated",
+                    f"{len(hits)} undated '(NEW)' markers in this file "
+                    f"(first at line {hits[0]}, last at line {hits[-1]}). A marker with no "
+                    "date cannot expire, so past a couple of them it stops distinguishing "
+                    "new content from settled content")]
+
+
 def _dated_claims_on(line: str):
-    """Yield (keyword, date) pairs for both inline claims and results-table rows."""
+    """Yield (keyword, date) pairs for inline claims, dated headers, and table rows."""
     inline = DATED_CLAIM.findall(line)
     if inline:
         return inline
+    header = DATED_HEADER.match(line)
+    if header:
+        return [("section header", header.group(1))]
     row = DATED_TABLE_ROW.match(line)
     return [(row.group(2).upper(), row.group(1))] if row else []
 
@@ -460,15 +536,36 @@ def check_unreferenced_scripts(root: pathlib.Path) -> List[Finding]:
     if not skill_texts:
         return []
 
-    findings = []
-    for script in sorted(_iter_shipped_scripts(root)):
-        if not any(script.name in text for text in skill_texts):
-            findings.append(Finding(
-                str(script), None, "bypassed-scripts",
-                f"no SKILL.md references `{script.name}`, so nothing will invoke it; "
-                "a shipped script encodes reasoning already done — an unreferenced one "
-                "means that reasoning is being re-derived inline or not at all"))
-    return findings
+    scripts = sorted(_iter_shipped_scripts(root))
+    reachable = _reachable_scripts(scripts, skill_texts)
+
+    return [Finding(
+        str(script), None, "bypassed-scripts",
+        f"no SKILL.md references `{script.name}`, directly or through a wrapper, so "
+        "nothing will invoke it; a shipped script encodes reasoning already done — an "
+        "unreferenced one means that reasoning is being re-derived inline or not at all")
+        for script in scripts if script not in reachable]
+
+
+def _reachable_scripts(scripts: List[pathlib.Path], skill_texts: List[str]) -> set:
+    """Scripts a SKILL.md can reach, following one level of wrapper indirection.
+
+    A `.sh` that `exec`s a `.py` is the common shape; greping SKILL.md only for the
+    `.py`'s own name reported a live script as orphaned (confirmed false positive,
+    2026-08-29). Indirection stops at one level and the wrapper must itself be
+    directly referenced, so two mutually-referencing orphans cannot vouch for each
+    other.
+    """
+    direct = {s for s in scripts if any(s.name in text for text in skill_texts)}
+    wrapper_texts = []
+    for wrapper in direct:
+        try:
+            wrapper_texts.append(wrapper.read_text())
+        except OSError:
+            continue
+    indirect = {s for s in scripts
+                if s not in direct and any(s.name in t for t in wrapper_texts)}
+    return direct | indirect
 
 
 def _collect_skill_texts(root: pathlib.Path) -> List[str]:
@@ -510,7 +607,35 @@ def classify_target(path: pathlib.Path) -> str:
         return "script"
     if path.name.lower() in CLAUDE_MD_NAMES:
         return _classify_claude_md(path)
+    if _looks_like_eval_suite(path):
+        return "eval-suite"
     return "unclassified"
+
+
+def _looks_like_eval_suite(path: pathlib.Path) -> bool:
+    """An eval/test-results document under an evals/ directory.
+
+    Added after the eval surfaced that the artifact family which motivated this
+    skill — a stale eval suite — was the one kind it could not classify, so lens 5
+    named the convention while refusing to accept a file that used it.
+    """
+    if path.suffix.lower() != ".md":
+        return False
+    if "evals" not in {part.lower() for part in path.parts}:
+        return False
+    try:
+        return _has_results_evidence(path.read_text())
+    except OSError:
+        return False
+
+
+def _has_results_evidence(text: str) -> bool:
+    for line in text.splitlines():
+        if DATED_TABLE_ROW.match(line) or UNRUN_TABLE_ROW.match(line):
+            return True
+        if DATED_CLAIM.search(line):
+            return True
+    return False
 
 
 def _classify_claude_md(path: pathlib.Path) -> str:
@@ -531,6 +656,7 @@ LENSES_BY_KIND = {
     "skill": ("frontmatter", "structure", "citations", "self-dated", "bypassed-scripts"),
     "standards-claude-md": ("citations", "self-dated"),
     "project-claude-md": ("citations", "self-dated"),
+    "eval-suite": ("citations", "self-dated"),
     "script": ("self-dated",),
 }
 

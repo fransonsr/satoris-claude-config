@@ -51,7 +51,13 @@ it poorly for missing build commands and architecture sections it correctly shou
 | **project-context CLAUDE.md** | Documents build/test/deploy commands, directory structure, entry points, project-specific conventions for *one* codebase |
 | **standards CLAUDE.md** | Documents principles, process mandates, tool/model policy, review checklists; applies across projects; often a symlink target (check with `readlink -f`) |
 | **skill** | Has `SKILL.md` with `name`/`description` frontmatter |
+| **eval-suite** | Markdown under an `evals/` directory carrying per-case validation dates or a results table |
 | **script** | Executable under a `scripts/` dir, or referenced as one from a SKILL.md |
+
+The `eval-suite` kind was added 2026-08-29 after an eval of this skill surfaced that **the artifact
+family which motivated it was the one kind it could not classify** — lens 5 named the
+`Verified: <date> - PASS` convention while Step 0 refused any file that used it. A stale eval suite
+is the founding example; it should not require a judgment workaround to audit.
 
 **If classification is undetermined, skip that target and say so** — report it as
 `unclassified`, name what evidence was missing, and move on. This is an applicability gate: a rule
@@ -117,13 +123,25 @@ answer is "never," it has not demonstrated it can.
 *Applies to: all kinds.*
 
 Text carrying its own validation date or re-check window, where that window has passed. Recognized
-phrasings include a bare "Verified" or "Last Updated" followed by an ISO date, and the
-`Verified: <date> - PASS` form used by the fs-eng `cc-plugins` eval README convention. This is the
-cheapest lens and the one most likely to fire, because the pattern is already used in this
-environment — both this repo's own CLAUDE.md and those org eval documents carry such dates.
+phrasings: a bare "Verified"/"Last Updated"/"Last Tested" plus an ISO date; a results-table row with
+a date cell; a dated section header like `## Key Improvement (2026-04-17)`; and — added
+2026-08-29 — two shapes the first version missed entirely:
+
+- **A results row with no date at all** (`| case | — | Pending |`). This is *worse* than stale: the
+  case has never run. The em-dash is the `cc-plugins` convention, so every un-run eval README in the
+  org previously read as clean. Reported once per file with a count.
+- **Undated `(NEW)` markers**, reported once per file past a couple of them. A marker with no date
+  cannot expire, so a thicket of them stops distinguishing new content from settled content — one
+  skill carried 19, the oldest 4.5 months old, labelling its central mechanism.
 
 A claim past its window is not automatically wrong; it is unverified. Report it as due for
-re-check, and let lens 2 handle actually re-verifying it.
+re-check, and let lens 2 handle actually re-verifying it. Only the **newest** date on a line
+governs: "Verified X, re-verified Y" is a maintained claim, not a stale one.
+
+**Tune the window to the content.** The checker's 90-day default is three times looser than this
+repo's own standard for model claims ("age in weeks, not months"). Pass `--max-age-days 30` — or
+tighter — when auditing model/tool capability content, or lens 5 will report clean on a section its
+own file says decays in weeks.
 
 ### 6. Scripts that exist but are bypassed — `M` (static) + `J` (behavioral)
 *Applies to: skills, scripts.*
@@ -131,6 +149,12 @@ re-check, and let lens 2 handle actually re-verifying it.
 A script shipped under `scripts/` that no `SKILL.md` in its plugin references — so nothing will
 ever invoke it — or a SKILL.md that spells out by hand a procedure one of its own scripts already
 implements.
+
+**Reference-following goes one level deep, through wrappers.** A `.sh` that `exec`s a `.py` is the
+common shape, and greping SKILL.md only for the `.py`'s own name reported a live script as orphaned
+(confirmed false positive, 2026-08-29 — the checker's first real finding turned out to be wrong).
+Indirection stops at one level and the wrapper must itself be directly referenced, so two
+mutually-referencing orphans cannot vouch for each other.
 
 **Why this matters more than it looks**: a script is the durable encoding of reasoning already
 done. Edge cases found over prior review rounds, ordering constraints, guard conditions, dedup

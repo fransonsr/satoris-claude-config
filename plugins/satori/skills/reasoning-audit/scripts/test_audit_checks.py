@@ -736,3 +736,200 @@ def test_main_reports_unclassified_without_claiming_clean(tmp_path, capsys):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ============================================================================
+# Iteration 2 — fixes for defects the skill-creator eval surfaced (2026-08-29).
+# Each of these was a confirmed false positive or blind spot in iteration 1.
+# ============================================================================
+
+
+def test_script_reached_through_a_wrapper_is_not_reported_as_orphaned(tmp_path):
+    """The eval's confirmed false positive: resolve-threads-bulk.py IS invoked.
+
+    Its .sh wrapper execs it, and the wrapper is cited from SKILL.md. Greping only
+    SKILL.md for the .py's own name reported a live script as orphaned.
+    """
+    write(tmp_path / "SKILL.md", """
+        ---
+        name: thing
+        description: A thing.
+        ---
+        Run `scripts/resolve-threads-bulk.sh` to resolve in bulk.
+        """)
+    write(tmp_path / "scripts" / "resolve-threads-bulk.sh",
+          'exec python3 "$SCRIPT_DIR/resolve-threads-bulk.py" "$@"\n')
+    write(tmp_path / "scripts" / "resolve-threads-bulk.py", "print('hi')\n")
+    assert check_unreferenced_scripts(tmp_path) == []
+
+
+def test_a_script_named_only_by_an_orphaned_wrapper_is_still_reported(tmp_path):
+    """Indirection is one level deep, and the wrapper must itself be reachable.
+
+    Otherwise two mutually-referencing orphans vouch for each other.
+    """
+    write(tmp_path / "SKILL.md", """
+        ---
+        name: thing
+        description: A thing.
+        ---
+        # Thing
+        """)
+    write(tmp_path / "scripts" / "orphan-wrapper.sh", 'exec python3 orphan-impl.py "$@"\n')
+    write(tmp_path / "scripts" / "orphan-impl.py", "print('hi')\n")
+    findings = check_unreferenced_scripts(tmp_path)
+    names = " ".join(f.message for f in findings)
+    assert "orphan-wrapper.sh" in names
+    assert "orphan-impl.py" in names
+
+
+def test_a_results_row_that_was_never_run_is_reported(tmp_path):
+    """The blind spot: an em-dash date cell means 'never run', which is worse than stale.
+
+    DATED_TABLE_ROW needs an ISO date, so the state every un-run suite is in was
+    invisible. The em-dash is the cc-plugins convention, so this affects every
+    eval README with un-run rows.
+    """
+    doc = write(tmp_path / "README.md", """
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        | resource-lifecycle | — | Pending |
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    assert len(findings) == 1
+    assert "never" in findings[0].message.lower()
+    assert findings[0].line == 3
+
+
+def test_many_never_run_rows_collapse_to_one_finding(tmp_path):
+    """Ten identical per-row findings is noise; one with a count is actionable.
+
+    Same reasoning as the novelty-marker collapse — a reader needs to know the suite
+    has never run, not to read the same sentence once per case.
+    """
+    rows = "\n".join(f"| case-{i} | — | Pending |" for i in range(10))
+    doc = write(tmp_path / "README.md", f"""
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        {rows}
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    never_run = [f for f in findings if "never been run" in f.message]
+    assert len(never_run) == 1
+    assert "10" in never_run[0].message
+
+
+def test_a_results_table_header_and_separator_are_not_reported(tmp_path):
+    doc = write(tmp_path / "README.md", """
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        """)
+    assert check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY) == []
+
+
+def test_a_dated_passing_row_is_still_judged_by_its_date(tmp_path):
+    """The never-run check must not swallow the ordinary stale-date case."""
+    doc = write(tmp_path / "README.md", """
+        | some-case | 2026-01-01 | PASS |
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    assert len(findings) == 1
+    assert "2026-01-01" in findings[0].message
+
+
+def test_a_re_verification_on_the_same_line_supersedes_the_older_date(tmp_path):
+    """Observed false positive: 'Verified X, re-verified Y' flagged on X at a tight window.
+
+    Only the newest dated claim on a line governs; an older date alongside a newer
+    one is history, not a stale claim.
+    """
+    doc = write(tmp_path / "CLAUDE.md", """
+        **Verified 2026-01-01, re-verified 2026-08-28** — still current.
+        """)
+    assert check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY) == []
+
+
+def test_both_dates_stale_on_one_line_still_reports_once(tmp_path):
+    doc = write(tmp_path / "CLAUDE.md", """
+        **Verified 2026-01-01, re-verified 2026-02-01** — long ago.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    assert len(findings) == 1
+    assert "2026-02-01" in findings[0].message
+
+
+def test_undated_novelty_markers_are_reported_once_per_file(tmp_path):
+    """19 permanent '(NEW)' markers, oldest 4.5 months, went undetected in the eval.
+
+    A marker with no date cannot expire, so it stops carrying information. Reported
+    once per file with a count rather than once per line, to stay readable.
+    """
+    doc = write(tmp_path / "SKILL.md", """
+        ## Step 1.6 (NEW)
+        Some prose.
+        ## Step 2 (NEW)
+        More prose.
+        ## Step 3 (NEW)
+        Yet more.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    novelty = [f for f in findings if "NEW" in f.message]
+    assert len(novelty) == 1
+    assert "3" in novelty[0].message
+
+
+def test_a_single_novelty_marker_is_not_reported(tmp_path):
+    """One marker on genuinely new content is normal; a thicket of them is the signal."""
+    doc = write(tmp_path / "SKILL.md", """
+        ## Step 1 (NEW)
+        Some prose.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    assert [f for f in findings if "NEW" in f.message] == []
+
+
+def test_a_dated_section_header_is_treated_as_a_self_dated_claim(tmp_path):
+    """'## Key Improvement (2026-04-17)' is a self-dated claim in a form lens 5 missed."""
+    doc = write(tmp_path / "SKILL.md", """
+        ## Key Improvement (2026-01-01)
+        Some prose.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=90, today=TODAY)
+    assert len(findings) == 1
+    assert "2026-01-01" in findings[0].message
+
+
+def test_an_eval_suite_is_classified_rather_than_refused(tmp_path):
+    """From the eval: the artifact family that motivated this skill was the one kind
+    it could not classify. An eval README under evals/ is now a first-class target."""
+    doc = write(tmp_path / "evals" / "README.md", """
+        # thing Evals
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        | some-case | 2026-03-25 | PASS |
+        """)
+    assert classify_target(doc) == "eval-suite"
+
+
+def test_a_readme_outside_evals_is_still_unclassified(tmp_path):
+    """The new kind must not become a catch-all for any README."""
+    doc = write(tmp_path / "README.md", """
+        # Some project
+        Ambiguous prose that signals nothing.
+        """)
+    assert classify_target(doc) == "unclassified"
+
+
+def test_main_runs_the_self_dated_lens_on_an_eval_suite(tmp_path, capsys):
+    write(tmp_path / "evals" / "README.md", """
+        # thing Evals
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        | some-case | 2026-03-25 | PASS |
+        | never-run | — | Pending |
+        """)
+    assert main([str(tmp_path / "evals" / "README.md")]) == FINDINGS
+    out = capsys.readouterr().out
+    assert "eval-suite" in out
+    assert "2026-03-25" in out
+    assert "never" in out.lower()
