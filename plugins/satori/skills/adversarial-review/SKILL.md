@@ -267,9 +267,10 @@ Store the result as `CLASSES`: a list of `{ name, lensKind, model? }`:
 omit for Sonnet — it's the default):
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
 - **Fable**: not used for per-class review agents — reserved for Phase D's round-level fix-planning
-  pass (runs once per round, see below), its per-finding fix-planning gate, and `xp-pair`'s
-  generative design guidance step, all of which need deeper reasoning on a synthesis/planning task
-  rather than a per-class scan
+  pass (runs once per round, see below), its per-finding fix-planning gate, Phase E's round-cap
+  "NOT converged" targeted deep-dive agent (see below), and `xp-pair`'s generative design guidance
+  step, all of which need deeper reasoning on a synthesis/planning/deep-dive task rather than a
+  per-class scan
 - **Sonnet**: all other classes
 
 `CLASSES` is reused verbatim by every round's Workflow call in the Per-Round Loop below, alongside
@@ -862,7 +863,12 @@ deep-dive on <theme>"**:
 - Name the recurring theme or cluster in the still-yielding `cross_file` findings
 - Recommend spawning **one narrowly-scoped deep-dive agent** aimed at that theme (e.g., "trace
   every caller of `parseX` across the module", "audit every site that restates rule Y") — or hand
-  the theme to the user for a judgment call
+  the theme to the user for a judgment call. If the user approves spawning it, use a top-level
+  `Agent` call (not `Workflow`/`agent()` — same reasoning as Phase D above, since this runs once in
+  the orchestrating session rather than as a per-class scan) with `model: 'fable'`: the generic
+  per-class sweep has already run multiple rounds at Sonnet/Opus without converging on this theme —
+  exactly the "cheaper models already tried, failure is expensive" case Fable's edge is reserved
+  for elsewhere in this skill (see Model Selection above), not a blanket upgrade for every deep-dive
 - Possible underlying causes, mentioned only after the escalation: the PR may be too large
   (consider splitting it), a new failure mode has appeared that doesn't fit any existing
   class — draft it per the Pattern-File Update Hook below — or the recurring findings all trace
