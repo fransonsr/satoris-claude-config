@@ -129,6 +129,17 @@ paths exist before writing.
 
 ## How It Works
 
+0. **Model check.** This skill's output quality depends entirely on the model doing the
+   compaction — there is no subagent-delegation path that provides both a stronger model and
+   this session's own context (a `fork` inherits full context but always runs on the parent's
+   model; a fresh `Agent` gets a pinned model but starts with zero context of this conversation).
+   If the current session is not already running on Opus, tell the user and recommend switching
+   before proceeding. This is a single-pass, silent-failure-prone synthesis over the whole
+   session — a dropped constraint isn't discovered until much later, post-`/clear` — exactly the
+   shape `~/.claude/CLAUDE.md`'s Model Access & Selection section reserves Opus for. Under the
+   `opusplan` default this matters in practice: Opus applies to plan mode, not execution, so a
+   checkpoint invoked mid-task runs on Sonnet unless the user switches first.
+
 1. **Gather live state** from the current conversation:
    - Active plan phase and status (per phase)
    - **TaskTool tasks**: call `TaskList` to retrieve all tasks; capture ID, title, status,
