@@ -31,6 +31,12 @@ class Issue:
     fix_type: Optional[str] = None  # Type of automated fix available
 
 
+# A Maven/Gradle main-source path, anchored at a path boundary so both
+# `src/main/java/...` (single-module, what git diff returns) and
+# `mod/src/main/java/...` match. Verified 2026-08-29.
+MAIN_SOURCE_PATH = re.compile(r'(^|/)src/main/java/')
+
+
 class PatternChecker:
     """Checks code for common quality issues using pattern matching."""
 
@@ -439,9 +445,13 @@ class PatternChecker:
     def _check_test_coverage(self, file: str):
         """Check if new/modified main classes have corresponding tests."""
 
-        if '/src/main/java/' in file:
-            # Construct expected test file path
-            test_file = file.replace('/src/main/java/', '/src/test/java/')
+        # Anchored at a path boundary rather than requiring a leading slash: in a
+        # single-module repo `git diff --name-only` returns `src/main/java/...`, which
+        # a literal '/src/main/java/' substring test never matched — so those repos
+        # silently received zero test-coverage findings (found 2026-08-29).
+        if MAIN_SOURCE_PATH.search(file):
+            # Construct expected test file path, preserving any module prefix
+            test_file = MAIN_SOURCE_PATH.sub(lambda m: m.group(1) + 'src/test/java/', file)
             # Handle various test naming conventions
             test_file_base = test_file.replace('.java', '')
             possible_test_files = [
@@ -736,7 +746,15 @@ class PatternChecker:
                 self.issue_counter += 1
 
     def _has_cleanup_in_scope(self, file: str, line_num: int, cleanup_pattern: str, lines: List[str]) -> bool:
-        """Check if cleanup exists in the same method scope."""
+        """Check if cleanup exists in the same method scope.
+
+        cleanup_pattern names the call in its no-argument form (e.g. '.unpersist()'),
+        but is matched on the method name and an open paren, so the common blocking
+        form `unpersist(true)` counts as cleanup. Matching the literal empty-paren
+        string fired a CRITICAL false positive on correct code (found 2026-08-29).
+        The trailing `\\(` keeps `unpersistAllLater()` from satisfying `.unpersist()`.
+        """
+        cleanup_call = self._cleanup_call_regex(cleanup_pattern)
         # Simple heuristic: look ahead within the same method (until next method or class closing brace)
         method_depth = 0
         found_cleanup = False
@@ -748,7 +766,7 @@ class PatternChecker:
             method_depth += line.count('{') - line.count('}')
 
             # Found cleanup
-            if cleanup_pattern in line:
+            if cleanup_call.search(line):
                 found_cleanup = True
                 break
 
@@ -757,6 +775,12 @@ class PatternChecker:
                 break
 
         return found_cleanup
+
+    @staticmethod
+    def _cleanup_call_regex(cleanup_pattern: str) -> 're.Pattern':
+        """Turn '.unpersist()' into a regex matching `.unpersist(` with any arguments."""
+        method = cleanup_pattern.strip().lstrip('.').rstrip('()')
+        return re.compile(r'\.' + re.escape(method) + r'\s*\(')
 
     def _in_try_with_resources(self, lines: List[str], current_line: int) -> bool:
         """Check if current line is inside a try-with-resources block."""

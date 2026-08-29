@@ -89,22 +89,35 @@ worse than none — it reads as "we know about this hole and chose not to test i
 - **Severity and category are unpinned** in `resource-lifecycle.md` and `try-finally-scope.md`,
   where the other eight cases pin both. A severity regression in either would pass.
 
-## Defects found by the 2026-08-29 audit, not yet fixed
+## Defects found by the 2026-08-29 audit
 
-These are checker bugs, not case bugs. Listed here so a first run does not mistake them for its
-own failures; each needs a test alongside the fix.
+### Fixed, with tests — `scripts/test_pattern_checker.py`
 
-- **`:442` tests `'/src/main/java/' in file` — with a leading slash.** `git diff --name-only`
-  returns repo-relative paths, so a single-module Java repo never matches and has silently received
-  zero test-coverage findings. `mod/src/main/java/...` works; `src/main/java/...` does not.
-- **`_has_cleanup_in_scope` matches the literal `.unpersist()`**, empty parens included, so the
-  common `unpersist(true)` form reads as no-cleanup and fires a CRITICAL false positive.
+- **`:442` tested `'/src/main/java/' in file` with a leading slash.** `git diff --name-only`
+  returns repo-relative paths, so a single-module Java repo never matched and had silently received
+  zero test-coverage findings since the check was written. Now anchored at a path boundary
+  (`MAIN_SOURCE_PATH`), so `src/main/java/...`, `./src/...` and `mod/src/...` all match, with the
+  module prefix preserved when deriving the test path.
+- **`_has_cleanup_in_scope` matched the literal `.unpersist()`**, empty parens included, so the
+  common `unpersist(true)` form read as no-cleanup and fired a CRITICAL false positive. Now matches
+  the method name plus an open paren, which also keeps `unpersistAllLater()` from satisfying it.
+
+### Still open — these are case bugs or checker bugs a first run will hit
+
 - **`:336` counts commas in an 11-line window** to decide `Collectors.toMap` arity. Any other comma
   within ±5 lines suppresses the finding, so `edge-cases.md`'s second half can pass or fail on
-  incidental layout.
+  incidental layout. Needs a real arity check, not a comma count.
 - **`silent-failures.md`'s documented keyword list disagrees with `:259-260`.** The case names
   "missing" and "malformed", which the implementation lacks; the implementation has "corrupt",
-  "conflict", "mismatch", which the case omits. Decide which is intended.
+  "conflict", "mismatch", which the case omits. Needs a decision on which is intended before
+  either side is edited.
 - **`narrow-catch.md` is satisfiable only by a fully-qualified call.** The check greps the preceding
   5 lines for a `java`/`org.apache` token, and idiomatic Java puts that in an import at the top — so
-  the check almost never fires in production and the case passes without noticing. Worth adding.
+  the check almost never fires in production and the case passes without noticing. The case's third
+  criterion is *satisfied by* the blind spot.
+- **`resource-lifecycle.md`'s "naming the un-released resource" criterion** does not match what the
+  checker reports — the pattern string is generic and the variable name appears nowhere. Either
+  reword the criterion or make the finding name the variable.
+- **`try-finally-scope.md`'s first criterion** says a finding is reported "for the statements
+  sitting between" acquisition and `try`; the checker reports the acquisition line and never
+  identifies the intervening statements. Worth adding.

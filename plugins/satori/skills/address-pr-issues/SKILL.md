@@ -162,7 +162,7 @@ Scripts are bundled with this skill in the `scripts/` subdirectory. In the examp
 
 ```bash
 # If no PR number provided, get current branch's PR
-PR_NUMBER="${args:-$(gh pr view --json number -q .number)}"
+PR_NUMBER="${1:-$(gh pr view --json number -q .number)}"
 
 # Get PR details, including body (needed for intent/risk scope below) and author
 # (PR_AUTHOR — needed for Step 1.6's silent-thread classification)
@@ -437,7 +437,7 @@ Spawn one agent per issue via `Workflow`. Each agent receives the thread body, f
 number, the relevant code section (read from disk), `PR_INTENT`/`RISK_FILES` from Step 1, and
 **the thread's `labels` and `isResolved` fields from Step 1.6** — do not omit these: `labels` is
 the only place a degraded-data keep (`stale_cache_schema` / `last_comment_unavailable` /
-`empty_content`, see Bucket 3 above) is recorded, and an agent that receives only the thread body
+`empty_content` / `unexpected_body_type`, see Bucket 3 above) is recorded, and an agent that receives only the thread body
 has no way to know that body might be a stale fallback rather than confirmed latest activity.
 `isResolved` is needed for Bucket 3's `last_comment_unavailable` + `isResolved == true` "worth a
 second look" case — without it, nothing downstream can apply that tie-break.
@@ -457,8 +457,12 @@ Each agent returns:
 ```
 
 **`unverifiable_provenance`** is `true` whenever the input `labels` contains
-`stale_cache_schema`, `last_comment_unavailable`, or `empty_content` — set it mechanically from
-the label, don't have the agent infer it from the body text. When `true`, the agent must still
+`stale_cache_schema`, `last_comment_unavailable`, `empty_content`, or `unexpected_body_type` —
+set it mechanically from the label, don't have the agent infer it from the body text. This list
+must stay identical to the labels `classify-threads.sh` actually emits; a label the script
+fail-closes on but this rule omits arrives at Step 3 looking verified, which is precisely the
+leak the fail-closed path exists to prevent. `scripts/test_script_contracts.py` asserts the two
+agree. When `true`, the agent must still
 assess severity from whatever body text it received, but Step 3 treats the result as a
 **candidate for human confirmation**, not an auto-fixable CRITICAL/HIGH finding, since the
 severity itself was judged from data the classifier could not verify was actually the thread's
@@ -1356,7 +1360,7 @@ cache-update step needed.
 jq '.threads_resolved = true' "$CHECKLIST_FILE" > "${CHECKLIST_FILE}.tmp" && mv "${CHECKLIST_FILE}.tmp" "$CHECKLIST_FILE"
 
 # Verify all items complete
-if jq -e 'all(.[]; . == true)' "$CHECKLIST_FILE" > /dev/null; then
+if jq -e 'del(.commit_ready) | all(.[]; . == true)' "$CHECKLIST_FILE" > /dev/null; then
   echo "✅ Pre-commit checklist complete"
   jq '.commit_ready = true' "$CHECKLIST_FILE" > "${CHECKLIST_FILE}.tmp" && mv "${CHECKLIST_FILE}.tmp" "$CHECKLIST_FILE"
 else
@@ -1406,7 +1410,8 @@ status table:
 - `skipped` — user chose to skip during Step 3.8 approval
 - `adjusted` — user reworded the reply or change; treat as replied-and-resolved
 - `kept-unverifiable` — Step 1.6's Bucket 3 with a degraded-data label
-  (`stale_cache_schema` / `last_comment_unavailable` / `empty_content`), presented per
+  (`stale_cache_schema` / `last_comment_unavailable` / `empty_content` /
+  `unexpected_body_type`), presented per
   "Present Questionable Issues to User" above, where the user **confirmed the content is
   accurate/current and no further action is needed**. Do not fold these into
   `replied-and-resolved`; the whole point of this row is that the original triage severity was
@@ -1463,7 +1468,7 @@ jq -r 'to_entries[] | "[\(if .value then "✅" else "❌" end)] \(.key)"' "$CHEC
 echo ""
 
 # Verify all items complete
-if jq -e 'all(.[]; . == true)' "$CHECKLIST_FILE" > /dev/null; then
+if jq -e 'del(.commit_ready) | all(.[]; . == true)' "$CHECKLIST_FILE" > /dev/null; then
   echo "✅ All checklist items complete - ready to commit"
   update_checklist "commit_ready" true
 else
@@ -1738,7 +1743,7 @@ cp "$THREADS_FILE" "${THREADS_FILE}.before-round-${ROUND}"
 ./scripts/init-pr-state.sh $PR_NUMBER
 
 # Compare with previous state to detect new threads
-NEW_THREADS=$(jq -s '.[0] - .[1]' "$THREADS_FILE" "${THREADS_FILE}.before-round-${ROUND}" | jq 'select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]")')
+NEW_THREADS=$(jq -n --slurpfile new "$THREADS_FILE" --slurpfile old "${THREADS_FILE}.before-round-${ROUND}" '$new - $old' | jq -c '.[] | select(.author == "copilot-pull-request-reviewer" or .author == "github-advanced-security[bot]")')
 # Look for new unresolved threads or comments added to existing threads
 ```
 

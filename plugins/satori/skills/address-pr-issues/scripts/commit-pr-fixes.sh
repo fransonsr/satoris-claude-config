@@ -76,11 +76,19 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
   echo "---"
   echo ""
 
-  read -p "Create commit with this message? (y/n) " -n 1 -r
-  echo
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "❌ Commit cancelled"
-    exit 1
+  # Confirm only when a human is actually there. SKILL.md makes this script the primary
+  # commit path and forbids hand-rolling the alternative, so an unskippable prompt makes
+  # the documented happy path unrunnable for an agent — it stalls, then the work happens
+  # off-book. Set COMMIT_AUTO_CONFIRM=1 to skip the prompt on a tty too.
+  if [ -t 0 ] && [ -z "${COMMIT_AUTO_CONFIRM:-}" ]; then
+    read -p "Create commit with this message? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      echo "❌ Commit cancelled"
+      exit 1
+    fi
+  else
+    echo "ℹ️  Non-interactive (or COMMIT_AUTO_CONFIRM set) — creating the commit without prompting."
   fi
 
   git commit -m "$COMMIT_MSG"

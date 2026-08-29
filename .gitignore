@@ -48,3 +48,6 @@ bin/
 
 # OS
 Thumbs.db
+
+# Stray HOME-relative state from running scripts/tests in-tree
+.local/
