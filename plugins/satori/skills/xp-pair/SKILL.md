@@ -1,7 +1,7 @@
 ---
 name: xp-pair
 description: XP pair programming with navigator (design oversight) and driver (implementation). Use for complex features requiring design oversight, TDD coaching, or high-quality code with continuous review.
-argument-hint: [task-description | "Task: ... Acceptance Criteria: ..."]
+argument-hint: '[task-description | "Task: ... Acceptance Criteria: ..."]'
 ---
 
 # XP Pair Programming
