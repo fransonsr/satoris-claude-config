@@ -26,41 +26,66 @@ for execution.
 **When spawning agents:** no need to pin a model — let agents inherit the session model unless a
 task warrants otherwise.
 
-**Verified 2026-08-14, re-check before trusting if stale:** claims about which model/tier is
-currently strongest age in weeks, not months — a claim here reversed after just three weeks once
-already. Re-verify via web search before a consequential model-selection call if this note looks
-old.
+**Verified 2026-08-14, re-verified 2026-08-29 — re-check before trusting if stale:** claims about
+which model/tier is currently strongest age in weeks, not months. The 2026-08-29 check confirmed
+the picture below still holds, with one refinement: the split that holds up is
+**difficulty/stakes-shaped, not domain-shaped**. It is not "Opus for prose, Fable for code" —
+Opus 5 leads or ties Fable 5 on nearly every published coding/agentic benchmark (e.g. Frontier-Bench
+43.3% vs 33.7%, agentic terminal coding 43% vs 33%) at half Fable's per-token price, with Fable's
+only lead (SWE-bench Pro, 80.0 vs 79.2) under a point — within noise. One direct writing comparison
+even found Fable's raw prose the sharpest of the three models tested. Re-verify via web search
+before a consequential model-selection call if this note looks old again.
 
 - **Haiku** is the tier for high-volume, mechanical, low-judgment work: simple lookups, log/data
   parsing, classification, boilerplate edits repeated across many files — especially the individual
   fan-out legs of a `parallel()`/`pipeline()` call in the `Workflow` tool, where a dozen cheap agents
   running concurrently beats one expensive agent running serially. ~90% of Sonnet's coding quality
   at roughly a third of the cost and 2x+ the speed (per Anthropic's own comparison), so the bar for
-  reaching for it is "is this task simple," not "is this task urgent."
+  reaching for it is "is this task simple," not "is this task urgent." **This applies to a plain
+  `Agent` call too, not just Workflow's fan-out** — `Workflow` itself requires the user to have
+  explicitly opted into multi-agent orchestration, so it won't fire just because a task would
+  benefit. When spawning any bounded, mechanical, low-judgment subagent outside Workflow — a single
+  lookup, a repeated boilerplate edit across N files, a classification/log-parsing pass — pin
+  `model="haiku"` rather than letting it inherit. (And plenty of simple lookups don't need a
+  subagent at all — doing it inline with Read/Grep/LSP is often more efficient than spawning any
+  agent, Haiku included.)
 - **Sonnet** covers routine search/exploration/mechanical work that still needs real judgment —
   the current session default, and the right choice when a task doesn't clearly call for a tier
   above or below it.
 - **Opus** is the default ceiling for hard reasoning — pin it for genuinely complex agentic coding
   or enterprise-grade work.
-- **Fable is not "a smarter Opus."** As of the verification date above, Opus 5 (released
-  2026-07-24) matches or beats Fable 5 on nearly every relevant benchmark at roughly half Fable's
-  per-token price. Don't pin Fable expecting better results on typical dev work. Its actual edge is
-  narrow and behavioral, not general intelligence: genuinely multi-day autonomous runs, dense
-  technical-image/vision work, and specialized long-horizon scientific research. Reach for it only
-  when a task matches one of those, not as an escalation path from Opus.
+- **Fable is not "a smarter Opus," and not "the code-reasoning model."** Don't pin Fable expecting
+  better results on typical dev work, and don't route to it by domain (code vs. prose) — see the
+  Verified note above. Its actual edge is narrow and behavioral: genuinely multi-day autonomous
+  runs, dense technical-image/vision work, specialized long-horizon scientific research, and — by
+  the same "hardest reasoning, expensive failure" logic — a single narrowly-scoped synthesis or
+  deep-dive task after cheaper models have already had multiple attempts and haven't converged
+  (e.g. `/satori:adversarial-review`'s Phase D fix-planning pass already reaches for
+  `model: 'fable'` for exactly this reason; its round-cap "NOT converged — targeted deep-dive"
+  escalation is the same shape and a natural candidate to extend this to). Reach for it only when
+  a task matches one of those, not as a general escalation path from Opus.
 - **Effort level** is a separate, cheaper-to-try dial than switching model tier: `low`/`medium`/
   `high`/`xhigh`/`max`, exposed today via the `Workflow` tool's per-agent `effort` option (the plain
   `Agent` tool doesn't expose it). Default is `high`; drop to `low`/`medium` for routine work
   (meaningful cost/latency savings, no perceptible quality loss); reserve `xhigh`/`max` for problems
-  where `high` demonstrably falls short. Try raising effort before reaching for a pricier model.
+  where `high` demonstrably falls short. Try raising effort before reaching for a pricier model —
+  but note this dial doesn't exist for a plain top-level `Agent` call (only inside `Workflow`), so
+  it isn't always an available alternative to a model-tier change.
 - **A common combined pattern**: Sonnet or Opus decomposes a problem and orchestrates, while many
   Haiku instances run the resulting subtasks in parallel — Anthropic's own recommended pairing for
-  Haiku, and a natural fit for this environment's `Workflow` `pipeline()`/`parallel()` helpers.
+  Haiku, and a natural fit for this environment's `Workflow` `pipeline()`/`parallel()` helpers. If
+  you spot a bulk/fleet-shaped task up front (checking N independent things), saying "use a
+  workflow" gets the Haiku fan-out payoff directly rather than relying on it being inferred —
+  `Workflow` won't self-trigger on task shape alone.
+- **Reading usage stats**: don't judge Haiku/Fable usage by raw percentage alone. Fable staying
+  near-zero is expected and healthy given how narrow its edge is. The more useful signal is whether
+  Sonnet/Opus subagents are being spawned for tasks that were clearly mechanical enough for Haiku —
+  that's the actual sign this guidance isn't being followed, not a low Fable number.
 
 Pin a model only when the task clearly calls for it:
 ```
 Agent(model="opus", ...)     # reserve for hard reasoning; omit to inherit
-Agent(model="haiku", ...)    # high-volume, mechanical, or parallel-fan-out work
+Agent(model="haiku", ...)    # high-volume, mechanical, or parallel-fan-out work — inside or outside Workflow
 ```
 
 ### Fable-Specific Prompting Patterns
