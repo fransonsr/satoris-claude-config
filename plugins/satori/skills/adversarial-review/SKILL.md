@@ -298,13 +298,25 @@ class, so written once in the script rather than once per class:
    > in the entire changed source — every subprocess call, every JSON read, every branch exit —
    > for the same failure mode before reporting. Report all instances together as a cluster.
    > Do NOT hold back and expect later rounds to catch siblings. A missed sibling is a miss.
+   >
+   > **When the failure mode centers on a specific named symbol** (a method, class, field, or
+   > interface — e.g. "every caller of `IsolationBoundary.run()`", "every implementer of
+   > `QuiesceHandler`"), use LSP's `findReferences`/`goToImplementation` on that symbol instead of
+   > (or in addition to) a text grep. A grep for the symbol's literal text misses a call site
+   > reached through a static import, a method reference (`Foo::bar`), or a differently-qualified
+   > name, and can false-positive on an unrelated match inside a comment, string, or Javadoc `@link`
+   > — LSP resolves the actual symbol and is immune to both failure modes. Grep remains the right
+   > tool when the sweep is for a repeated *structural pattern* rather than one named symbol (e.g.
+   > "every place that logs at ERROR with a duplicate-conflict keyword"), or for prose/doc-text
+   > restatements, where LSP's reference-finding does not apply at all.
 
 6. The `blast_radius` classification rule (embedded below, condensed the same way): classify structurally, never by severity or gut feel —
    `local` = confined to one file/callsite, something the current session could diagnose and fix
    in-context if it ever manifested; `cross_file` = spans multiple files, affects call sites
    outside the diff, or restates a rule defined elsewhere (e.g., a doc restating a code
-   constant). Justification must cite structural evidence actually checked — a grep for other
-   callers, the other file that restates the rule; a `local` tag with no evidence is invalid,
+   constant). Justification must cite structural evidence actually checked — an LSP
+   `findReferences` result when the rule centers on a named symbol, a grep for other callers when
+   it doesn't, or the other file that restates the rule; a `local` tag with no evidence is invalid,
    and `local` is never a reason to down-rank a real bug.
 7. The finding-schema conventions the Phase A/B script relies on: report `file` as `path:line` or
    `path:startLine-endLine` (the synthesis script dedupes by matching this string exactly — an
@@ -432,8 +444,8 @@ hypothesis is still reportable; state the reasoning in \`description\` instead o
    \`{ git diff --name-only ${range}; git ls-files --others --exclude-standard; } | grep -E "\\.(java|py|js|ts|go|rb|scala|kt|cs|cpp|c|h|rs|swift)$" | xargs -I{} dirname {} 2>/dev/null | sort -u | xargs -I{} sh -c 'find {} "{}/.." -maxdepth 1 \\( -name "README*" -o -name "CHANGELOG*" \\) 2>/dev/null' | sort -u\`.
 3. ${lens}
 4. Intent Brief: ${intentBrief}
-5. Cascade sweep rule: when you find a bug, state its specific failure mode in one sentence (e.g., "subprocess returncode used before checking stdout"), then scan every other callsite of the same kind in the entire changed source for the same failure mode before reporting. Report all instances together as a cluster. Do NOT hold back and expect later rounds to catch siblings — a missed sibling is a miss.
-6. blast_radius rule: classify structurally, never by severity or gut feel. local = confined to one file/callsite, diagnosable in-context if it ever manifested. cross_file = spans multiple files, affects callsites outside the diff, or restates a rule defined elsewhere. Justification must cite structural evidence actually checked (e.g. a grep for other callers) — an unsupported local tag is invalid, and local is never a reason to down-rank a real bug.
+5. Cascade sweep rule: when you find a bug, state its specific failure mode in one sentence (e.g., "subprocess returncode used before checking stdout"), then scan every other callsite of the same kind in the entire changed source for the same failure mode before reporting. Report all instances together as a cluster. Do NOT hold back and expect later rounds to catch siblings — a missed sibling is a miss. When the failure mode centers on one named symbol (a method/class/field/interface), use LSP findReferences/goToImplementation on it rather than a text grep — a grep misses a call site reached via a static import or method reference and can false-positive on a comment/string/Javadoc @link match; LSP resolves the actual symbol. Grep remains right for a repeated structural pattern (not one named symbol) or prose/doc-text restatements, where LSP does not apply.
+6. blast_radius rule: classify structurally, never by severity or gut feel. local = confined to one file/callsite, diagnosable in-context if it ever manifested. cross_file = spans multiple files, affects callsites outside the diff, or restates a rule defined elsewhere. Justification must cite structural evidence actually checked (e.g. an LSP findReferences result for a named-symbol rule, a grep for other callers otherwise) — an unsupported local tag is invalid, and local is never a reason to down-rank a real bug.
 7. Report file as path:line or path:startLine-endLine exactly (dedup matches this string exactly). Populate cascade_siblings with every sibling location found via the cascade sweep rule. Return is_clean: true with an empty findings array if fully clear, false otherwise.`
 }
 
@@ -640,10 +652,20 @@ receiving:
   never embedded directly)
 - An instruction: for each finding, name the general mechanism it touches (e.g. "base-branch
   resolution", "diff-range computation", "outcome persistence across bash blocks", "the changed-
-  files enumeration pattern") in one phrase, then grep the **entire current diff** — not just this
-  finding's own file — for every other location implementing or depending on that same mechanism.
-  This is deliberately broader than any single finding's own `cascade_siblings`: it is looking for
-  siblings across the WHOLE round's approved-fix set, not within one finding's own file
+  files enumeration pattern") in one phrase, then search for every other location implementing or
+  depending on that same mechanism. This is deliberately broader than any single finding's own
+  `cascade_siblings`: it is looking for siblings across the WHOLE round's approved-fix set, not
+  within one finding's own file. When the mechanism centers on one named symbol (a method/class/
+  field/interface), use LSP `findReferences`/`goToImplementation` on it rather than a text grep —
+  grep misses a call site reached via a static import or method reference and can false-positive
+  on a comment/string/Javadoc `@link` match, while LSP resolves the actual symbol regardless of how
+  it's referenced. Grep remains right for a repeated structural pattern or prose/doc-text
+  restatement, where LSP does not apply. Either way, **do not scope the search to the current diff
+  alone** — a sibling restatement of a corrected value/phrase, or another caller of a changed
+  method, is exactly as likely to live in a file this round's diff never touches (a prior round's
+  own doc-fallout sweep can pass cleanly yet still miss a stale sibling outside its diff; see Class
+  11's cascade-sweep provenance note in `copilot-review-patterns.md`) — search the whole module/
+  repository, not just the files already touched by this round's fixes
 - The same read-only **git guardrails** as the per-finding gate below
 
 It returns, per finding, an expanded site list (a superset of that finding's own
@@ -952,7 +974,10 @@ confidence/provenance information, distinct from Known Limitations above.>
   fix-planning agent per qualifying finding in Phase D.
 - **Cascade sweep is mandatory on first find**: The sweep rule is not optional — it prevents
   the "sibling miss" failure mode where a bug class is fixed in the reported instance but its
-  identical siblings in the same diff survive.
+  identical siblings survive, whether in the same diff or (per Setup Step 5's/Phase D's LSP
+  guidance) outside it. Text grep is not the only tool for this: when the sweep is for a named
+  code symbol, LSP `findReferences` finds every real call site regardless of import style and
+  doesn't false-positive on a comment/string match the way grep can.
 - **Known limitations are public commitments**: Accepted-risk findings in the PR description
   are explicit design acknowledgments, not silent omissions. An operator reading the PR can
   understand what was left in and why.

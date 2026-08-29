@@ -42,6 +42,49 @@ and retry scenarios produce wrong state transitions or bypass safety guards. Com
    again?" Is the operation idempotent?
 4. Find every `warn + set_failure_flag` pattern. Ask: "does the object end up in a state that
    has a valid forward path? Or is it stuck?"
+5. **Spring Boot auto-configuration ordering**: for any `@Conditional*` on an `@AutoConfiguration`
+   class (or a `@Bean` method inside one) that references another bean/class NOT owned by the
+   same auto-configuration, ask: "is the condition evaluated at auto-configuration *processing*
+   time (bean-definition registration — alphabetical by fully-qualified class name unless an
+   explicit `@AutoConfiguration(before/after)` edge says otherwise) or at bean-*creation* time?"
+   `@ConditionalOnBean`/`@ConditionalOnMissingBean` at the **class level** evaluate during
+   processing — if the referenced bean is registered by an auto-configuration that sorts
+   alphabetically *after* this one (with no explicit ordering edge), the condition evaluates
+   against a bean that doesn't exist yet and silently takes the "absent" branch even when that
+   bean will exist once the whole context finishes loading. A test using
+   `ApplicationContextRunner.withUserConfiguration(...)` to supply the "other" bean does NOT
+   catch this: it registers the bean directly, bypassing the real `AutoConfigurationImportSelector`
+   processing order entirely, so the test passes while the real ordering bug survives untested.
+   The fix is to resolve the dependency at bean-*creation* time instead (e.g. an
+   `ObjectProvider<T>` parameter on the `@Bean` method, resolved via `getIfAvailable()`), which is
+   immune to auto-configuration processing order since all bean *definitions* are registered
+   before any bean is *created*.
+
+**Example — auto-configuration-ordering false negative** (java-stack-incubator quiesce starter,
+Round 1→Round 2 of an adversarial review):
+```java
+// BEFORE (bug, introduced as Round 1's OWN fix for a different finding):
+// class-level condition evaluates during bean-definition registration, alphabetically before
+// the Spring Boot auto-configuration that actually registers a MeterRegistry bean in a real app
+@AutoConfiguration
+@ConditionalOnClass(MeterRegistry.class)
+@ConditionalOnBean(MeterRegistry.class)   // false in every real app — evaluated too early
+public class QuiesceMetricsAutoConfiguration { ... }
+
+// AFTER (fix): resolve at bean-creation time instead, immune to processing order
+@Bean
+@ConditionalOnMissingBean
+QuiesceMetricsRecorder quiesceMetricsRecorder(ObjectProvider<MeterRegistry> meterRegistries) {
+    MeterRegistry meterRegistry = meterRegistries.getIfAvailable();
+    return meterRegistry != null ? new MicrometerQuiesceMetricsRecorder(meterRegistry) : QuiesceMetricsRecorder.NOOP;
+}
+```
+The Round 1 fix's own test used `.withUserConfiguration(MeterRegistryConfig.class)` — registering
+the `MeterRegistry` bean directly rather than through a real auto-configuration — so it passed
+while silently disabling metrics in every real deployment. Caught in Round 2 by adding a fixture
+auto-configuration deliberately named to sort alphabetically *after* this one (e.g.
+`ZzzMeterRegistryAutoConfiguration`) and registering it via `AutoConfigurations.of(...)` alongside
+the class under test, which exercises the real processing order instead of bypassing it.
 
 **Example — wrong branch variable reuse** (Round 13, fleet_runner.py):
 ```python
@@ -748,6 +791,23 @@ had already silently drifted (see doc-vs-script example below).*
    that restates *any* changed rule before reporting — do not stop at the first diverged
    restatement. A missed sibling restatement is a miss.
 
+   **The sweep must search beyond the current diff, not just the files already touched by it.**
+   A sibling restatement is exactly as likely to live in a file this change never opens as in one
+   it did — restatement drift, by definition, comes from files that were never updated in lockstep
+   with the canonical source. Grep the whole repo (or module) for the literal phrase/value/name
+   being corrected, not just the diff's own file list; scoping the sweep to "files this PR already
+   touches" silently excludes the exact files most likely to still be wrong.
+
+**Provenance note (step 4's repo-wide-sweep addition)**: java-stack-incubator quiesce starter,
+Round 2 of an adversarial review fixed a stale "2-5s poll cadence" claim in `SPEC.md` §6.2 (the
+canonical source), correctly rewording it to describe the shipped single-default behavior. The
+fix's own doc-fallout sweep believed it was thorough but was scoped to files the round's diff had
+already touched — it missed the identical stale phrase in two files that commit never opened:
+`Ec2InstanceMetadataClient.java`'s class Javadoc and `QuiesceImdsPollingProperties.java`'s field
+Javadoc, both restating the same now-corrected claim. Both survived undetected for a full
+additional round, caught only when Round 3's reviewer ran a literal grep for the corrected phrase
+across the whole module rather than trusting the prior round's own "doc fallout, swept" claim.
+
 **Example — HIGH (logic divergence)** (PR #108, logging-migration choose):
 ```
 File: choose/references/SCORING.md:74–77
@@ -979,4 +1039,4 @@ last refreshed.
 - Provenance note
 - Relationship to the nearest adjacent class (to prevent overlap drift)
 
-*Last updated: 2026-08-22.*
+*Last updated: 2026-08-29.*
