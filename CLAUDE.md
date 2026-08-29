@@ -194,11 +194,24 @@ success is assumed rather than checked.
 
 ### LSP (Language Server Protocol) Integration
 
-**Status**: ✅ Available for all projects
+**Status**: ✅ Available for all projects. **Default-first, not a fallback tried after grep**:
+whenever a question is about a named symbol — where it's defined, everywhere it's called, a
+file's structure, or whether a file has live errors — reach for LSP *before* grep/ripgrep, not
+only after a grep-based attempt already came up short. Verified working in this environment
+2026-08-29 (Java via `jdtls-lsp`, Python via `pyright-lsp`).
 
-**Supported Languages**:
-- Java (via Eclipse JDT Language Server)
-- Python, JavaScript, TypeScript, Go, and other common languages
+**Supported Languages** (one shared `LSP` tool dispatches to whichever server matches the file
+type — `ToolSearch(query="select:LSP")` loads it):
+- Java (`jdtls-lsp`) and Python (`pyright-lsp`) — the two languages actually used for skill
+  scripts and production code in this environment; both confirmed working.
+- Also enabled, for whatever a project needs: C/C++ (`clangd-lsp`), C# (`csharp-lsp`), Go
+  (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP (`php-lsp`), Ruby (`ruby-lsp`), Rust
+  (`rust-analyzer-lsp`), Swift (`swift-lsp`), TypeScript/JavaScript (`typescript-lsp`).
+- **Bash/shell has no LSP server in this environment.** Use `shellcheck <file>` (installed at
+  `/usr/bin/shellcheck`) for static analysis instead — it catches unused vars, quoting bugs, and
+  unsafe patterns. It's a linter, not a language server, so there's no goToDefinition/
+  findReferences equivalent for shell; grep remains the right tool for plain text search in
+  scripts.
 
 **When to Use LSP vs Other Tools**:
 
@@ -211,32 +224,42 @@ success is assumed rather than checked.
 | Get diagnostics/errors | ✅ LSP (real-time) | ❌ | ❌ |
 | Type hierarchy/implementations | ✅ LSP (accurate) | ❌ grep (unreliable) | ❌ |
 | Rename refactoring | ✅ LSP (safe) | ❌ grep (misses cases) | ❌ |
-| Search file contents | ⚠️ | ✅ grep (faster) | ❌ |
+| Bash script static analysis | ❌ no bash LSP server | ⚠️ grep (pattern-only) | ❌ — use `shellcheck` |
+| Search file contents (plain text, not a symbol) | ❌ | ✅ grep (faster) | ❌ |
 | List directory contents | ❌ | ✅ find (better) | ❌ |
 | Read specific lines | ❌ | ❌ | ✅ Read (best) |
 
 **Best Practices**:
-1. **Load LSP early**: Use `ToolSearch` to load LSP at start of programming sessions
-2. **Use for navigation**: Finding definitions, references, implementations
-3. **Use for refactoring**: Renaming symbols across project
-4. **Use for diagnostics**: Getting compile errors before building
-5. **Fall back to grep**: When LSP is slow or for simple string searches
+1. **Load LSP before reaching for grep, not after.** For Java, Python, or any other supported
+   language, if the task involves a named symbol rather than plain text, call
+   `ToolSearch(query="select:LSP")` and use it as the first tool.
+2. **Use for navigation**: finding definitions, references, implementations.
+3. **Use for refactoring**: renaming symbols across a project.
+4. **Use for diagnostics**: getting compile/type errors before building.
+5. **Only fall back to grep when**: the search is plain-text/pattern-based rather than a named
+   symbol, or the file's language has no LSP server in this environment (bash — use `shellcheck`
+   instead, per above). "LSP felt slower to reach for" is not a qualifying reason.
 
-**Example Workflow**:
+**Example Workflow** (matches the actual `LSP` tool schema: `operation` plus
+`filePath`/`line`/`character`, or `query` for `workspaceSymbol`):
 ```markdown
 # At start of coding session
 Load LSP tool: ToolSearch(query="select:LSP")
 
 # When exploring code
-- Find where method is defined: LSP(method="definition", symbol="methodName")
-- Find all usages: LSP(method="references", symbol="methodName")
-- See class structure: LSP(method="documentSymbol", file="path/to/File.java")
-- Check for errors: LSP(method="diagnostics", file="path/to/File.java")
+- Find where a symbol is defined: LSP(operation="goToDefinition", filePath="...", line=N, character=N)
+- Find all usages: LSP(operation="findReferences", filePath="...", line=N, character=N)
+- See file/class structure: LSP(operation="documentSymbol", filePath="path/to/File.java", line=1, character=1)
+- Search by name across the workspace: LSP(operation="workspaceSymbol", query="methodName", filePath="...", line=1, character=1)
+- Check for errors: diagnostics surface automatically as a system reminder after editing a file
 
 # When making changes
-- Before renaming: Use LSP to find all references
-- After changes: Use LSP to check diagnostics
-- Final validation: Run build
+- Before renaming: use findReferences to find every call site
+- After changes: re-check diagnostics
+- Final validation: run the build/test suite
+
+# For bash scripts (no LSP server available)
+- Static analysis: shellcheck path/to/script.sh
 ```
 
 **Note**: LSP is a deferred tool - use ToolSearch to load it before first use in a session.
@@ -246,19 +269,19 @@ Load LSP tool: ToolSearch(query="select:LSP")
 1. **Consistency Checking** (e.g., PR #6 Round 10):
    ```
    Instead of: grep -n "debug" src/
-   Use: LSP references("debug") to find actual method calls (not comments)
+   Use: LSP(operation="findReferences", ...) on the specific symbol to find actual calls (not comments)
    ```
 
 2. **Test Coverage Analysis** (e.g., PR #6 Round 13):
    ```
    Instead of: grep "setAbsolutePath" src/main/
-   Use: LSP references("setAbsolutePath") to see all actual usages
+   Use: LSP(operation="findReferences", ...) on setAbsolutePath to see all actual usages
    ```
 
 3. **Refactoring Impact** (e.g., PR #6 Round 15):
    ```
    Before renaming totalFilesScanned → totalFilesWithFindings:
-   - LSP references("totalFilesScanned") shows all locations
+   - LSP(operation="findReferences", ...) on totalFilesScanned shows all locations
    - More reliable than grep (handles Java naming conventions)
    ```
 
@@ -867,7 +890,13 @@ live nowhere else.
    Workflow Examples → Example 3 runs `mvn clean compile test -pl <module>`; when the change touches
    a POM, a dependency, or build configuration, drop the `-pl` scope and validate the full build.
 
-6. **Already stated in full elsewhere** — go there rather than working from a summary: relentless
+6. **LSP is the default tool for symbol-level lookups, not an optional enhancement to reach for
+   only when asked.** Development Tools → LSP — for Java/Python (and any other supported
+   language), load it and use it *before* grep whenever the question concerns a named symbol
+   (definition, references, structure, diagnostics). Grep is the fallback for plain-text search or
+   for bash, which has no LSP server — use `shellcheck` there instead.
+
+7. **Already stated in full elsewhere** — go there rather than working from a summary: relentless
    refactoring as part of the cycle (Core Principles §2); don't over-abstract tests (§3, "Moist");
    long constructor parameter lists → config objects (Anti-Patterns → Production Code Smells);
    module dependency direction (Code Review Checklist); immutability and value objects (Tools and
