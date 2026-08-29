@@ -6,6 +6,7 @@ so the planted-defect case comes first, and "clean input passes" second.
 """
 
 import datetime
+import pathlib
 import textwrap
 
 import pytest
@@ -316,6 +317,18 @@ def test_fs_eng_verified_pass_convention_is_recognized(tmp_path):
     assert "2026-03-25" in findings[0].message
 
 
+def test_last_tested_table_row_is_recognized(tmp_path):
+    """The cc-plugins evals/README.md convention: a `| case | date | PASS |` results table."""
+    doc = write(tmp_path / "README.md", """
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        | baseline-establish | 2026-07-02 | PASS |
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=30, today=TODAY)
+    assert len(findings) == 1
+    assert "2026-07-02" in findings[0].message
+
+
 def test_last_updated_date_is_recognized(tmp_path):
     doc = write(tmp_path / "CLAUDE.md", """
         **Last Updated**: 2026-01-15
@@ -603,6 +616,115 @@ def test_main_returns_cannot_check_on_a_missing_target(tmp_path, capsys):
     """Could-not-check is never clean."""
     assert main([str(tmp_path / "does-not-exist.md")]) == CANNOT_CHECK
     assert "CANNOT CHECK" in capsys.readouterr().err
+
+
+def test_skill_audit_reaches_dates_in_bundled_markdown(tmp_path, capsys):
+    """An eval README's stale `Last Tested` row must surface when auditing the skill.
+
+    Auditing only SKILL.md would leave the eval suite's own staleness invisible —
+    which is precisely the drift this skill exists to catch.
+    """
+    write(tmp_path / "SKILL.md", """
+        ---
+        name: thing
+        description: A thing.
+        ---
+        # Thing
+        """)
+    write(tmp_path / "evals" / "README.md", """
+        | Test case | Last Tested | Result |
+        |-----------|-------------|--------|
+        | some-case | 2026-01-01 | PASS |
+        """)
+    assert main([str(tmp_path), "--max-age-days", "30"]) == FINDINGS
+    out = capsys.readouterr().out
+    assert "2026-01-01" in out
+    assert "evals/README.md" in out
+
+
+def test_citations_lens_skips_templates_examples_and_changelog(tmp_path, capsys):
+    """Those documents hold illustrative paths by design; resolving them is noise.
+
+    Dates still count everywhere — a stale date means the same thing in a CHANGELOG
+    as in a SKILL.md — but an unresolvable path in a template is the template
+    working as intended.
+    """
+    write(tmp_path / "SKILL.md", """
+        ---
+        name: thing
+        description: A thing.
+        ---
+        # Thing
+        """)
+    write(tmp_path / "templates" / "PROGRESS-template.md",
+          "Fill in `~/.claude/handoff/active/example-task.md` here.\n")
+    write(tmp_path / "examples" / "session.md", "We ran `some-missing-script.sh` next.\n")
+    write(tmp_path / "CHANGELOG.md", "- Referenced `old-removed-helper.py` back then.\n")
+
+    assert main([str(tmp_path)]) == CLEAN
+    assert "clean" in capsys.readouterr().out.lower()
+
+
+def test_citations_lens_still_covers_reference_files(tmp_path, capsys):
+    """references/ is asserting real paths, so it stays in scope."""
+    write(tmp_path / "SKILL.md", """
+        ---
+        name: thing
+        description: A thing.
+        ---
+        # Thing
+        """)
+    write(tmp_path / "references" / "conventions.md",
+          "See `references/absent.md` for the rest.\n")
+
+    assert main([str(tmp_path)]) == FINDINGS
+    assert "references/absent.md" in capsys.readouterr().out
+
+
+def test_reference_file_can_cite_a_script_elsewhere_in_the_skill(tmp_path):
+    """A references/ doc citing `audit_checks.py` means scripts/audit_checks.py.
+
+    Resolution has to consider the skill root, not just the citing file's own
+    directory, or every reference-to-script citation reads as broken.
+    """
+    write(tmp_path / "scripts" / "audit_checks.py", "print('hi')\n")
+    write(tmp_path / "SKILL.md", "---\nname: t\ndescription: T.\n---\n# T\n")
+    doc = write(tmp_path / "references" / "conventions.md", """
+        Limits enforced by `audit_checks.py`.
+        """)
+    assert check_citations(doc, doc.read_text(), root=tmp_path) == []
+
+
+def test_sibling_resolution_works_from_a_relative_target_path(tmp_path, monkeypatch):
+    """A relative invocation must not truncate the ancestor search."""
+    write(tmp_path / "other-skill" / "SKILL.md", "# Other\n")
+    doc = write(tmp_path / "this-skill" / "SKILL.md", """
+        Defers to `other-skill/SKILL.md` for that path.
+        """)
+    monkeypatch.chdir(tmp_path)
+    relative = pathlib.Path("this-skill") / "SKILL.md"
+    assert check_citations(relative, relative.read_text()) == []
+
+
+def test_a_bare_suffix_is_not_treated_as_a_path(tmp_path):
+    """`.py` on its own is a suffix being discussed, not a file being cited."""
+    doc = write(tmp_path / "SKILL.md", """
+        Both the `.sh` and `.py` variants are supported.
+        """)
+    assert check_citations(doc, doc.read_text()) == []
+
+
+def test_skill_audit_does_not_double_report_skill_md(tmp_path, capsys):
+    """SKILL.md must be scanned once, not twice, when walking bundled markdown."""
+    write(tmp_path / "SKILL.md", """
+        ---
+        name: thing
+        description: A thing.
+        ---
+        Verified 2026-01-01 by hand.
+        """)
+    assert main([str(tmp_path), "--max-age-days", "30"]) == FINDINGS
+    assert capsys.readouterr().out.count("2026-01-01") == 1
 
 
 def test_main_reports_unclassified_without_claiming_clean(tmp_path, capsys):

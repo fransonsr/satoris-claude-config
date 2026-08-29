@@ -1,0 +1,17 @@
+{
+  "description": "Advise at session start when a /satori:reasoning-audit pass is due (silent unless due)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/reasoning_audit_cadence.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

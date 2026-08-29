@@ -59,7 +59,15 @@ NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 BACKTICKED = re.compile(r"`([^`\n]+)`")
 CITEABLE_SUFFIXES = (".md", ".py", ".sh", ".json", ".yaml", ".yml", ".toml")
 DATED_CLAIM = re.compile(
-    r"(verified|last updated|last checked|validated|re-verified)\W{0,6}(\d{4}-\d{2}-\d{2})",
+    r"(verified|last updated|last checked|last tested|validated|re-verified)"
+    r"\W{0,6}(\d{4}-\d{2}-\d{2})",
+    re.IGNORECASE,
+)
+# A results-table row: `| case-name | 2026-07-02 | PASS |`. The cc-plugins
+# evals/README.md convention puts the date in a cell, so the "Last Tested" header
+# sits rows away from it and the inline pattern above cannot reach it.
+DATED_TABLE_ROW = re.compile(
+    r"^\s*\|[^|]+\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(PASS|FAIL|PENDING)\b",
     re.IGNORECASE,
 )
 CITATION_CUES = (
@@ -220,8 +228,14 @@ def _check_reference_toc(reference: pathlib.Path) -> List[Finding]:
 # ------------------------------------------------------------------ lens 3
 
 
-def check_citations(path: pathlib.Path, text: str) -> List[Finding]:
+def check_citations(path: pathlib.Path, text: str,
+                    root: Optional[pathlib.Path] = None) -> List[Finding]:
     """Flag cited paths that do not resolve, and resolved paths lacking a cited term.
+
+    `root` is the skill (or document set) root a relative citation may be written
+    against; it defaults to the citing file's own directory. A references/ file
+    citing `audit_checks.py` means scripts/audit_checks.py under the skill root,
+    not under references/.
 
     Lines in illustrative context are skipped — see _walk_prose_lines.
     """
@@ -233,7 +247,7 @@ def check_citations(path: pathlib.Path, text: str) -> List[Finding]:
         paths = [t for t in tokens if _looks_like_path(t)]
         terms = _cited_terms(line, tokens)
         for cited in paths:
-            findings.extend(_check_one_citation(path, lineno, cited, terms))
+            findings.extend(_check_one_citation(path, lineno, cited, terms, root))
     return findings
 
 
@@ -297,8 +311,8 @@ def _cited_terms(line: str, tokens: List[str]) -> List[str]:
     return [t for t in tokens if not _looks_like_path(t) and _looks_like_identifier(t)]
 
 
-def _check_one_citation(path, lineno, cited, terms) -> List[Finding]:
-    target = _resolve_citation(path, cited)
+def _check_one_citation(path, lineno, cited, terms, root=None) -> List[Finding]:
+    target = _resolve_citation(path, cited, root)
     if target is None:
         return [Finding(str(path), lineno, "citations",
                         f"cited path `{cited}` cannot be resolved from {path.parent}")]
@@ -314,30 +328,44 @@ def _check_one_citation(path, lineno, cited, terms) -> List[Finding]:
             for term in terms if term not in content]
 
 
-def _resolve_citation(path: pathlib.Path, cited: str) -> Optional[pathlib.Path]:
+def _resolve_citation(path: pathlib.Path, cited: str,
+                      root: Optional[pathlib.Path] = None) -> Optional[pathlib.Path]:
     """Resolve a cited path, or None if it genuinely does not exist.
 
-    A bare basename is satisfied by a match anywhere under the citing file's
-    directory: a SKILL.md citing `pattern_checker.py` means scripts/pattern_checker.py,
-    and demanding a literal relative path there produces noise, not findings.
+    A bare basename is satisfied by a match anywhere under the search roots: a
+    SKILL.md citing `pattern_checker.py` means scripts/pattern_checker.py, and
+    demanding a literal relative path there produces noise, not findings.
     """
     if cited.startswith("~"):
         expanded = pathlib.Path(cited).expanduser()
         return expanded if expanded.exists() else None
 
-    base = path.parent
-    if "/" in cited:
-        # Try the citing file's own directory, then its ancestors: a sibling-skill
-        # reference like `address-pr-issues/SKILL.md` resolves from the skills root,
-        # not from the skill doing the citing.
-        for ancestor in (base, *list(base.parents)[:ANCESTOR_SEARCH_DEPTH]):
-            if (ancestor / cited).exists():
-                return ancestor / cited
-        # A partial path is often relative to a subdirectory rather than the skill
-        # root — `lib/github-api.sh` cited from SKILL.md means scripts/lib/github-api.sh.
-        return _find_by_path_suffix(base, cited)
+    for base in _search_bases(path, root):
+        if "/" in cited:
+            for ancestor in (base, *list(base.parents)[:ANCESTOR_SEARCH_DEPTH]):
+                if (ancestor / cited).exists():
+                    return ancestor / cited
+            found = _find_by_path_suffix(base, cited)
+        else:
+            found = next(base.rglob(cited), None)
+        if found is not None:
+            return found
+    return None
 
-    return next(base.rglob(cited), None)
+
+def _search_bases(path: pathlib.Path, root: Optional[pathlib.Path]):
+    """Directories a relative citation may be written against, nearest first.
+
+    Absolute-resolved, because a relative invocation (`audit_checks.py my-skill`)
+    would otherwise have an empty .parents chain and silently lose the ancestor
+    search that sibling-skill references depend on.
+    """
+    bases = [path.parent.resolve()]
+    if root is not None:
+        resolved_root = root.resolve()
+        if resolved_root not in bases:
+            bases.append(resolved_root)
+    return bases
 
 
 def _find_by_path_suffix(base: pathlib.Path, cited: str) -> Optional[pathlib.Path]:
@@ -359,6 +387,9 @@ def _looks_like_path(token: str) -> bool:
     if not token or any(c.isspace() for c in token):
         return False
     if not token.endswith(CITEABLE_SUFFIXES):
+        return False
+    # A bare suffix like `.py` is a file type being discussed, not a file cited.
+    if token.startswith("."):
         return False
     if any(marker in token for marker in ("<", ">", "$", "...", "*", "://", "{", "}")):
         return False
@@ -387,7 +418,7 @@ def check_self_dated_claims(path: pathlib.Path, text: str, max_age_days: int,
     """Flag text carrying its own validation date whose re-check window has passed."""
     findings = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        for keyword, datestr in DATED_CLAIM.findall(line):
+        for keyword, datestr in _dated_claims_on(line):
             claimed = _parse_date(datestr)
             if claimed is None:
                 continue
@@ -398,6 +429,15 @@ def check_self_dated_claims(path: pathlib.Path, text: str, max_age_days: int,
                     f"'{keyword}' claim dated {datestr} is {age} days old "
                     f"(window {max_age_days}); unverified rather than wrong — due for re-check"))
     return findings
+
+
+def _dated_claims_on(line: str):
+    """Yield (keyword, date) pairs for both inline claims and results-table rows."""
+    inline = DATED_CLAIM.findall(line)
+    if inline:
+        return inline
+    row = DATED_TABLE_ROW.match(line)
+    return [(row.group(2).upper(), row.group(1))] if row else []
 
 
 def _parse_date(datestr: str) -> Optional[datetime.date]:
@@ -508,14 +548,59 @@ def run_lenses(target: pathlib.Path, kind: str, max_age_days: int,
         findings.extend(check_frontmatter(skill_md))
     if "structure" in lenses:
         findings.extend(check_skill_structure(skill_dir))
+    # For a skill, citations and dates are checked across every bundled markdown
+    # file, not just SKILL.md: a stale `Last Tested` row in evals/README.md is
+    # exactly the drift this skill exists to catch, and auditing SKILL.md alone
+    # would leave it invisible.
+    if target.is_dir():
+        cited_docs = _citation_documents(skill_dir)
+        dated_docs = _bundled_markdown(skill_dir)
+    else:
+        cited_docs = dated_docs = [skill_md]
+
     if "citations" in lenses:
-        findings.extend(check_citations(skill_md, skill_md.read_text()))
+        findings.extend(_scan(cited_docs, lambda d, t: check_citations(d, t, root=skill_dir)))
     if "self-dated" in lenses:
-        findings.extend(check_self_dated_claims(
-            skill_md, skill_md.read_text(), max_age_days, today))
+        findings.extend(_scan(dated_docs, lambda d, t: check_self_dated_claims(
+            d, t, max_age_days, today)))
     if "bypassed-scripts" in lenses:
         findings.extend(check_unreferenced_scripts(skill_dir))
     return findings
+
+
+def _scan(documents, check) -> List[Finding]:
+    findings: List[Finding] = []
+    for document in documents:
+        try:
+            text = document.read_text()
+        except OSError:
+            continue
+        findings.extend(check(document, text))
+    return findings
+
+
+def _bundled_markdown(skill_dir: pathlib.Path) -> List[pathlib.Path]:
+    """SKILL.md first, then every other markdown file bundled with the skill.
+
+    Dates mean the same thing wherever they appear, so the self-dated lens reads
+    all of these — including evals/README.md, whose staleness is the whole point.
+    """
+    skill_md = skill_dir / "SKILL.md"
+    others = sorted(p for p in skill_dir.rglob("*.md") if p != skill_md)
+    return ([skill_md] if skill_md.is_file() else []) + others
+
+
+def _citation_documents(skill_dir: pathlib.Path) -> List[pathlib.Path]:
+    """Documents whose cited paths are meant to resolve.
+
+    Excludes templates/, examples/ and CHANGELOG files: those hold placeholder and
+    historical paths by design, and resolving them produced pure noise on the
+    dogfood run (2026-08-29) — a template's unresolvable path is the template
+    working as intended.
+    """
+    documents = [skill_dir / "SKILL.md"] if (skill_dir / "SKILL.md").is_file() else []
+    documents += sorted((skill_dir / "references").rglob("*.md"))
+    return documents
 
 
 def main(argv=None) -> int:

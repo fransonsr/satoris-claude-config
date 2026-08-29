@@ -16,11 +16,12 @@ happen afterwards, by a human decision, through the normal skills for that (see 
 ## Why this exists, and what it is not
 
 Per-change review (`/satori:pre-pr-audit`, `/satori:adversarial-review`) catches defects introduced
-by a diff. Nothing catches a design decision going stale on its own. Founding example: a
-`pre-pr-audit/evals/evals.json` sat untouched for two months, covering 4 of its checker's 11
-methods, while the checker grew — and it turned out to be in a format **no runner in this
-environment reads**, so it was unrunnable rather than merely stale. No diff would have surfaced
-either fact.
+by a diff. Nothing catches a design decision going stale on its own. Founding example: pre-pr-audit
+shipped a JSON eval file that sat untouched for two months, covering 4 of its checker's 11 methods
+while the checker grew — and it turned out to be in a format **no runner in this environment
+reads**, so it was unrunnable rather than merely stale. No diff would have surfaced either fact.
+(It has since been converted to a hand-runnable, dated suite under pre-pr-audit's own evals
+directory.)
 
 Two adjacent skills already cover different axes, and this one defers to both rather than
 competing:
@@ -184,14 +185,26 @@ than reimplementing its dispatch and resume machinery here.
 
 ## Cadence
 
-Trigger off accumulated drift, not the calendar: **plugin-version bumps since the last audit
-pass** is the metric that tracks how much has actually changed. A calendar trigger fires during
-quiet periods and stays silent during churn.
+Trigger off accumulated drift, not the calendar: **satori plugin-version bumps since the last
+recorded audit pass**. A calendar trigger fires during quiet periods and stays silent during
+churn; version bumps track how much has actually changed.
 
-A version-bump counter plus a `SessionStart` advisory — the mechanism `mktplc-refresh` already
-uses for marketplace staleness — is what makes this fire without being remembered. Until that
-exists, this skill runs when invoked, which is a rule rather than a mechanism, and should be
-expected to be followed less reliably than one.
+This is wired as a mechanism, not a reminder. `hooks/reasoning_audit_cadence.py` runs on
+`SessionStart` (registered in `hooks/hooks.json`) and prints one advisory when the bump count
+crosses its threshold — default 5, overridable with `--threshold`. It is silent otherwise, and it
+fails open and silent on any error, because a hook that breaks session start costs more than a
+missed advisory.
+
+**Closing the loop is part of running this skill**: once an audit pass completes, record it, or
+the advisory will keep firing every session.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/reasoning_audit_cadence.py" --record
+```
+
+State lives at `~/.claude/satori-reasoning-audit.state`. A corrupt or missing state file reads as
+"never audited" rather than as an error, so it self-heals on the next recorded pass instead of
+disabling the cadence silently.
 
 ## Output
 
@@ -217,7 +230,7 @@ why. "Clean" without that qualifier overstates what a static pass can establish.
 ## Known limitations
 
 - **The citations lens still reports cross-repo references as unresolvable.** A skill that cites a
-  file in another repository (`repos/repos.json`, a fleet workspace's CLAUDE.md) has no local file
+  file in another repository (a fleet workspace's repo manifest or its CLAUDE.md) has no local file
   to resolve against. Those findings are real in the sense that the path cannot be verified from
   here, and noise in the sense that nothing is wrong. Triage them as unverifiable rather than
   broken.

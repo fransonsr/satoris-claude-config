@@ -28,7 +28,7 @@ Frontmatter fields below.
 | `metadata` | no | |
 | `compatibility` | no | ≤500 chars |
 
-**Source**: `skill-creator`'s `scripts/quick_validate.py` `ALLOWED_PROPERTIES`, read at
+**Source**: the `ALLOWED_PROPERTIES` constant in skill-creator's quick-validate script, read at
 `~/.claude/plugins/marketplaces/claude-plugins-official/plugins/skill-creator/skills/skill-creator/scripts/quick_validate.py`.
 Verified 2026-08-29.
 
@@ -47,7 +47,7 @@ the inner `:` is a syntax error inside it. Quote the whole value when it contain
 
 | Limit | Value | Source |
 |---|---|---|
-| `name` max length | 64 | skill-creator `quick_validate.py`, verified 2026-08-29 |
+| `name` max length | 64 | skill-creator's quick-validate script, verified 2026-08-29 |
 | `description` max length | 1024 | ditto |
 | `compatibility` max length | 500 | ditto |
 | Angle brackets in `description` | forbidden | ditto |
