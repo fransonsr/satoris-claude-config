@@ -329,10 +329,17 @@ agent-side judgment work, not automated coverage.
 
 ### Silent Failure Patterns
 
-**NOT implemented by the script** — same as the isinstance/dict-default bullets above, these three
-sub-categories (Parse/Compile Failures, Type/Name Resolution, Platform Compatibility) are not
-automated by `pattern_checker.py`; check them by hand or delegate to the Consistency-Checks agent.
-Check for operations that can fail without clear user-visible errors:
+**Partly automated — read the split carefully.** `pattern_checker.py` *does* implement the
+warn-instead-of-throw case: `_check_silent_failures` flags a `LOGGER.warn`/`log.warn`/`log.error`
+whose message carries a data-quality keyword (`DATA_QUALITY_KEYWORDS` in the script — duplicate,
+invalid, corrupt, conflict, mismatch, missing, malformed) and which continues rather than raising.
+The **three sub-categories below** (Parse/Compile Failures, Type/Name Resolution, Platform
+Compatibility) are *not* automated — check them by hand or delegate to the Consistency-Checks
+agent, same as the isinstance/dict-default bullets above.
+
+This distinction was easy to misread as "none of this section is automated," which would leave the
+one check that *is* automated being done twice by hand. Check for operations that can fail without
+clear user-visible errors:
 
 **Parse/Compile Failures**:
 - Methods that catch exceptions and return null/empty

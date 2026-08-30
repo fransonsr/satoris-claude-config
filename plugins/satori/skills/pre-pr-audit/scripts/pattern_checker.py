@@ -37,6 +37,17 @@ class Issue:
 MAIN_SOURCE_PATH = re.compile(r'(^|/)src/main/java/')
 
 
+# Message keywords that mark a log line as reporting a data-quality problem — the
+# case where logging instead of raising lets corrupt data propagate downstream.
+# `missing` and `malformed` added 2026-08-30: both are textbook instances of the
+# check's stated purpose and were named in its eval case while absent here.
+# Kept as one constant because both logger shapes below must check the same set; two
+# copies meant an edit to one could silently stop checking the other style.
+DATA_QUALITY_KEYWORDS = [
+    'duplicate', 'invalid', 'corrupt', 'conflict', 'mismatch', 'missing', 'malformed',
+]
+
+
 class PatternChecker:
     """Checks code for common quality issues using pattern matching."""
 
@@ -261,8 +272,8 @@ class PatternChecker:
         """Check for logging errors instead of throwing."""
 
         warning_patterns = [
-            (r'LOGGER\.(warn|atWarn)\(', ['duplicate', 'invalid', 'corrupt', 'conflict', 'mismatch']),
-            (r'log\.(warn|error)\(', ['duplicate', 'invalid', 'corrupt', 'conflict', 'mismatch']),
+            (r'LOGGER\.(warn|atWarn)\(', DATA_QUALITY_KEYWORDS),
+            (r'log\.(warn|error)\(', DATA_QUALITY_KEYWORDS),
         ]
 
         for logger_pattern, keywords in warning_patterns:

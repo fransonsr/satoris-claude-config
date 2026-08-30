@@ -7,11 +7,12 @@ demonstrated it can fail on a real input has not demonstrated it does anything.
 """
 
 import pathlib
+import re
 import textwrap
 
 import pytest
 
-from pattern_checker import PatternChecker
+from pattern_checker import DATA_QUALITY_KEYWORDS, PatternChecker
 
 
 def checker(changed_files=None):
@@ -214,6 +215,78 @@ def test_checker_still_constructs_with_two_arguments():
     """The removal must not leave a signature nobody can call."""
     c = PatternChecker([], merge_base="HEAD")
     assert c.issues == []
+
+
+# ---------------------------------- silent-failure keyword coverage (2026-08-30)
+# The eval case documented `duplicate, missing, invalid, malformed`; the
+# implementation had `duplicate, invalid, corrupt, conflict, mismatch` since the
+# April initial commit. The doc list was invented during yesterday's eval
+# conversion and never checked against the code — so the doc was wrong. Separately,
+# `missing` and `malformed` belong in the check on the merits: both are textbook
+# "data-quality problem logged instead of raised", which is the stated purpose.
+
+
+def warn_line(message):
+    """A changed LOGGER.warn line, with the whole file in the diff."""
+    return [f'        LOGGER.warn("{message}", id);']
+
+
+def findings_for(message):
+    c = checker()
+    lines = warn_line(message)
+    c._check_silent_failures("F.java", "\n".join(lines), lines, {1})
+    return c.issues
+
+
+KEYWORDS_THAT_MUST_FIRE = [
+    "duplicate", "invalid", "corrupt", "conflict", "mismatch",  # original set
+    "missing", "malformed",                                     # added 2026-08-30
+]
+
+
+@pytest.mark.parametrize("keyword", KEYWORDS_THAT_MUST_FIRE)
+def test_data_quality_keyword_is_detected(keyword):
+    issues = findings_for(f"{keyword} record encountered, skipping")
+    assert len(issues) == 1, f"'{keyword}' produced no Silent Failure finding"
+    assert issues[0].severity == "HIGH"
+    assert issues[0].category == "Silent Failure"
+
+
+def test_a_warn_with_no_data_quality_keyword_produces_no_finding():
+    """The check must stay targeted — not every warn is a swallowed data-quality error."""
+    assert findings_for("cache warmed in {}ms") == []
+
+
+def test_both_logger_shapes_share_one_keyword_list():
+    """The two lists were duplicated verbatim in the source, so an edit to one would
+    silently stop checking the other logger style. They now reference one constant —
+    assert that by identity, not by comparing two parsed literals."""
+    c = checker()
+    lines = warn_line("x")
+    c._check_silent_failures("F.java", "\n".join(lines), lines, {1})  # exercises the block
+    source = pathlib.Path(__file__).with_name("pattern_checker.py").read_text()
+    assert source.count("DATA_QUALITY_KEYWORDS)") == 2, (
+        "both warning_patterns entries must reference the shared constant")
+    assert "['duplicate'" not in source, "an inline keyword literal is back"
+
+
+def test_the_eval_case_documents_exactly_the_implemented_keywords():
+    """The defect that started this: doc and code naming different sets.
+
+    Asserting agreement in both directions means neither can drift again without a
+    failing test.
+    """
+    implemented = set(DATA_QUALITY_KEYWORDS)
+
+    case = pathlib.Path(__file__).parent.parent / "evals" / "test-cases" / "silent-failures.md"
+    text = case.read_text()
+    documented = set()
+    listed = re.search(r"data-quality keyword\s*\n?\(([^)]*)\)", text, re.S)
+    if listed:
+        documented = {k.strip().strip("`") for k in listed.group(1).replace("\n", " ").split(",")}
+    assert documented == implemented, (
+        f"eval case and implementation disagree.\n  documented: {sorted(documented)}\n"
+        f"  implemented: {sorted(implemented)}")
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
