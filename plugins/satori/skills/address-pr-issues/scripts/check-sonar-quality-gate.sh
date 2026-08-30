@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/sonar-api.sh"
+source "$SCRIPT_DIR/lib/github-api.sh"
 
 PR_NUMBER="${1:-}"
 
@@ -14,7 +15,7 @@ if [[ -z "$PR_NUMBER" ]]; then
   exit 1
 fi
 
-WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
+WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"
 mkdir -p "$WORKSPACE_DIR"
 
 QUALITY_GATE_FILE="$WORKSPACE_DIR/quality-gate.json"

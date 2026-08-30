@@ -282,3 +282,125 @@ def test_pr_number_snippet_does_not_reference_an_undefined_args_variable():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ============================================================================
+# Workspace namespacing. /tmp/pr-${PR_NUMBER} carried no repo component, so two
+# PRs numbered 68 in different repos shared one workspace and overwrote each
+# other's threads.json / round.txt / fixes.json / triage.json. Realistic here:
+# concurrent agents across the RP and JS fleets, where PR numbers are small and
+# collide. This is the failure the global CLAUDE.md temp-file rule was written
+# after — the skill predates the rule and was never brought into line.
+# ============================================================================
+
+WORKSPACE_SCRIPTS = [
+    "check-sonar-quality-gate.sh", "resolve-thread.sh", "commit-pr-fixes.sh",
+    "fetch-pr-threads.sh", "classify-threads.sh", "init-pr-state.sh",
+]
+
+
+def make_repo(tmp_path, name, origin):
+    repo = tmp_path / name
+    repo.mkdir(parents=True, exist_ok=True)
+    sh(f"""
+        cd {repo}
+        git init -q
+        git config user.email t@example.com
+        git config user.name Test
+        git remote add origin {origin}
+    """)
+    return repo
+
+
+def derive_workspace(repo, pr="68"):
+    """Ask the shared helper for a workspace path, exactly as a script would."""
+    r = sh(f'''
+        cd {repo}
+        source {SCRIPTS}/lib/github-api.sh
+        pr_workspace_dir {pr}
+    ''')
+    return r.stdout.strip(), r
+
+
+def test_same_pr_number_in_different_repos_gets_different_workspaces(tmp_path):
+    """The defect, stated directly."""
+    a = make_repo(tmp_path, "a", "https://github.com/fs-eng/service-alpha.git")
+    b = make_repo(tmp_path, "b", "https://github.com/fs-eng/service-beta.git")
+    wa, ra = derive_workspace(a)
+    wb, rb = derive_workspace(b)
+    assert wa, f"helper produced nothing for repo a: {ra.stderr!r}"
+    assert wb, f"helper produced nothing for repo b: {rb.stderr!r}"
+    assert wa != wb, f"both repos resolved to the same workspace: {wa}"
+
+
+def test_same_repo_and_pr_is_stable_across_calls(tmp_path):
+    """Every script must land on the identical path or they cannot see each other's state."""
+    a = make_repo(tmp_path, "a", "https://github.com/fs-eng/service-alpha.git")
+    first, _ = derive_workspace(a)
+    second, _ = derive_workspace(a)
+    assert first == second and first
+
+
+def test_different_owners_with_the_same_repo_name_do_not_collide(tmp_path):
+    """A fork and its upstream share a repo name; only the owner distinguishes them."""
+    a = make_repo(tmp_path, "a", "https://github.com/fs-eng/records.git")
+    b = make_repo(tmp_path, "b", "https://github.com/fransonsr/records.git")
+    wa, _ = derive_workspace(a)
+    wb, _ = derive_workspace(b)
+    assert wa != wb, f"owner is not part of the workspace identity: {wa}"
+
+
+def test_workspace_path_is_a_single_filesystem_component_under_tmp(tmp_path):
+    """owner/repo contains a slash; it must not become a nested path or an escape."""
+    a = make_repo(tmp_path, "a", "https://github.com/fs-eng/service-alpha.git")
+    w, _ = derive_workspace(a)
+    assert w.startswith("/tmp/"), w
+    assert w.count("/") == 2, f"workspace is not a single component under /tmp: {w}"
+    assert ".." not in w
+
+
+def test_ssh_and_https_remotes_agree(tmp_path):
+    """The same repo reached two ways must not fork into two workspaces."""
+    a = make_repo(tmp_path, "a", "https://github.com/fs-eng/records.git")
+    b = make_repo(tmp_path, "b", "git@github.com:fs-eng/records.git")
+    wa, _ = derive_workspace(a)
+    wb, _ = derive_workspace(b)
+    assert wa == wb, f"https and ssh remotes disagreed: {wa} vs {wb}"
+
+
+def test_pr_number_still_distinguishes_workspaces(tmp_path):
+    a = make_repo(tmp_path, "a", "https://github.com/fs-eng/records.git")
+    w68, _ = derive_workspace(a, "68")
+    w69, _ = derive_workspace(a, "69")
+    assert w68 != w69
+
+
+def test_helper_fails_loudly_outside_a_git_repo(tmp_path):
+    """Failing is correct: it must never silently fall back to a shared path."""
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    r = sh(f'''
+        cd {plain}
+        source {SCRIPTS}/lib/github-api.sh
+        pr_workspace_dir 68 || echo "REFUSED"
+    ''')
+    assert "REFUSED" in r.stdout or r.returncode != 0, (
+        f"helper produced a path with no repo context: {r.stdout!r}")
+    assert "/tmp/pr-68" not in r.stdout, "fell back to the colliding shared path"
+
+
+@pytest.mark.parametrize("script", WORKSPACE_SCRIPTS)
+def test_no_script_hardcodes_the_unnamespaced_workspace(script):
+    """Each script must go through the shared helper, not re-derive the path."""
+    text = (SCRIPTS / script).read_text()
+    assert '"/tmp/pr-${PR_NUMBER}"' not in text, (
+        f"{script} still hardcodes the unnamespaced workspace path")
+    assert "pr_workspace_dir" in text, (
+        f"{script} does not use the shared pr_workspace_dir helper")
+
+
+def test_skill_md_documents_the_namespaced_shape():
+    """SKILL.md's own snippets are what a reader copies; they must not teach the old path."""
+    text = SKILL_MD.read_text()
+    assert 'WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"' not in text, (
+        "SKILL.md still documents the unnamespaced workspace path")

@@ -112,7 +112,9 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 - **Post-mortem analysis**: Export metrics for process improvement
 - **Graceful degradation**: Adapts when threaded reply API unavailable
 
-**State Files** (stored in `/tmp/pr-{number}/`):
+**State Files** (stored in `/tmp/pr-{owner}-{repo}-{number}/`, namespaced by repository so two
+PRs with the same number in different repos cannot overwrite each other's state — derive the
+path with `pr_workspace_dir` from `scripts/lib/github-api.sh`, never by hand):
 - `threads.json` - Cached thread metadata
 - `round.txt` - Current round number
 - `fixes.json` - Fix history per round
@@ -271,7 +273,8 @@ script — `init-pr-state.sh` and the other wrapper scripts set it only inside t
 subprocess, so it does NOT persist back to your shell, and it will NOT survive into a separate
 command invocation, a new shell/terminal, or a resumed session. Re-derive it yourself before any
 snippet that references it (or anything built from it) if it isn't already set in your current
-shell: `WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"` — which in turn needs `$PR_NUMBER` (and, for
+shell: `WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"` (after
+`source scripts/lib/github-api.sh`) — which in turn needs `$PR_NUMBER` (and, for
 Step 1.6, `$PR_AUTHOR`) re-derived too if those have also gone stale:
 `PR_NUMBER=$(gh pr view --json number -q .number)` /
 `PR_AUTHOR=$(gh pr view $PR_NUMBER --json author -q .author.login)`. `$THREADS_FILE`,
@@ -1902,7 +1905,7 @@ curl -u "$SONAR_TOKEN:" -X POST \
 ## State Management & Fix History
 
 This section is often run in total isolation — e.g. a post-mortem days after merge, in a fresh
-session. Re-derive `$WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"` and `$FIXES_FILE` per Step 1's
+session. Re-derive `$WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"` and `$FIXES_FILE` per Step 1's
 shorthand note before running anything below; don't assume they're still set.
 
 `$FIXES_FILE` (per-round commit/files history) and `$THREADS_FILE.before-round-N` snapshots
@@ -1920,9 +1923,11 @@ cat "$FIXES_FILE"
 jq -r 'to_entries[] | "\(.key): \(.value.files | length) files, directional=\(.value.directional_count), \(.value.commit[0:8])"' "$FIXES_FILE"
 ```
 
-**Cleanup after merge**: `rm -rf "/tmp/pr-${PR_NUMBER}"`, or archive it first with
-`mv "/tmp/pr-${PR_NUMBER}" "$HOME/.claude/pr-history/pr-${PR_NUMBER}-$(date +%Y%m%d)"` if you
-want it for a later post-mortem.
+**Cleanup after merge**: `rm -rf "$(pr_workspace_dir "$PR_NUMBER")"`, or archive it first with
+`mv "$(pr_workspace_dir "$PR_NUMBER")" "$HOME/.claude/pr-history/$(basename "$(pr_workspace_dir "$PR_NUMBER")")-$(date +%Y%m%d)"`
+if you want it for a later post-mortem. Both forms need `source scripts/lib/github-api.sh` first —
+resolve the path with the helper rather than retyping it, so a rename of the scheme can't leave a
+`rm -rf` pointing at the wrong directory.
 
 ## Tips and Best Practices
 

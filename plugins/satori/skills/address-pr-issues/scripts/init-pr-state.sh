@@ -16,7 +16,7 @@ if [[ -z "$PR_NUMBER" ]]; then
 fi
 
 # Setup workspace directory for this PR
-WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
+WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"
 mkdir -p "$WORKSPACE_DIR"
 
 echo "📍 Initializing PR workflow state for PR #$PR_NUMBER"

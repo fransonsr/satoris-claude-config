@@ -74,7 +74,8 @@ These scripts provide a **hybrid automation approach**:
 #### `init-pr-state.sh <pr_number>`
 Initialize PR workflow state (run once per PR, or when starting new round).
 
-Creates workspace in `/tmp/pr-<number>/`:
+Creates workspace in `/tmp/pr-<owner>-<repo>-<number>/` (namespaced by repository, so the same
+PR number in two repos cannot collide — derived by `pr_workspace_dir` in `lib/github-api.sh`):
 - `round.txt` - Round tracking (auto-increments)
 - `threads.json` - Cached PR review threads
 - `api-capabilities.txt` - Threaded reply capability detection
@@ -334,7 +335,7 @@ chmod +x ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/ski
 ## Technical Notes
 
 - All scripts use `set -euo pipefail` for safety (fail fast on errors)
-- State files are temporary (`/tmp/pr-<number>/`), cleaned on session end
+- State files are temporary (`/tmp/pr-<owner>-<repo>-<number>/`), cleaned on session end
 - Scripts validate prerequisites (git repo, authentication, state files)
 - Error messages go to stderr, data to stdout (pipe-friendly)
 - Scripts are idempotent where possible (safe to re-run)

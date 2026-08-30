@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/github-api.sh"
+
 PR_NUMBER="${1:-}"
 PR_AUTHOR="${2:-}"
 
@@ -16,7 +19,7 @@ if [[ -z "$PR_NUMBER" || -z "$PR_AUTHOR" ]]; then
   exit 1
 fi
 
-WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
+WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"
 THREADS_FILE="$WORKSPACE_DIR/threads.json"
 
 if [[ ! -f "$THREADS_FILE" ]]; then

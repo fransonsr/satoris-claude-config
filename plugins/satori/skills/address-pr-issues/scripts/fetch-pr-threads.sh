@@ -15,7 +15,7 @@ if [[ -z "$PR_NUMBER" ]]; then
   exit 1
 fi
 
-WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
+WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"
 THREADS_FILE="$WORKSPACE_DIR/threads.json"
 
 # Check if threads are cached

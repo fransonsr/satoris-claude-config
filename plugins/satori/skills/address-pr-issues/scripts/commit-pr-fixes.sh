@@ -8,6 +8,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/github-api.sh"
+
 PR_NUMBER="${1:-}"
 DIRECTIONAL_COUNT_ARG_PROVIDED=false
 [[ $# -ge 2 ]] && DIRECTIONAL_COUNT_ARG_PROVIDED=true
@@ -27,7 +30,7 @@ fi
 # `-gt`/`(( ))` below with "value too great for base" despite passing the regex above.
 DIRECTIONAL_COUNT=$((10#$DIRECTIONAL_COUNT))
 
-WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"
+WORKSPACE_DIR="$(pr_workspace_dir "$PR_NUMBER")"
 ROUND_FILE="$WORKSPACE_DIR/round.txt"
 FIXES_FILE="$WORKSPACE_DIR/fixes.json"
 

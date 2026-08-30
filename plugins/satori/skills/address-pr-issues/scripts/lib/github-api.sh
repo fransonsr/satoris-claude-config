@@ -26,6 +26,35 @@ get_repo_info() {
   fi
 }
 
+# Workspace directory for a PR's cached state, namespaced by repository.
+#
+# A bare /tmp/pr-<number> collides across repos: two PRs numbered 68 in different
+# repositories resolve to one directory and silently overwrite each other's
+# threads.json, round.txt, fixes.json and triage.json. That is a live risk here,
+# where concurrent agents run across several fleets and PR numbers are small.
+# Owner and repo are therefore part of the workspace identity.
+#
+# Fails rather than guessing: with no git origin there is no repo identity, and a
+# fallback to the shared path is exactly the collision this exists to prevent.
+pr_workspace_dir() {
+  local pr_number="${1:-}"
+  if [[ -z "$pr_number" ]]; then
+    echo "ERROR: pr_workspace_dir requires a PR number" >&2
+    return 1
+  fi
+
+  get_repo_info || return 1
+
+  # Owner and repo come from a parsed GitHub URL, so they are already tame; the
+  # substitution is belt-and-braces so no value can introduce a path separator
+  # or climb out of /tmp.
+  local owner="${REPO_OWNER//[^A-Za-z0-9._-]/_}"
+  local repo="${REPO_NAME//[^A-Za-z0-9._-]/_}"
+  local pr="${pr_number//[^A-Za-z0-9._-]/_}"
+
+  printf '/tmp/pr-%s-%s-%s\n' "$owner" "$repo" "$pr"
+}
+
 # Fetch PR threads and cache to file
 # Usage: fetch_pr_threads <pr_number> <output_file>
 fetch_pr_threads() {
