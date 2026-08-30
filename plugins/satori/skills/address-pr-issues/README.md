@@ -1,9 +1,3 @@
----
-name: address-pr-issues
-description: Systematically address GitHub Copilot and SonarQube issues on pull requests with comprehensive tests. Reads PR comments, prioritizes issues, implements fixes, and resolves conversations.
-argument-hint: [pr-number]
----
-
 # Address PR Issues
 
 Comprehensive workflow to address code quality issues from GitHub Copilot and SonarQube on pull requests with proper test coverage.

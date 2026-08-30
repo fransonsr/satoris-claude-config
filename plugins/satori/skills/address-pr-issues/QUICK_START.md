@@ -4,10 +4,10 @@
 
 ```bash
 # Current branch's PR
-/address-pr-issues
+/satori:address-pr-issues
 
 # Specific PR number
-/address-pr-issues 42
+/satori:address-pr-issues 42
 ```
 
 ---
@@ -289,7 +289,8 @@ sonar-scanner
 
 ✅ **Must have**:
 - `sonar-project.properties` (create from template if missing)
-- `SONAR_TOKEN` environment variable
+- SonarQube credential: `SONAR_TOKEN`, or the `SONARQUBE_CLI_TOKEN` fallback this environment
+  actually provisions (see `scripts/lib/sonar-api.sh`)
 - `gh` CLI authenticated
 
 ✅ **Nice to have**:
@@ -301,7 +302,7 @@ sonar-scanner
 ## Example Session Flow
 
 ```
-User: /address-pr-issues 42
+User: /satori:address-pr-issues 42
 
 Claude: Fetched 8 unresolved threads. classify-threads.sh: 2 silent (react+resolve
         pending), 1 already-resolved (skipped), 5 substantive to triage.

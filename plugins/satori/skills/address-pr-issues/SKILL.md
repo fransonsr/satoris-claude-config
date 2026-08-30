@@ -1,7 +1,7 @@
 ---
 name: address-pr-issues
 description: Systematically address GitHub Copilot and SonarQube issues on pull requests with comprehensive tests. Reads PR comments, prioritizes issues, implements fixes, and resolves conversations.
-argument-hint: [pr-number]
+argument-hint: '[pr-number]'
 ---
 
 # Address PR Issues
@@ -145,7 +145,10 @@ specific one-off tasks named in the Hard Rule above — not a general escape hat
 
 - **CRITICAL**: All scripts must be run from within the target git repository directory (scripts use `git remote get-url origin` to determine owner/repo)
 - GitHub CLI (`gh`) authenticated
-- SonarQube token in `SONAR_TOKEN` environment variable
+- SonarQube credential: the scripts read `SONAR_TOKEN` if set, and otherwise fall back to
+  **`SONARQUBE_CLI_TOKEN`**, which is what this environment actually provisions (from GNOME
+  Keyring, exported in `~/.bashrc`). See `scripts/lib/sonar-api.sh`. Don't report a missing
+  credential without checking the fallback — the token is there.
 - `sonar-scanner` installed locally
 - `sonar-project.properties` configured (created if missing)
 - Automation scripts (bundled with plugin - see Script Path Setup below)
@@ -677,7 +680,7 @@ This step runs on the diff of an already-open PR's fix round — a single sweep 
 cost/coverage trade-off:
 
 ```
-Skill(adversarial-review, args="--rounds 1 --base-branch <BASE_BRANCH from Step 1> --intent-brief \"<intent-brief text>\"")
+Skill(satori:adversarial-review, args="--rounds 1 --base-branch <BASE_BRANCH from Step 1> --intent-brief \"<intent-brief text>\"")
 ```
 
 The `/adversarial-review` skill runs one round of parallel per-class agents and presents its own
@@ -1006,12 +1009,12 @@ void shouldHandleNullAccumulator() {
 - Multiple valid design approaches need discussion
 - High-risk code requiring design oversight
 
-**Example** (real invocation syntax, matching Step 3.5's `Skill(adversarial-review, ...)` pattern
+**Example** (real invocation syntax, matching Step 3.5's `Skill(satori:adversarial-review, ...)` pattern
 rather than a placeholder):
 ```
 I'll use xp-pair for Issue 1 (significant refactoring with unclear best approach):
 
-Skill(xp-pair, args="Task: Extract and refactor complex validation logic in RecordProcessor
+Skill(satori:xp-pair, args="Task: Extract and refactor complex validation logic in RecordProcessor
 Acceptance Criteria:
 - Extract validation into separate, testable methods
 - Maintain existing behavior (all tests pass)
@@ -1269,7 +1272,7 @@ It fetches the quality gate status and, if it failed, the blocking (BLOCKER/CRIT
 issues. If it reports FAILED, fix the listed issues before committing.
 
 **Option B: Manual Dashboard Review** (fallback for SSO-protected instances): open
-`$SONAR_HOST/dashboard?id=$PROJECT_KEY&pullRequest=$PR_NUMBER`, wait 30-60 seconds for analysis,
+`$SONAR_HOST/dashboard?id=$SONAR_PROJECT_KEY&pullRequest=$PR_NUMBER`, wait 30-60 seconds for analysis,
 and verify: Quality Gate passed, no new BLOCKER/CRITICAL issues, coverage acceptable, security
 hotspots reviewed.
 

@@ -15,7 +15,10 @@ Reusable scripts to reduce token costs in the `address-pr-issues` skill by elimi
 - **Git**: Standard git CLI (for repository operations)
 
 ### Optional
-- **SonarQube Token**: `SONAR_TOKEN` environment variable (required for SonarQube operations)
+- **SonarQube credential** (required for SonarQube operations): the scripts read `SONAR_TOKEN`
+  if set, and otherwise fall back to **`SONARQUBE_CLI_TOKEN`**, which is what this environment
+  actually provisions (GNOME Keyring, exported in `~/.bashrc`). See `lib/sonar-api.sh`. If a
+  Sonar call fails, check the fallback before concluding the credential is missing.
 - **sonar-project.properties**: In repository root (required for SonarQube operations)
 
 ### Installation Quick Start
@@ -305,7 +308,7 @@ git push
 # Ubuntu: sudo apt-get install jq
 ```
 
-**`SONAR_TOKEN not set`**
+**`SONAR_TOKEN not set`** (and no `SONARQUBE_CLI_TOKEN` fallback available)
 ```bash
 # Export token in your shell profile (~/.bashrc or ~/.zshrc)
 export SONAR_TOKEN="your-token-here"

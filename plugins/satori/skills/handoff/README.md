@@ -1,8 +1,3 @@
----
-name: handoff
-description: Two-skill plugin for session continuity — handoff (task specifications) and continue (in-session continuation prompts for /clear-based context refresh).
----
-
 # Handoff Plugin
 
 Two skills for keeping Claude sessions continuous and context-rich. `continue` is invoked as a

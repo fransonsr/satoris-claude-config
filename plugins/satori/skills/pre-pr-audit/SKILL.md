@@ -215,7 +215,7 @@ agents no longer see one consistent tree, and the next round's diff surfaces the
 unattributed churn that `PRIOR_FINDINGS` never saw — inflating cross-file yield and blocking
 convergence on noise the review didn't cause.
 
-**Step 4.7 (Adversarial Pattern Review)**: invoke `Skill(adversarial-review, ...)` directly — it
+**Step 4.7 (Adversarial Pattern Review)**: invoke `Skill(satori:adversarial-review, ...)` directly — it
 is its own top-level invocation, not an entry inside the Workflow's `parallel()` call below, and
 it needs its own live, per-round human review-pause (Phase C) before applying fixes. A
 `Workflow`-spawned agent runs to completion and returns a result; it cannot pause mid-execution
@@ -796,7 +796,7 @@ Intent Brief:
 ### Invoke the peer skill
 
 ```
-Skill(adversarial-review, args="--rounds 3 --base-branch <BASE_BRANCH> --intent-brief \"<intent-brief text>\"")
+Skill(satori:adversarial-review, args="--rounds 3 --base-branch <BASE_BRANCH> --intent-brief \"<intent-brief text>\"")
 ```
 
 Run it to a terminal outcome, then immediately capture that outcome and **persist it to disk** —
@@ -984,7 +984,7 @@ genuinely unclear which side changed; a correctly-identified inconsistency with 
 This step presents findings from the **Workflow batch** in Step 4 (Pattern Checks, Consistency
 Checks, Maven Plugin Checks, Spec-Completeness Review, Whole-Document Coherence Walk) — **not**
 adversarial-review findings. `/adversarial-review`'s own Phase C is its own live, per-round
-review-pause, presented and disposed of entirely within the `Skill(adversarial-review, ...)` call
+review-pause, presented and disposed of entirely within the `Skill(satori:adversarial-review, ...)` call
 itself, using its own four-way disposition (Fix / Contradicts design / Accepted risk / False
 positive) — it doesn't hand findings back here for a second presentation in this step's format.
 
@@ -1157,7 +1157,10 @@ echo "SonarQube project: $SONAR_PROJECT_KEY (host: $SONAR_HOST)"
 # Build first (skip tests for speed)
 mvn clean install -DskipTests
 
-# Run SonarQube analysis
+# Run SonarQube analysis.
+# This environment provisions the credential as SONARQUBE_CLI_TOKEN (GNOME Keyring, exported in
+# ~/.bashrc), not SONAR_TOKEN — so prefer it and fall back, rather than reporting "no token".
+SONAR_TOKEN="${SONAR_TOKEN:-$SONARQUBE_CLI_TOKEN}"
 mvn sonar:sonar \
   -Dsonar.host.url="$SONAR_HOST/" \
   -Dsonar.projectKey="$SONAR_PROJECT_KEY" \

@@ -15,7 +15,7 @@ human disposition, applies approved fixes under strict git guardrails, then re-e
 
 ## When to Use
 
-- Directly: `Skill(adversarial-review)` or `/adversarial-review` — standalone sweep before opening a PR
+- Directly: `Skill(satori:adversarial-review)` or `/adversarial-review` — standalone sweep before opening a PR
 - Called by `/pre-pr-audit` Step 4.7 with `--rounds 3`
 - Called by `/address-pr-issues` Step 3.5 with `--rounds 1`
 

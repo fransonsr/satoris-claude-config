@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-08-17
+**Last Updated**: 2026-08-30
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -39,16 +39,28 @@ before a consequential model-selection call if this note looks old again.
 - **Haiku** is the tier for high-volume, mechanical, low-judgment work: simple lookups, log/data
   parsing, classification, boilerplate edits repeated across many files — especially the individual
   fan-out legs of a `parallel()`/`pipeline()` call in the `Workflow` tool, where a dozen cheap agents
-  running concurrently beats one expensive agent running serially. ~90% of Sonnet's coding quality
-  at roughly a third of the cost and 2x+ the speed (per Anthropic's own comparison), so the bar for
-  reaching for it is "is this task simple," not "is this task urgent." **This applies to a plain
-  `Agent` call too, not just Workflow's fan-out** — `Workflow` itself requires the user to have
-  explicitly opted into multi-agent orchestration, so it won't fire just because a task would
-  benefit. When spawning any bounded, mechanical, low-judgment subagent outside Workflow — a single
-  lookup, a repeated boilerplate edit across N files, a classification/log-parsing pass — pin
-  `model="haiku"` rather than letting it inherit. (And plenty of simple lookups don't need a
-  subagent at all — doing it inline with Read/Grep/LSP is often more efficient than spawning any
-  agent, Haiku included.)
+  running concurrently beats one expensive agent running serially. The bar for reaching for it is
+  "is this task simple," not "is this task urgent." Three figures corrected 2026-08-30, because the
+  originals silently drifted as Sonnet's price and version moved:
+  - **Cost: about half Sonnet 5's, not a third.** Haiku 4.5 is $1/$5 per 1M in/out; Sonnet 5 is
+    $2/$10. The "a third" figure was true against Sonnet 4.6 ($3/$15) and was overtaken by Sonnet
+    5's price. Sonnet 5 is the tier actually in play here, since `opusplan` runs Sonnet for
+    execution.
+  - **Quality: Anthropic's published claim was that Haiku 4.5 matches *Sonnet 4*** — not the
+    current Sonnet. Against later Sonnets there is a real gap (Haiku 4.5 scores 73.3% on SWE-bench
+    Verified vs Sonnet 4.6's 79.6%, and Sonnet 5 is ahead of 4.6). Treat "~90% of Sonnet's quality"
+    as unverified against Sonnet 5.
+  - **Context: Haiku 4.5 has a 200K window; Opus/Sonnet/Fable have 1M.** This bites exactly the
+    workloads named above — log/data parsing and wide `parallel()` fan-out are the cases most
+    likely to exceed 200K, where a Haiku leg hits a wall a Sonnet leg would not.
+
+  **This applies to a plain `Agent` call too, not just Workflow's fan-out** — `Workflow` itself
+  requires the user to have explicitly opted into multi-agent orchestration, so it won't fire just
+  because a task would benefit. When spawning any bounded, mechanical, low-judgment subagent
+  outside Workflow — a single lookup, a repeated boilerplate edit across N files, a
+  classification/log-parsing pass — pin `model="haiku"` rather than letting it inherit. (And plenty
+  of simple lookups don't need a subagent at all — doing it inline with Read/Grep/LSP is often more
+  efficient than spawning any agent, Haiku included.)
 - **Sonnet** covers routine search/exploration/mechanical work that still needs real judgment —
   the current session default, and the right choice when a task doesn't clearly call for a tier
   above or below it.

@@ -25,7 +25,7 @@ When the `Acceptance Criteria:` block is present, its first line's `Task:` text 
 verbatim — skip re-deriving them. When `args` is only a bare description (no `Acceptance
 Criteria:` block), the navigator derives the acceptance criteria itself in Step 1, same as before
 this structured form existed. `address-pr-issues`' Step 4.1 is the caller that sends the
-structured form, via `Skill(xp-pair, args="Task: ...\nAcceptance Criteria:\n- ...")`.
+structured form, via `Skill(satori:xp-pair, args="Task: ...\nAcceptance Criteria:\n- ...")`.
 
 ## When to Use
 

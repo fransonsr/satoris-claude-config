@@ -1,8 +1,3 @@
----
-name: pre-pr-audit
-description: Proactive code quality audit before creating a pull request - runs a mandatory multi-round adversarial pattern review plus pattern matching and optional SonarQube analysis to identify resource leaks, edge case gaps, test coverage issues, and code quality problems. Automatically fixes issues when possible. Use this skill whenever the user is about to create a PR, push code, or wants to check code quality before committing. Also use when they mention "before PR", "pre-commit check", "quality check", or "catch issues early".
----
-
 # Pre-PR Code Quality Audit
 
 Catch Copilot and SonarQube issues **before** creating a PR by running defensive programming checks, a mandatory multi-round adversarial pattern review, and optional static analysis on changed files.
