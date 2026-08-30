@@ -186,7 +186,9 @@ Check if CLAUDE.md exists and has a "Pre-PR Audit Patterns" section:
 
 ```bash
 if [ -f "CLAUDE.md" ]; then
-  # Extract project patterns (example format shown below)
+  # Read any project-specific audit patterns and apply them yourself in the review agents
+  # below. The checker script takes no project-patterns argument — that flag existed but was
+  # never read, and was removed 2026-08-30 rather than implemented.
   PROJECT_PATTERNS=$(sed -n '/## Pre-PR Audit Patterns/,/^## /p' CLAUDE.md)
 fi
 ```
@@ -266,8 +268,7 @@ Use the bundled pattern checker script:
 ```bash
 python3 ~/.claude/plugins/marketplaces/satoris-claude-config/plugins/satori/skills/pre-pr-audit/scripts/pattern_checker.py \
   --changed-files "$(printf '%s\n%s\n' "$CHANGED_JAVA_FILES" "$CHANGED_PY_FILES" | grep -v '^$')" \
-  --merge-base "$MERGE_BASE" \
-  --project-patterns "$PROJECT_PATTERNS"
+  --merge-base "$MERGE_BASE"
 ```
 
 **Check the script's stderr output before trusting an empty/clean result** — it prints a
@@ -321,7 +322,10 @@ The script checks for:
 
 ### Project-Specific Patterns (From CLAUDE.md)
 
-Apply any patterns loaded from the project configuration.
+Apply any patterns loaded from the project configuration **yourself, in the review agents** —
+`pattern_checker.py` does not check them. It accepted a `--project-patterns` argument that was
+never read; the flag was removed 2026-08-30 rather than implemented, so this section describes
+agent-side judgment work, not automated coverage.
 
 ### Silent Failure Patterns
 

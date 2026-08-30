@@ -268,9 +268,11 @@ omit for Sonnet — it's the default):
 - **Opus**: State Machine / Control Flow Logic; Operator Observability / Error Message Accuracy; any class flagged by the user as high-complexity
 - **Fable**: not used for per-class review agents — reserved for Phase D's round-level fix-planning
   pass (runs once per round, see below), its per-finding fix-planning gate, Phase E's round-cap
-  "NOT converged" targeted deep-dive agent (see below), and `xp-pair`'s generative design guidance
-  step, all of which need deeper reasoning on a synthesis/planning/deep-dive task rather than a
-  per-class scan
+  "NOT converged" targeted deep-dive agent (see below) — both of which sit *after* cheaper models
+  have already run and failed to converge, which is the condition Fable's edge is reserved for.
+  (`xp-pair`'s generative design step was on this list until 2026-08-30; it was repinned to Opus
+  because it is a first-pass synthesis, before anything has been attempted, so it never met that
+  condition.)
 - **Sonnet**: all other classes
 
 `CLASSES` is reused verbatim by every round's Workflow call in the Per-Round Loop below, alongside

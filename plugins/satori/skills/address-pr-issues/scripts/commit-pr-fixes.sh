@@ -114,7 +114,7 @@ fi
 mv "$FIXES_FILE.tmp" "$FIXES_FILE"
 
 if [[ "$DIRECTIONAL_COUNT" -gt 0 ]]; then
-  echo "✅ Recorded $DIRECTIONAL_COUNT directional fix(es) this round. Step 8 will decide whether to re-request Copilot review, skip because this round already re-requested, or escalate to /plan because the re-review cap (review #3+) was reached."
+  echo "✅ Recorded $DIRECTIONAL_COUNT directional fix(es) this round. Step 8 will decide whether to re-request Copilot review, skip because this round already re-requested, or escalate to a Plan subagent because the re-review cap (review #3+) was reached."
 fi
 
 echo "✅ Fix tracking updated"

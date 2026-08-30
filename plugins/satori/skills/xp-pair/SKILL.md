@@ -139,16 +139,26 @@ Each agent returns a brief findings summary.
 
 **Why this matters**: Assumptions discovered to be wrong during implementation require rework and wasted TDD cycles. Five minutes of parallel verification saves thirty minutes of pivot.
 
-**Generative Design Guidance (Fable)**
+**Generative Design Guidance (Opus)**
 
 The discovery agents above only gather facts — nothing yet turns those facts into an actual
 design recommendation; historically the navigator did that synthesis directly, at whatever model
 the session happens to be running. Once the discovery agents return and the Workflow call has
 returned to the navigator, spawn this design-synthesis agent as a **separate top-level `Agent`
 call** — not a second `phase()` inside the same `Workflow` script the four discovery agents ran
-in — with `model: 'fable'` for increased reasoning depth on the design decision itself (mirroring
+in — with `model: 'opus'` for increased reasoning depth on the design decision itself (mirroring
 `adversarial-review`'s Phase D fix-planning gate, which makes the same "top-level `Agent` call,
-not a `Workflow`/`agent()` stage" distinction explicit for the same reason). It receives:
+not a `Workflow`/`agent()` stage" distinction explicit for the same reason).
+
+**Why Opus and not Fable here** (changed 2026-08-30): this is a *first-pass* synthesis — it runs
+immediately after discovery, before anything has been attempted and failed. Fable's narrow edge is
+reserved for the opposite situation, a single deep-dive after cheaper models have already had
+multiple attempts and haven't converged (see `~/.claude/CLAUDE.md`'s Model Access section). On
+first-pass design work Opus matches or beats Fable on the published benchmarks at half the
+per-token price, so pinning Fable here paid 2x for a likely-negative delta. `adversarial-review`'s
+Phase D pin stays on Fable because it genuinely sits after non-convergence; this one did not.
+
+It receives:
 - The task description
 - Every discovery agent's findings summary
 - An instruction to resolve and read the pattern file itself: prefer
@@ -227,7 +237,7 @@ For a data processing task:
 
 This prevents the driver from making architectural decisions post-facto and ensures alignment upfront.
 
-**Model selection**: design-synthesis agent (above) → `fable`. The 4 discovery agents stay on the
+**Model selection**: design-synthesis agent (above) → `opus`. The 4 discovery agents stay on the
 session default — omit a `model` override for them — pure fact-finding doesn't need the extra
 reasoning depth; only the step that turns facts into a decision does.
 

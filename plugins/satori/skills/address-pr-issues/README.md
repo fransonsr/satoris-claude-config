@@ -27,7 +27,7 @@ the rationale, the script quick-reference, and pointers to the other docs.
   per-class agents sweep all known Copilot issue pattern classes, cascade-sweep within each
   class, then pause for human disposition before applying git-guardrailed fixes
 - Forces comprehensive analysis and testing upfront
-- **Result**: 5 rounds → 1-2 rounds (80% reduction)
+- **Result**: markedly fewer review rounds
 
 **When to Use**:
 - Privacy/security critical code (data leaks, filtering)
@@ -42,21 +42,22 @@ the rationale, the script quick-reference, and pointers to the other docs.
 
 ## ⚠️ CRITICAL: Use Automation Scripts First
 
-**Token Efficiency**: Scripts save 80-85% tokens (25k-37.5k per 15-round PR)
+**Token Efficiency**: the scripts keep PR state out of context rather than re-reading it each
+round. No savings figure is quoted because none has been measured.
 
 **ALWAYS use scripts for repetitive operations** - they are in the skill's `scripts/` directory:
 
-| Operation | Script / lib function | Token Savings |
-|-----------|----------------------|---------------|
-| Initialize state, cache threads | `./scripts/init-pr-state.sh <pr_number>` | ~5k tokens |
-| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` | ~3k tokens |
-| Classify silent/already-resolved/keep buckets | `./scripts/classify-threads.sh <pr_number> <pr_author>` | ~2k tokens |
-| Resolve one thread (+ optional reply) | `./scripts/resolve-thread.sh <pr_number> <thread_id> [message]` | ~1k tokens |
-| Resolve threads in bulk | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` | ~2k tokens |
-| React to a comment (👍) | `react_to_comment()` in `lib/github-api.sh` | ~1k tokens |
-| Check quality gate + blocking issues | `./scripts/check-sonar-quality-gate.sh <pr_number>` | ~3k tokens |
-| Poll Sonar analysis completion | `wait_for_analysis()` in `lib/sonar-api.sh` | ~1k tokens |
-| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number> [directional_count]` | ~2k tokens |
+| Operation | Script / lib function |
+|-----------|----------------------|
+| Initialize state, cache threads | `./scripts/init-pr-state.sh <pr_number>` |
+| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` |
+| Classify silent/already-resolved/keep buckets | `./scripts/classify-threads.sh <pr_number> <pr_author>` |
+| Resolve one thread (+ optional reply) | `./scripts/resolve-thread.sh <pr_number> <thread_id> [message]` |
+| Resolve threads in bulk | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` |
+| React to a comment (👍) | `react_to_comment()` in `lib/github-api.sh` |
+| Check quality gate + blocking issues | `./scripts/check-sonar-quality-gate.sh <pr_number>` |
+| Poll Sonar analysis completion | `wait_for_analysis()` in `lib/sonar-api.sh` |
+| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number> [directional_count]` |
 
 **🚨 Hard rule**: If you are about to write `gh api graphql`, a `curl` to SonarQube, or a
 resolve/reply/fetch/react mutation by hand, **STOP**. A wrapper script or `lib/` function in the
@@ -70,7 +71,8 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 - Debugging script failures
 - Understanding what scripts do internally (read the code)
 
-**Why this matters**: A 15-round PR using manual commands consumes 40k-50k tokens. The same PR using scripts consumes 8k-12k tokens. Scripts make the workflow sustainable and efficient.
+**Why this matters**: inline commands re-read and re-emit PR state every round; the scripts cache
+it once and return only what changed. That compounds over a long PR.
 
 ## Workflow at a Glance
 
@@ -90,7 +92,7 @@ orientation only, not a substitute for it:
 5. Validate — local sonar-scanner before committing
 6. Resolve Conversations — mark fixed threads resolved, reconcile every disposition
 7. Commit & Push — protected-branch check, then push
-8. Monitor & Repeat — classify fixes as directional/polish, re-request Copilot review, escalate to `/plan` if the PR has outgrown reactive rounds
+8. Monitor & Repeat — classify fixes as directional/polish, re-request Copilot review, escalate to a `Plan` subagent if the PR has outgrown reactive rounds
 
 **This is an iterative process** — expect multiple rounds. See `SKILL.md`'s own "Workflow
 Overview" and "IMPORTANT" notes for why, and its `## Tips and Best Practices` section for

@@ -22,7 +22,7 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
   per-class agents sweep all known Copilot issue pattern classes, cascade-sweep within each
   class, then pause for human disposition before applying git-guardrailed fixes
 - Forces comprehensive analysis and testing upfront
-- **Result**: 5 rounds → 1-2 rounds (80% reduction)
+- **Result**: markedly fewer review rounds
 
 **When to Use**:
 - Privacy/security critical code (data leaks, filtering)
@@ -37,21 +37,23 @@ Comprehensive workflow to address code quality issues from GitHub Copilot and So
 
 ## ⚠️ CRITICAL: Use Automation Scripts First
 
-**Token Efficiency**: Scripts save 80-85% tokens (25k-37.5k per 15-round PR)
+**Token Efficiency**: the scripts exist because doing this work through inline API calls costs
+substantially more context. The Hard Rule below is the operative instruction; it does not depend
+on a specific savings figure, and none is quoted here because none has been measured.
 
 **ALWAYS use scripts for repetitive operations** - they are in the skill's `scripts/` directory:
 
-| Operation | Script / lib function | Token Savings |
-|-----------|----------------------|---------------|
-| Initialize state, cache threads | `./scripts/init-pr-state.sh <pr_number>` | ~5k tokens |
-| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` | ~3k tokens |
-| Classify silent/already-resolved/keep buckets | `./scripts/classify-threads.sh <pr_number> <pr_author>` | ~2k tokens |
-| Resolve one thread (+ optional reply) | `./scripts/resolve-thread.sh <pr_number> <thread_id> [message]` | ~1k tokens |
-| Resolve threads in bulk | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` | ~2k tokens |
-| React to a comment (👍) | `react_to_comment()` in `lib/github-api.sh` | ~1k tokens |
-| Check quality gate + blocking issues | `./scripts/check-sonar-quality-gate.sh <pr_number>` | ~3k tokens |
-| Poll Sonar analysis completion | `wait_for_analysis()` in `lib/sonar-api.sh` | ~1k tokens |
-| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number> [directional_count]` | ~2k tokens |
+| Operation | Script / lib function |
+|-----------|----------------------|
+| Initialize state, cache threads | `./scripts/init-pr-state.sh <pr_number>` |
+| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` |
+| Classify silent/already-resolved/keep buckets | `./scripts/classify-threads.sh <pr_number> <pr_author>` |
+| Resolve one thread (+ optional reply) | `./scripts/resolve-thread.sh <pr_number> <thread_id> [message]` |
+| Resolve threads in bulk | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` |
+| React to a comment (👍) | `react_to_comment()` in `lib/github-api.sh` |
+| Check quality gate + blocking issues | `./scripts/check-sonar-quality-gate.sh <pr_number>` |
+| Poll Sonar analysis completion | `wait_for_analysis()` in `lib/sonar-api.sh` |
+| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number> [directional_count]` |
 
 **🚨 Hard rule**: If you are about to write `gh api graphql`, a `curl` to SonarQube, or a
 resolve/reply/fetch/react mutation by hand, **STOP**. A wrapper script or `lib/` function in the
@@ -65,7 +67,9 @@ SonarQube won't-fix transition, `sonar-scanner` itself) — everything else rout
 - Debugging script failures
 - Understanding what scripts do internally (read the code)
 
-**Why this matters**: A 15-round PR using manual commands consumes 40k-50k tokens. The same PR using scripts consumes 8k-12k tokens. Scripts make the workflow sustainable and efficient.
+**Why this matters**: inline commands re-read and re-emit PR state on every round; the scripts
+cache it once and return only what changed. That difference compounds over a long PR, which is
+what makes the workflow sustainable.
 
 ## Workflow Overview
 
@@ -125,7 +129,8 @@ path with `pr_workspace_dir` from `scripts/lib/github-api.sh`, never by hand):
 
 ## Automation Scripts (NEW - 2026-04-27)
 
-**Token Optimization**: Reusable bash scripts reduce token costs by 80-85% (25k-37.5k tokens saved per 15-round PR).
+**Token Optimization**: reusable bash scripts keep PR state out of context, which is what makes a
+long multi-round PR affordable.
 
 **Location**: `scripts/` directory (see `scripts/README.md` for full documentation)
 
@@ -218,7 +223,7 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 
 ### Initialize State Management (AUTOMATED)
 
-⚠️ **USE SCRIPT** (saves ~5k tokens):
+⚠️ **USE SCRIPT**:
 ```bash
 ./scripts/init-pr-state.sh $PR_NUMBER
 ```
@@ -265,7 +270,7 @@ adversarial-review Intent Brief, and the directional/polish classification in St
 - `$WORKSPACE_DIR/last_rerequest_round.txt` - Round number of the last Copilot re-request
   (written in Step 8) — prevents double-incrementing the counter above if Step 8 is re-entered
   for the same round
-- `$WORKSPACE_DIR/escalation_override.txt` - round marker for a user-confirmed numeric /plan
+- `$WORKSPACE_DIR/escalation_override.txt` - round marker for a user-confirmed numeric plan-agent
   escalation override (written in Step 8)
 
 **Shorthand used throughout this doc**: `$WORKSPACE_DIR` itself is not exported by any
@@ -295,7 +300,7 @@ HEAD` with its existence/failure checks), not a bare re-run of just the second c
 
 ### Query Cached Threads (AUTOMATED)
 
-⚠️ **USE SCRIPT** (saves ~3k tokens):
+⚠️ **USE SCRIPT**:
 ```bash
 # Display unresolved threads with summary
 ./scripts/fetch-pr-threads.sh $PR_NUMBER --unresolved-only
@@ -306,7 +311,7 @@ with `jq` rather than adding a new script flag for a one-off — the cache is pl
 
 ### Fetch SonarQube Issues (AUTOMATED)
 
-⚠️ **USE SCRIPT** (saves ~3k tokens - checks quality gate + fetches blocking issues):
+⚠️ **USE SCRIPT** (checks quality gate + fetches blocking issues):
 ```bash
 ./scripts/check-sonar-quality-gate.sh $PR_NUMBER
 ```
@@ -733,7 +738,7 @@ Round 5: Fix null resource URIs (Copilot found)
 - Approved fixes applied in one commit
 - Copilot finds only style issues in the next round
 
-**Result**: ~80% reduction in rounds, better code quality, faster delivery
+**Result**: fewer review rounds, better code quality, faster delivery
 
 ## Step 3.7: Similar-Pattern Sweep (Mandatory)
 
@@ -1292,7 +1297,7 @@ note in Step 1) before running any snippet below that references them.
 
 ### Resolve Fixed Issues (AUTOMATED)
 
-⚠️ **USE BULK SCRIPT** (saves ~2k tokens - resolve multiple threads at once):
+⚠️ **USE BULK SCRIPT** (resolve multiple threads at once):
 ```bash
 # Resolve all threads in a specific file
 ./scripts/resolve-threads-bulk.sh $PR_NUMBER \
@@ -1487,7 +1492,7 @@ fi
 
 ### Commit with Structured Message (AUTOMATED)
 
-⚠️ **USE SCRIPT** (saves ~2k tokens - auto-generates message with round tracking, records fix
+⚠️ **USE SCRIPT** (auto-generates message with round tracking, records fix
 history):
 ```bash
 # Stage changes first
@@ -1620,7 +1625,7 @@ DIRECTIONAL_COUNT="$DC"
         # Only advance the counter and the round marker on a CONFIRMED successful re-request —
         # advancing them on failure would record a re-request that never happened, which both
         # blocks a legitimate retry this round (the check above would then falsely think this
-        # round is done) and inflates the /plan-escalation count past actual review activity.
+        # round is done) and inflates the escalation count past actual review activity.
         echo $(( $(cat "$COUNT_FILE") + 1 )) > "$COUNT_FILE"
         echo "$ROUND" > "$LAST_REREQUEST_ROUND_FILE"
         echo "✅ Re-requested Copilot review for round $ROUND (review #$(cat "$COUNT_FILE"))."
@@ -1650,7 +1655,7 @@ DIRECTIONAL_COUNT="$DC"
     # a high count with a DECLINING trend (Critical/High → Medium → Low → doc-only) supports
     # escalating; a high count where recent rounds are still surfacing genuinely new
     # Critical/High bugs does NOT, and the user needs to see that to make an informed override
-    # (see "Numeric /plan Escalation" under Convergence Criterion below). Derive the trend from
+    # (see "Numeric Plan-Agent Escalation" under Convergence Criterion below). Derive the trend from
     # disk, not conversation memory: Step 2 snapshots each round's severities to
     # $WORKSPACE_DIR/triage.round-N.json — the ${THREADS_FILE}.before-round-N snapshots do NOT
     # carry severity (only bucket/labels), so triage.round-*.json is the actual source. Glob for
@@ -1682,9 +1687,9 @@ DIRECTIONAL_COUNT="$DC"
       echo "▶️  Already overridden for round $ROUND — proceeding with review #${PENDING_REVIEW_NUM} instead of escalating."
       do_rerequest
     elif [[ "$SNAPSHOT_COUNT" -eq 0 ]]; then
-      echo "🛑 Escalating to /plan instead of re-requesting — no severity trend is available (see above), so override only if you have other evidence real Critical/High findings are still recurring."
+      echo "🛑 Escalating to a plan agent instead of re-requesting — no severity trend is available (see above), so override only if you have other evidence real Critical/High findings are still recurring."
       echo "   Present both to the user now and wait for their decision:"
-      echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
+      echo "     - Escalate: draft the plan-agent prompt per Numeric Plan-Agent Escalation below."
       echo "     - Override: record it, then re-run this entire Step 8 block from the top —"
       echo "       do NOT try to call do_rerequest directly; it's a shell function scoped to"
       echo "       this one invocation and won't exist in a later turn/shell:"
@@ -1692,9 +1697,9 @@ DIRECTIONAL_COUNT="$DC"
       echo "       Re-running this block will then take the 'Already overridden' branch above,"
       echo "       which calls do_rerequest for you with the same counter-advance-on-success rule."
     else
-      echo "🛑 Escalating to /plan instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
+      echo "🛑 Escalating to a plan agent instead of re-requesting — override if the trend above still shows new Critical/High findings, not just count."
       echo "   Present both to the user now and wait for their decision:"
-      echo "     - Escalate: draft the /plan prompt per Numeric /plan Escalation below."
+      echo "     - Escalate: draft the plan-agent prompt per Numeric Plan-Agent Escalation below."
       echo "     - Override: record it, then re-run this entire Step 8 block from the top —"
       echo "       do NOT try to call do_rerequest directly; it's a shell function scoped to"
       echo "       this one invocation and won't exist in a later turn/shell:"
@@ -1848,7 +1853,7 @@ threads, and present the PR to the user as ready for merge review, stating resid
 iterating hoping Copilot will eventually stop — the convergence criterion ends the loop,
 not a round cap.
 
-### Numeric /plan Escalation (NEW)
+### Numeric Plan-Agent Escalation
 
 In addition to the qualitative signs above, Step 8's re-request gate (see "Active Copilot
 Re-Request") checks `$WORKSPACE_DIR/copilot_review_count.txt` inline, at the point of the
@@ -1862,8 +1867,12 @@ push (see Step 8's note above the re-request gate) — the explicit-re-request c
 understate the true review-cycle count there, so the gate can fire "late" relative to the real
 number of reviews.
 
-When escalation stands (no override, or the user declines one): recommend a `/plan` cycle
-instead: draft the actual `/plan` prompt — not a placeholder — naming this PR's recurring themes
+When escalation stands (no override, or the user declines one): **spawn a planning subagent**
+rather than continuing reactive rounds. There is no `/plan` slash command in this environment —
+the mechanism is plan-mode reasoning delegated to a subagent, so use an `Agent` call with
+`subagent_type: 'Plan'` (the software-architect agent, which returns a step-by-step plan and
+identifies critical files without editing anything). Draft its actual prompt — not a
+placeholder — naming this PR's recurring themes
 (e.g. "error handling across rounds," "repeated null-check gaps in the export module"), with
 thread IDs and affected scope where available. Present it to the user and wait for their response
 before continuing. This turns "just keep fixing what Copilot flags" into a deliberate checkpoint

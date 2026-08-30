@@ -65,7 +65,8 @@ These scripts provide a **hybrid automation approach**:
 - **Wrapper scripts** provide CLI interfaces for common workflows
 - **Skill integration** uses scripts for repetitive operations, inline commands for one-off tasks
 
-**Expected Token Savings**: 80-85% reduction (25k-37.5k tokens per 15-round PR workflow)
+**Why these exist**: they keep PR state out of the agent's context, which is what makes a long
+multi-round PR affordable. No savings percentage is quoted — none has been measured.
 
 ## Scripts
 
@@ -212,7 +213,7 @@ the script per Class 11):
 ```
 Prints the generated commit message, prompts for confirmation, creates the commit, updates
 `fixes.json`, and — when `directional_count > 0` — a line describing what Step 8 will do with
-that count (re-request, skip because already re-requested this round, or escalate to `/plan`).
+that count (re-request, skip because already re-requested this round, or escalate to a `Plan` subagent).
 
 ## Library Functions
 
@@ -288,7 +289,7 @@ git push
 **Token Savings Analysis** (15-round PR):
 - **Before**: 30k-45k tokens (2k-3k per round for bash commands)
 - **After**: 5k-7.5k tokens (script invocations only)
-- **Savings**: 25k-37.5k tokens (80-85%)
+- **Savings**: substantial but unmeasured — see the note at the top of this file
 
 ## Troubleshooting
 

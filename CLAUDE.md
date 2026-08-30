@@ -77,12 +77,22 @@ before a consequential model-selection call if this note looks old again.
   escalation is the same shape and a natural candidate to extend this to). Reach for it only when
   a task matches one of those, not as a general escalation path from Opus.
 - **Effort level** is a separate, cheaper-to-try dial than switching model tier: `low`/`medium`/
-  `high`/`xhigh`/`max`, exposed today via the `Workflow` tool's per-agent `effort` option (the plain
-  `Agent` tool doesn't expose it). Default is `high`; drop to `low`/`medium` for routine work
-  (meaningful cost/latency savings, no perceptible quality loss); reserve `xhigh`/`max` for problems
-  where `high` demonstrably falls short. Try raising effort before reaching for a pricier model —
-  but note this dial doesn't exist for a plain top-level `Agent` call (only inside `Workflow`), so
-  it isn't always an available alternative to a model-tier change.
+  `high`/`xhigh`/`max`. **This environment deliberately runs `xhigh` globally** —
+  `"effortLevel": "xhigh"` in `~/.claude/settings.json` — so the effective baseline is `xhigh`, not
+  the `high` default. That is a chosen operating point, not drift: don't "correct" it back to
+  `high`, and read the rate-limit paragraph above with it in mind, since `xhigh` is the reason the
+  budget draws down faster than a stock setup.
+  - **Three surfaces set it, and they are not equivalent.** Session-wide:
+    `effortLevel` in `settings.json`, the `/effort` command, or `CLAUDE_CODE_EFFORT_LEVEL`
+    (`max` is session-only, not settable in `settings.json`). Per-agent: the `Workflow` tool's
+    `effort` option. The plain `Agent` tool exposes no `effort`, so per-*call* effort really is
+    Workflow-only — but effort itself is always adjustable, which the earlier wording got wrong.
+  - **Gotchas** (open Claude Code issues, verified 2026-08-30): `effortLevel` is not always applied
+    at startup, and `/model` can silently overwrite it. Confirm with `/effort` rather than trusting
+    the settings file.
+  - Dropping to `low`/`medium` for genuinely routine work still saves meaningfully with no
+    perceptible quality loss, and raising effort is still worth trying before reaching for a
+    pricier model.
 - **A common combined pattern**: Sonnet or Opus decomposes a problem and orchestrates, while many
   Haiku instances run the resulting subtasks in parallel — Anthropic's own recommended pairing for
   Haiku, and a natural fit for this environment's `Workflow` `pipeline()`/`parallel()` helpers. If

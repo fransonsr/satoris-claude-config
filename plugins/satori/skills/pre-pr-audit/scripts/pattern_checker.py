@@ -40,10 +40,9 @@ MAIN_SOURCE_PATH = re.compile(r'(^|/)src/main/java/')
 class PatternChecker:
     """Checks code for common quality issues using pattern matching."""
 
-    def __init__(self, changed_files: List[str], merge_base: str, project_patterns: Optional[str] = None):
+    def __init__(self, changed_files: List[str], merge_base: str):
         self.changed_files = changed_files
         self.merge_base = merge_base
-        self.project_patterns = project_patterns
         self.issues: List[Issue] = []
         self.issue_counter = 1
         self.scanned_count = 0
@@ -807,7 +806,6 @@ def main():
     parser = argparse.ArgumentParser(description='Pattern-based code quality checker')
     parser.add_argument('--changed-files', required=True, help='Newline-separated list of changed files')
     parser.add_argument('--merge-base', required=True, help='Merge-base commit to diff against (two-dot form — includes uncommitted working-tree changes)')
-    parser.add_argument('--project-patterns', help='Project-specific patterns from CLAUDE.md')
     parser.add_argument('--output', default='json', choices=['json', 'text'], help='Output format')
 
     args = parser.parse_args()
@@ -816,7 +814,7 @@ def main():
     changed_files = [f.strip() for f in args.changed_files.split('\n') if f.strip()]
 
     # Run checks
-    checker = PatternChecker(changed_files, args.merge_base, args.project_patterns)
+    checker = PatternChecker(changed_files, args.merge_base)
     issues = checker.check_all()
 
     # Output results

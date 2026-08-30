@@ -6,6 +6,7 @@ eval suite. Each defect gets a planted-input test first — a checker that has n
 demonstrated it can fail on a real input has not demonstrated it does anything.
 """
 
+import pathlib
 import textwrap
 
 import pytest
@@ -189,6 +190,30 @@ def test_a_similarly_named_method_does_not_count_as_cleanup():
         """)
     assert checker()._has_cleanup_in_scope("F.java", 1, ".unpersist()", lines) is False
 
+
+
+# --------------------------------- dead --project-patterns flag (removed 2026-08-30)
+
+
+def test_no_dead_project_patterns_parameter():
+    """`--project-patterns` was accepted, assigned, and never read — while SKILL.md
+    advertised the capability, so the feature read as implemented-but-untested rather
+    than absent. Removed rather than implemented, per the owner's call.
+
+    This asserts on the source because a never-read parameter is invisible to a
+    behavioral test by definition — that is exactly how it survived.
+    """
+    source = pathlib.Path(__file__).with_name("pattern_checker.py").read_text()
+    assert "project_patterns" not in source, (
+        "project_patterns is back; if it is being implemented, this test should be "
+        "replaced by one that exercises the behavior")
+    assert "--project-patterns" not in source
+
+
+def test_checker_still_constructs_with_two_arguments():
+    """The removal must not leave a signature nobody can call."""
+    c = PatternChecker([], merge_base="HEAD")
+    assert c.issues == []
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
