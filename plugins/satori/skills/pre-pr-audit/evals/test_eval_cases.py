@@ -1,6 +1,6 @@
-"""Executable form of the ten hand-written eval cases in test-cases/.
+"""Executable form of the hand-written eval cases in test-cases/.
 
-Written 2026-08-31. Until now every Results row read `Pending`: the cases had never
+Written 2026-08-31. Until 2026-08-31 every Results row read `Pending`: the cases had never
 been run once, and nothing existed that could run them. Hand-running them would have
 produced one dated row and then decayed again — the failure the suite's own README
 describes. So the cases are executed here instead, one test per Pass Criteria
@@ -480,6 +480,115 @@ def test_case__python_subprocess_safety__all_guards_present_clears_all(repo):
         """)
     found = of(audit(repo, f), "Subprocess Safety")
     assert found == [], f"guards present but still flagged: {[x['pattern'] for x in found]}"
+
+
+# ─────────────────────────────────────────────── file-io-try-with-resources.md
+# _check_resource_lifecycle's THIRD branch. Untested since the check was written:
+# resource-lifecycle.md covers only the two Spark branches, leaving the one branch
+# that matters in any non-Spark Java codebase uncovered.
+
+
+FILE_RESOURCE_OPENERS = [
+    "new FileInputStream(f)",
+    "new FileOutputStream(f)",
+    "new BufferedReader(r)",
+    "Files.newBufferedReader(p)",
+]
+
+
+def _twr(findings):
+    return of(findings, "Resource Leak", "try-with-resources")
+
+
+@pytest.mark.parametrize("opener", FILE_RESOURCE_OPENERS)
+def test_case__file_io_try_with_resources__each_opener_fires(repo, opener):
+    f = write(repo, "Io.java", f"""
+        class Io {{
+            void read() {{
+                var in = {opener};
+                use(in);
+            }}
+        }}
+        """)
+    found = _twr(audit(repo, f))
+    assert found, f"{opener} produced no try-with-resources finding"
+    assert found[0]["severity"] == "HIGH"
+    assert "close()" in found[0]["recommendation"] or "try-with-resources" in found[0]["recommendation"]
+
+
+def test_case__file_io_try_with_resources__try_block_clears_it(repo):
+    f = write(repo, "Io.java", """
+        class Io {
+            void read() {
+                try (FileInputStream in = new FileInputStream(f)) {
+                    use(in);
+                }
+            }
+        }
+        """)
+    assert _twr(audit(repo, f)) == []
+
+
+def test_case__file_io_try_with_resources__no_resource_no_finding(repo):
+    f = write(repo, "Io.java", """
+        class Io {
+            void read() {
+                int x = compute();
+            }
+        }
+        """)
+    assert _twr(audit(repo, f)) == []
+
+
+def test_case__file_io_try_with_resources__is_distinct_from_the_spark_branches(repo):
+    """All three branches share the Resource Leak category; only pattern and severity
+    separate them. A test that matched on category alone would pass on the wrong branch."""
+    f = write(repo, "Mixed.java", """
+        class Mixed {
+            void run() {
+                ds.persist();
+                var in = new FileInputStream(f);
+                use(in);
+            }
+        }
+        """)
+    leaks = of(audit(repo, f), "Resource Leak")
+    patterns = {x["pattern"] for x in leaks}
+    severities = {x["pattern"]: x["severity"] for x in leaks}
+    assert any("try-with-resources" in x for x in patterns), f"file branch missing: {patterns}"
+    assert any("unpersist" in x for x in patterns), f"spark branch missing: {patterns}"
+    file_pattern = next(x for x in patterns if "try-with-resources" in x)
+    spark_pattern = next(x for x in patterns if "unpersist" in x)
+    assert severities[file_pattern] == "HIGH"
+    assert severities[spark_pattern] == "CRITICAL"
+
+
+def test_case__file_io_try_with_resources__explicit_finally_close_still_fires(repo):
+    """Pins the KNOWN LIMITATION, not the ideal (verified 2026-08-31).
+
+    An explicit close() in a finally block is correct resource management, but
+    _in_try_with_resources only recognizes the `try (...)` form, so the pre-Java-7 idiom
+    is reported as a leak. Asserting the current behaviour means closing the gap becomes a
+    visible, deliberate change rather than a silently-passing one — see the case markdown
+    for why closing it is a judgment call rather than an obvious fix.
+    """
+    f = write(repo, "Io.java", """
+        class Io {
+            void read() {
+                FileInputStream in = null;
+                try {
+                    in = new FileInputStream(f);
+                    use(in);
+                } finally {
+                    if (in != null) in.close();
+                }
+            }
+        }
+        """)
+    assert _twr(audit(repo, f)), (
+        "the explicit-finally-close false positive appears to be fixed — if deliberate, "
+        "update this test and the Known limitation section of "
+        "test-cases/file-io-try-with-resources.md")
 
 
 if __name__ == "__main__":

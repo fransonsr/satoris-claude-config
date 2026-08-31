@@ -15,6 +15,7 @@ checkbox. See [Running the suite](#running-the-suite).
 |-----------|-------------|--------|------------------|
 | deduplication | 2026-08-31 | PASS | 3 |
 | edge-cases | 2026-08-31 | PASS | 4 |
+| file-io-try-with-resources | 2026-08-31 | PASS | 8 |
 | fragile-type-checks | 2026-08-31 | PASS | 2 |
 | narrow-catch | 2026-08-31 | PASS | 3 |
 | parallel-derivation | 2026-08-31 | PASS | 3 |
@@ -89,11 +90,13 @@ worse than none — it reads as "we know about this hole and chose not to test i
   parameter, and its call site were removed rather than implemented, and the two SKILL.md sites now
   say plainly that project patterns are agent-side judgement work rather than automated coverage.
   `test_pattern_checker.py` asserts the parameter stays gone.
-- **`_check_resource_lifecycle`'s third branch is genuinely uncovered**: `FileInputStream` /
-  `BufferedReader` / `Files.newBufferedReader` without try-with-resources (helper at
-  `pattern_checker.py:254`, HIGH). `resource-lifecycle.md` exercises only the Spark
-  persist/broadcast branches. That is the only branch relevant outside Spark codebases, and the
-  largest remaining hole in this suite.
+- ~~**`_check_resource_lifecycle`'s third branch is genuinely uncovered**~~ — **closed
+  2026-08-31.** `file-io-try-with-resources.md` now covers it, with 8 executable tests: all four
+  detected constructors, the `try (...)` negative control, distinctness from the two Spark branches
+  (which share the `Resource Leak` category but differ in pattern and severity), and one test
+  pinning a known false positive — an explicit `close()` in a `finally` block still fires, because
+  the helper only recognizes the `try (...)` form. Mutation-verified: disabling the branch turns 6
+  red, breaking the helper turns 1 red, downgrading the severity turns 5 red.
 - **No case runs a wholly clean file end to end.** The original bullet claimed no case asserts the
   *absence* of a finding, which is false — at least 6 of the 10 carry a negative-control criterion
   ("produces no finding", "clears the finding"). What is missing is narrower: a file with no planted
