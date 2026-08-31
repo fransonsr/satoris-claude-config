@@ -13,7 +13,7 @@ the rationale, the script quick-reference, and pointers to the other docs.
 - **Full step-by-step procedure**: see `SKILL.md`
 - **Version history**: see `CHANGELOG.md`
 
-## Key Improvement (2026-04-17)
+## Key Improvement
 
 **Problem**: Reactive fixing leads to cascading bugs across 5+ rounds
 - Round 1: Fix reported bug X
@@ -49,15 +49,15 @@ round. No savings figure is quoted because none has been measured.
 
 | Operation | Script / lib function |
 |-----------|----------------------|
-| Initialize state, cache threads | `./scripts/init-pr-state.sh <pr_number>` |
-| View threads | `./scripts/fetch-pr-threads.sh <pr_number> --unresolved-only` |
-| Classify silent/already-resolved/keep buckets | `./scripts/classify-threads.sh <pr_number> <pr_author>` |
-| Resolve one thread (+ optional reply) | `./scripts/resolve-thread.sh <pr_number> <thread_id> [message]` |
-| Resolve threads in bulk | `./scripts/resolve-threads-bulk.sh <pr_number> --threads '...'` |
+| Initialize state, cache threads | `"$SKILL_SCRIPTS/init-pr-state.sh" <pr_number>` |
+| View threads | `"$SKILL_SCRIPTS/fetch-pr-threads.sh" <pr_number> --unresolved-only` |
+| Classify silent/already-resolved/keep buckets | `"$SKILL_SCRIPTS/classify-threads.sh" <pr_number> <pr_author>` |
+| Resolve one thread (+ optional reply) | `"$SKILL_SCRIPTS/resolve-thread.sh" <pr_number> <thread_id> [message]` |
+| Resolve threads in bulk | `"$SKILL_SCRIPTS/resolve-threads-bulk.sh" <pr_number> --threads '...'` |
 | React to a comment (👍) | `react_to_comment()` in `lib/github-api.sh` |
-| Check quality gate + blocking issues | `./scripts/check-sonar-quality-gate.sh <pr_number>` |
+| Check quality gate + blocking issues | `"$SKILL_SCRIPTS/check-sonar-quality-gate.sh" <pr_number>` |
 | Poll Sonar analysis completion | `wait_for_analysis()` in `lib/sonar-api.sh` |
-| Commit changes | `./scripts/commit-pr-fixes.sh <pr_number> [directional_count]` |
+| Commit changes | `"$SKILL_SCRIPTS/commit-pr-fixes.sh" <pr_number> [directional_count]` |
 
 **🚨 Hard rule**: If you are about to write `gh api graphql`, a `curl` to SonarQube, or a
 resolve/reply/fetch/react mutation by hand, **STOP**. A wrapper script or `lib/` function in the

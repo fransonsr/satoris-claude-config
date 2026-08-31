@@ -114,14 +114,14 @@ First" table.** Don't hand-write `gh api graphql` or SonarQube `curl` calls; a s
 
 ### Fetch Copilot Comments + Cache Threads
 ```bash
-./scripts/init-pr-state.sh 42
-./scripts/fetch-pr-threads.sh 42 --unresolved-only
+"$SKILL_SCRIPTS/init-pr-state.sh" 42
+"$SKILL_SCRIPTS/fetch-pr-threads.sh" 42 --unresolved-only
 ```
 
 ### Filter Trivial Threads (Step 1.6)
 ```bash
 PR_AUTHOR=$(gh pr view 42 --json author -q .author.login)
-./scripts/classify-threads.sh 42 "$PR_AUTHOR"
+"$SKILL_SCRIPTS/classify-threads.sh" 42 "$PR_AUTHOR"
 ```
 Classifies (does not itself resolve) purely-complimentary threads ("LGTM", "👍") for a
 react+resolve you do right after, and flags already-resolved ones with no substantive activity
@@ -129,7 +129,7 @@ to skip entirely — before you spend any triage effort on them. See SKILL.md St
 
 ### Fetch SonarQube Issues
 ```bash
-./scripts/check-sonar-quality-gate.sh 42
+"$SKILL_SCRIPTS/check-sonar-quality-gate.sh" 42
 ```
 **Note**: Enterprise SonarQube instances with SSO may block Web API access, causing this script
 to time out or error rather than detecting the block itself — if that happens, fall back to
@@ -144,10 +144,10 @@ mvn clean install -DskipTests && sonar-scanner
 ### Resolve GitHub Thread
 ```bash
 # IMPORTANT: this replies threaded + resolves — never use `gh pr comment` (top-level, doesn't resolve)
-./scripts/resolve-thread.sh 42 "$THREAD_ID" "Fixed in $(git rev-parse --short HEAD)"
+"$SKILL_SCRIPTS/resolve-thread.sh" 42 "$THREAD_ID" "Fixed in $(git rev-parse --short HEAD)"
 
 # Or in bulk:
-./scripts/resolve-threads-bulk.sh 42 --threads 'THREAD_ID_1,THREAD_ID_2' --message 'Fixed'
+"$SKILL_SCRIPTS/resolve-threads-bulk.sh" 42 --threads 'THREAD_ID_1,THREAD_ID_2' --message 'Fixed'
 ```
 
 **Look up a thread/comment ID** from the cache instead of re-fetching:

@@ -112,7 +112,7 @@ Display cached PR review threads (Copilot/GitHub Advanced Security).
 # Summary: 2/5 resolved, 3 unresolved
 ```
 
-#### `classify-threads.sh <pr_number> <pr_author>` (NEW)
+#### `classify-threads.sh <pr_number> <pr_author>`
 Deterministically bucket cached threads into `already_resolved` / `silent` / `keep` (SKILL.md
 Step 1.6), writing `bucket` and `labels` fields back into `threads.json`. No LLM judgment —
 a fixed heuristic on the most recent comment's text (question mark / trigger word / file-line
@@ -143,7 +143,7 @@ Resolve a single GitHub review thread (with optional threaded reply if API avail
 # ✅ Thread resolved: PRRT_kwDO...
 ```
 
-#### `resolve-threads-bulk.sh <pr_number> [options]` (NEW)
+#### `resolve-threads-bulk.sh <pr_number> [options]`
 Resolve multiple GitHub review threads at once.
 
 **Implementation**: Python script (`.py`) with bash wrapper for compatibility. Uses batched GraphQL mutations for efficiency.

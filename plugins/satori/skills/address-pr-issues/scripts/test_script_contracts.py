@@ -404,3 +404,56 @@ def test_skill_md_documents_the_namespaced_shape():
     text = SKILL_MD.read_text()
     assert 'WORKSPACE_DIR="/tmp/pr-${PR_NUMBER}"' not in text, (
         "SKILL.md still documents the unnamespaced workspace path")
+
+
+# ============================================================================
+# Script-path contradiction. SKILL.md asserted both "all scripts must be run from
+# within the target git repository" (true — they call `git remote get-url origin`)
+# and "`./scripts/` refers to this skill's installation directory; agents will
+# automatically resolve these paths" (unverifiable, and incompatible with the
+# first). The failure is worse than "not found": many Java repos have their own
+# ./scripts/ directory, so a relative invocation can silently execute an
+# unrelated script. Resolved 2026-08-31 by picking one mechanism.
+# ============================================================================
+
+
+def test_no_relative_scripts_invocation_survives():
+    """`./scripts/foo.sh` cannot work when cwd is the target repo, which the same
+    document requires. Every invocation must go through an explicit skill-dir variable."""
+    offenders = []
+    for doc in (SKILL_MD, SKILL_DIR / "README.md", SKILL_DIR / "QUICK_START.md"):
+        if not doc.exists():
+            continue
+        for lineno, line in enumerate(doc.read_text().splitlines(), 1):
+            if "./scripts/" not in line:
+                continue
+            # An INVOCATION names a script file. Prose explaining why the old relative
+            # form is wrong necessarily quotes `./scripts/` and must stay allowed —
+            # the Note on Script Paths section does exactly that.
+            if re.search(r"\./scripts/[A-Za-z0-9_-]+\.(?:sh|py)", line):
+                offenders.append(f"{doc.name}:{lineno}: {line.strip()[:90]}")
+    assert not offenders, (
+        "relative ./scripts/<script> invocation(s) remain — these resolve against the "
+        "target repo, not the skill:\n  " + "\n  ".join(offenders))
+
+
+def test_skill_scripts_variable_is_defined_before_first_use():
+    """A variable used before it is defined is the same failure with extra steps."""
+    text = SKILL_MD.read_text()
+    assert "SKILL_SCRIPTS=" in text, "SKILL.md never defines SKILL_SCRIPTS"
+    definition = text.index("SKILL_SCRIPTS=")
+    first_use = min(
+        (text.index(tok) for tok in ('"$SKILL_SCRIPTS/', "$SKILL_SCRIPTS/") if tok in text),
+        default=None)
+    assert first_use is not None, "SKILL_SCRIPTS is defined but never used"
+    assert definition < first_use, (
+        "SKILL_SCRIPTS is used before the section that defines it")
+
+
+def test_the_working_directory_rule_is_stated_once_and_not_contradicted():
+    """The old text asserted two incompatible mechanisms; only one may survive."""
+    text = SKILL_MD.read_text()
+    assert "must be run from within the target git repository" in text, (
+        "the cwd requirement is real (scripts call `git remote get-url origin`) and must stay stated")
+    assert "automatically resolve these paths" not in text, (
+        "the unverifiable auto-resolution claim is back")

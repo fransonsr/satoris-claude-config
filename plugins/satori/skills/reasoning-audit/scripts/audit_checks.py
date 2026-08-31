@@ -432,8 +432,10 @@ def check_self_dated_claims(path: pathlib.Path, text: str, max_age_days: int,
     """Flag text carrying its own validation date whose re-check window has passed."""
     findings = []
     unrun_lines = []
+    allow_headers = not _is_history_document(path)
     for lineno, line in enumerate(text.splitlines(), 1):
-        findings.extend(_check_one_dated_line(path, lineno, line, max_age_days, today))
+        findings.extend(_check_one_dated_line(path, lineno, line, max_age_days, today,
+                                              allow_headers))
         if _is_unrun_row(line):
             unrun_lines.append(lineno)
 
@@ -442,14 +444,15 @@ def check_self_dated_claims(path: pathlib.Path, text: str, max_age_days: int,
     return findings
 
 
-def _check_one_dated_line(path, lineno, line, max_age_days, today) -> List[Finding]:
+def _check_one_dated_line(path, lineno, line, max_age_days, today,
+                          allow_headers: bool = True) -> List[Finding]:
     """Judge a line by its NEWEST dated claim.
 
     Only the newest date governs: "Verified X, re-verified Y" is a maintained claim,
     not a stale one, and reading the older date produced a false positive at tight
     windows (observed 2026-08-29).
     """
-    dated = [(k, ds, _parse_date(ds)) for k, ds in _dated_claims_on(line)]
+    dated = [(k, ds, _parse_date(ds)) for k, ds in _dated_claims_on(line, allow_headers)]
     dated = [(k, ds, d) for k, ds, d in dated if d is not None]
     if not dated:
         return []
@@ -504,16 +507,29 @@ def _check_novelty_markers(path: pathlib.Path, text: str) -> List[Finding]:
                     "new content from settled content")]
 
 
-def _dated_claims_on(line: str):
-    """Yield (keyword, date) pairs for inline claims, dated headers, and table rows."""
+def _dated_claims_on(line: str, allow_headers: bool = True):
+    """Yield (keyword, date) pairs for inline claims, dated headers, and table rows.
+
+    `allow_headers=False` suppresses the dated-section-header form, which a CHANGELOG
+    uses to record *when something landed* rather than to claim current truth. An
+    explicit "Verified <date>" inside a changelog still counts — the exemption is
+    narrow, matching the same reasoning that exempts changelogs from the
+    SONARQUBE_CLI_TOKEN doc invariant.
+    """
     inline = DATED_CLAIM.findall(line)
     if inline:
         return inline
-    header = DATED_HEADER.match(line)
-    if header:
-        return [("section header", header.group(1))]
+    if allow_headers:
+        header = DATED_HEADER.match(line)
+        if header:
+            return [("section header", header.group(1))]
     row = DATED_TABLE_ROW.match(line)
     return [(row.group(2).upper(), row.group(1))] if row else []
+
+
+def _is_history_document(path: pathlib.Path) -> bool:
+    """A changelog records what was true then; its dated headings are not stale claims."""
+    return "changelog" in path.name.lower()
 
 
 def _parse_date(datestr: str) -> Optional[datetime.date]:

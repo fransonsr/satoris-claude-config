@@ -1,5 +1,86 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-08-31 - v1.7.8: Workspace namespacing, escalation target, doc/code reconciliation
+
+Backfilled 2026-08-31 — this file had stopped at v1.7.6 while two commits changed shipped
+behaviour, which a `/satori:reasoning-audit` pass flagged as a guard that stopped guarding.
+The two missed commits are recorded as v1.7.7 below; this entry covers the work that followed.
+
+**Fixed (found by running the checker's own eval suite for the first time, and by auditing the
+skill against its own scripts):**
+- `/tmp/pr-<number>` carried no repo component, so two PRs with the same number in different
+  repositories shared one workspace and overwrote each other's `threads.json`, `round.txt`,
+  `fixes.json` and `triage.json`. All six scripts now derive the path from one shared
+  `pr_workspace_dir` helper in `lib/github-api.sh`, namespaced by owner and repo, which also
+  guarantees they agree with each other — six independent literals were a latent split-brain,
+  not just a naming problem. Fails loudly outside a git repo rather than falling back to the
+  colliding path.
+- Step 8's new-comment detection could never fire: `jq -s '.[0] - .[1]'` on `threads.json`,
+  which is JSON Lines, slurped both files into one flat array so `.[0]`/`.[1]` were the first
+  two *threads*. The resulting type error went to stderr inside `$(...)`, leaving `NEW_THREADS`
+  empty, so every round reported "no new Copilot comments". Now uses `--slurpfile`.
+- The MANDATORY pre-push checklist gate could never pass: `all(.[]; . == true)` read
+  `commit_ready`, which is only set true *inside* the success branch it gates. Now
+  `del(.commit_ready) | all(...)` at both sites.
+- `classify-threads.sh` emits four fail-closed labels; SKILL.md documented three.
+  `unexpected_body_type` appeared in no doc, so a thread the script refused to trust reached
+  Step 3 looking verified — the fail-closed path leaking where it was built not to.
+- `commit-pr-fixes.sh`'s `read -p` had no non-interactive path, so an agent stalled on the
+  documented primary commit path and then committed off-book. Now behind `[ -t 0 ]` with a
+  `COMMIT_AUTO_CONFIRM` escape.
+- `PR_NUMBER="${args:-...}"` — bash never sets `$args`, so the fallback always won and a
+  supplied PR number was silently ignored. Now `${1:-...}`.
+- Script paths: the skill asserted both that scripts must run from the target repo (true — they
+  call `git remote get-url origin`) and that `./scripts/` resolved to the skill's install
+  directory with agents "automatically resolving" it. Both cannot hold, and the failure mode is
+  worse than not-found: many Java repos have their own `./scripts/`, so a relative invocation
+  could silently execute an unrelated script. Every invocation now uses an explicitly resolved
+  `$SKILL_SCRIPTS`, and the Note on Script Paths moved above the first use.
+
+**Changed:**
+- Step 8's escalation target: `/plan` is not a command in this environment. It now spawns a
+  planning subagent (`Agent` with `subagent_type: 'Plan'`); section retitled "Numeric Plan-Agent
+  Escalation".
+- Removed every explicit token-savings figure ("80-85%", "25k-37.5k per 15-round PR",
+  "5 rounds → 1-2", and the per-script column). None had a method or a date, and the headline
+  claim traced only to a reconstructed counterfactual. The Hard Rule stands on the mechanism.
+- `SONAR_TOKEN` docs now name the `SONARQUBE_CLI_TOKEN` fallback the scripts have used since
+  v1.7.7, so a reader stops concluding the credential is missing.
+- Removed duplicate skill frontmatter from `README.md`; `argument-hint` quoted so it parses as a
+  string rather than a YAML list.
+
+**Testing** — this is the substantive change. The skill had no automated tests at all:
+- `scripts/test_script_contracts.py` (29 tests) executes the jq expressions and bash snippets
+  *out of SKILL.md itself* and parses the scripts, so prose is held to the code's standard.
+  Four of the defects above lived in markdown, which is why they survived: nothing executes a
+  code block.
+- Workspace namespacing is asserted by property (different repos diverge, a fork and its
+  upstream diverge, ssh and https converge, the path stays one component under `/tmp`), not by
+  string.
+
+## 2026-08-14 / 2026-08-21 - v1.7.7: Threaded-reply API corrections, Sonar token fallback, set -e guard
+
+Backfilled 2026-08-31. Both commits changed shipped script behaviour and were never logged.
+
+**Fixed** (`9f93975`, 2026-08-14):
+- `test_threaded_reply_api` read `threads.json` as a JSON array when it is JSON Lines, silently
+  erroring to jq's stderr and always reporting "disabled" — for the wrong reason. Now reads
+  `.commentId | head -1`.
+- The same function deleted its test reply using the *original* comment id against the wrong
+  endpoint shape; it now captures the created reply's own id and deletes via
+  `pulls/comments/{reply_id}`.
+- `try_threaded_reply` (and its test twin) now take `pr_number` and build the reply URL as
+  `pulls/$pr_number/comments/$comment_id/replies`, the valid POST target for a threaded reply.
+  `init-pr-state.sh` and `resolve-thread.sh` pass it through.
+- `get_sonar_config` falls back to `SONARQUBE_CLI_TOKEN` when `SONAR_TOKEN` is unset, matching
+  this environment's actual credential naming. **The docs did not follow until v1.7.8** — that
+  gap is the visible residue of this entry having been missing.
+
+**Fixed** (`9a51f16`, 2026-08-21, closes #3):
+- `format_quality_gate_status` returns non-zero as its normal "gate failed" signal, which under
+  `set -euo pipefail` killed `check-sonar-quality-gate.sh` before it reached the block that
+  fetches blocking issues on a FAILED gate.
+
 ## 2026-08-02/03 - v1.7.6: Fable Design Guidance, Native Fix-Planning, Base-Branch Bug
 
 **Context**: A follow-on to v1.7.5's PR #171 hardening, this batch spans all four satori review

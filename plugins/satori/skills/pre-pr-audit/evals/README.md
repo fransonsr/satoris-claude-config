@@ -4,30 +4,37 @@ Risk tier: 🟢 Low (read-only analysis; the skill proposes fixes but applies no
 approval). Required before merge: every case below PASS or explicitly waived.
 
 Each case exercises one of `scripts/pattern_checker.py`'s check methods end to end — a planted
-defect goes in, and the expected finding must come out. Cases are hand-run; see
-[Running a case](#running-a-case).
+defect goes in, and the expected finding must come out. **Every case is executable**: run
+`python3 -m pytest test_eval_cases.py` from this directory. The markdown in `test-cases/` remains
+the human-readable spec; `test_eval_cases.py` is its executable form, one test per Pass Criteria
+checkbox. See [Running the suite](#running-the-suite).
 
 ## Results
 
-| Test case | Last Tested | Result |
-|-----------|-------------|--------|
-| resource-lifecycle | — | Pending |
-| try-finally-scope | — | Pending |
-| edge-cases | — | Pending |
-| silent-failures | — | Pending |
-| fragile-type-checks | — | Pending |
-| deduplication | — | Pending |
-| test-coverage | — | Pending |
-| parallel-derivation | — | Pending |
-| narrow-catch | — | Pending |
-| python-subprocess-safety | — | Pending |
+| Test case | Last Tested | Result | Executable tests |
+|-----------|-------------|--------|------------------|
+| deduplication | 2026-08-31 | PASS | 3 |
+| edge-cases | 2026-08-31 | PASS | 4 |
+| fragile-type-checks | 2026-08-31 | PASS | 2 |
+| narrow-catch | 2026-08-31 | PASS | 3 |
+| parallel-derivation | 2026-08-31 | PASS | 3 |
+| python-subprocess-safety | 2026-08-31 | PASS | 2 |
+| resource-lifecycle | 2026-08-31 | PASS | 2 |
+| silent-failures | 2026-08-31 | PASS | 9 |
+| test-coverage | 2026-08-31 | PASS | 3 |
+| try-finally-scope | 2026-08-31 | PASS | 2 |
 
-**Every row is Pending because these cases have never been run.** That is the honest state, not a
-placeholder to be filled in optimistically. Per the checker discipline: a suite that has never
-reported bad news has not demonstrated it can.
+**These rows are generated from a real run, not asserted.** Every case is now executed by
+`test_eval_cases.py` — one test per Pass Criteria checkbox — so `Last Tested` means the suite
+actually ran on that date. Regenerate by running the suite; do not hand-edit the table.
 
-`/satori:reasoning-audit` reads the dates in this table — a `Last Tested` date past its re-check
-window surfaces as a `self-dated` finding, so letting these rows go stale is itself detectable.
+The suite has demonstrated it can report bad news, which is the property that makes a green result
+mean anything. Verified 2026-08-31 by mutation: breaking the `DATA_QUALITY_KEYWORDS` list turned 8
+tests red; restoring the original leading-slash `'/src/main/java/'` path bug turned the two
+test-coverage tests red; disabling the dedup check turned 1 red. Each mutation was reverted.
+
+`/satori:reasoning-audit` also reads the dates here — a `Last Tested` date past its re-check
+window, or a row with no date at all, surfaces as a `self-dated` finding.
 
 ## Provenance
 
@@ -49,18 +56,28 @@ today.
 **Migration target**: once `plugin eval` is available, run `claude plugin eval init` and port these
 cases to `case.yaml` — each case's Setup becomes the prompt, and its Pass Criteria become graders.
 
-## Running a case
+## Running the suite
 
-1. Create a scratch git repo with the case's Setup applied as an uncommitted change.
-2. Run the checker directly against the changed file:
-   ```bash
-   python3 scripts/pattern_checker.py --changed-files <file> --merge-base HEAD
-   ```
-3. Check every Pass Criteria box, or record which failed.
-4. Update this file's Results row with the date and outcome.
+```bash
+cd evals && python3 -m pytest test_eval_cases.py -v
+```
 
-Running the full `/satori:pre-pr-audit` skill instead also satisfies a case, and additionally
-tests that the finding reaches the user — but it is slower and needs a real session.
+Each test builds a scratch git repo, plants the case's Setup, and invokes the checker through its
+CLI exactly as the old hand runbook prescribed — so it also catches wiring faults a unit test
+cannot see (a check that never runs, a diff filter that excludes everything, a path that resolves
+differently under the CLI). `audit()` asserts the checker did not report `Scanned 0/…`, because a
+case that silently scans nothing would otherwise pass.
+
+To run one case: `-k resource_lifecycle`. To regenerate the Results table above, re-run the suite
+and update the date — do not hand-edit outcomes.
+
+Two things this suite does NOT establish, both needing a real session:
+- that a finding actually reaches the user through `/satori:pre-pr-audit`'s presentation steps;
+- that the skill's prose guidance (the non-automated pattern sub-categories) is being followed.
+
+`scripts/test_pattern_checker.py` is the companion unit suite — it tests individual check methods
+against planted inputs. This file drives the whole checker end to end. Both are worth keeping: the
+unit tests localize a failure, these prove the pipeline works.
 
 ## Known coverage gaps
 
@@ -68,26 +85,27 @@ Corrected 2026-08-29 after a `/satori:reasoning-audit` pass found both original 
 wrong. Recorded here rather than quietly rewritten, because a gap list that misstates the gaps is
 worse than none — it reads as "we know about this hole and chose not to test it."
 
-- **`--project-patterns` is not an untested branch — it is dead code.** `project_patterns` is
-  accepted at `pattern_checker.py:37`, assigned at `:40`, passed in from `main()` at `:795`, and
-  never read again. `_check_resource_lifecycle` takes no such parameter. No case can cover it
-  because there is nothing to cover. Meanwhile `SKILL.md:270` passes the flag and `SKILL.md:322-324`
-  advertises the capability — so the feature is documented, wired, and inert. Implement it or remove
-  it along with those two SKILL.md sites.
+- ~~**`--project-patterns` is dead code**~~ — **resolved 2026-08-30.** The flag, its constructor
+  parameter, and its call site were removed rather than implemented, and the two SKILL.md sites now
+  say plainly that project patterns are agent-side judgement work rather than automated coverage.
+  `test_pattern_checker.py` asserts the parameter stays gone.
 - **`_check_resource_lifecycle`'s third branch is genuinely uncovered**: `FileInputStream` /
-  `BufferedReader` / `Files.newBufferedReader` without try-with-resources (`:225-253`, HIGH).
-  `resource-lifecycle.md` exercises only the Spark persist/broadcast branches. That is the only
-  branch relevant outside Spark codebases.
+  `BufferedReader` / `Files.newBufferedReader` without try-with-resources (helper at
+  `pattern_checker.py:254`, HIGH). `resource-lifecycle.md` exercises only the Spark
+  persist/broadcast branches. That is the only branch relevant outside Spark codebases, and the
+  largest remaining hole in this suite.
 - **No case runs a wholly clean file end to end.** The original bullet claimed no case asserts the
   *absence* of a finding, which is false — at least 6 of the 10 carry a negative-control criterion
   ("produces no finding", "clears the finding"). What is missing is narrower: a file with no planted
   defect at all, which is what would catch a check that fired unconditionally on every input.
-- **Java checks run against Python files and nothing asserts either way.** `check_all`
-  (`:80-92`) gates only `_check_python_subprocess_safety` on `.py`; the other nine run on Python
-  source, and `SKILL.md:170-172` deliberately feeds Python in. `_check_edge_cases`' `.get\s*\(`
-  will fire on an ordinary `d.get(k)` and emit a Java recommendation.
-- **Severity and category are unpinned** in `resource-lifecycle.md` and `try-finally-scope.md`,
-  where the other eight cases pin both. A severity regression in either would pass.
+- **Java checks run against Python files and nothing asserts either way.** `check_all` gates only
+  `_check_python_subprocess_safety` on `.py` (`pattern_checker.py:107`); the other nine run on
+  Python source, and SKILL.md deliberately feeds Python in. `_check_edge_cases`' `.get\s*\(` will
+  fire on an ordinary `d.get(k)` and emit a Java recommendation.
+- ~~**Severity and category are unpinned** in `resource-lifecycle.md` and
+  `try-finally-scope.md`~~ — partly closed: `test_eval_cases.py` now pins category for both and
+  severity wherever the criteria state one. The markdown criteria themselves still omit severity
+  for those two cases.
 
 ## Defects found by the 2026-08-29 audit
 
@@ -104,17 +122,20 @@ worse than none — it reads as "we know about this hole and chose not to test i
 
 ### Still open — these are case bugs or checker bugs a first run will hit
 
-- **`:336` counts commas in an 11-line window** to decide `Collectors.toMap` arity. Any other comma
-  within ±5 lines suppresses the finding, so `edge-cases.md`'s second half can pass or fail on
-  incidental layout. Needs a real arity check, not a comma count.
-- **`silent-failures.md`'s documented keyword list disagrees with `:259-260`.** The case names
-  "missing" and "malformed", which the implementation lacks; the implementation has "corrupt",
-  "conflict", "mismatch", which the case omits. Needs a decision on which is intended before
-  either side is edited.
+- **`pattern_checker.py:352` counts commas in an 11-line window** to decide `Collectors.toMap`
+  arity. Any other comma within ±5 lines suppresses the finding, so the case can pass or fail on
+  incidental layout. `test_eval_cases.py` works around it with comma-free filler and says so;
+  the real fix is an arity check, not a comma count.
+- ~~**`silent-failures.md`'s keyword list disagrees with the implementation**~~ — **resolved
+  2026-08-30.** The doc was wrong (its list was invented during the 08-29 conversion, not derived
+  from any spec); `missing` and `malformed` were then added to the implementation on the merits.
+  Both lists now come from one `DATA_QUALITY_KEYWORDS` constant (`pattern_checker.py:46`), and
+  agreement is asserted in both directions.
 - **`narrow-catch.md` is satisfiable only by a fully-qualified call.** The check greps the preceding
-  5 lines for a `java`/`org.apache` token, and idiomatic Java puts that in an import at the top — so
-  the check almost never fires in production and the case passes without noticing. The case's third
-  criterion is *satisfied by* the blind spot.
+  5 lines for a `java`/`org.apache` token (`pattern_checker.py:637`), and idiomatic Java puts that in
+  an import at the top — so the check almost never fires in production. `test_eval_cases.py` now pins
+  the *current* behaviour explicitly, with a message telling you to update both it and this list if
+  the gap is ever closed, so a fix is a visible change rather than a silently-passing one.
 - **`resource-lifecycle.md`'s "naming the un-released resource" criterion** does not match what the
   checker reports — the pattern string is generic and the variable name appears nowhere. Either
   reword the criterion or make the finding name the variable.

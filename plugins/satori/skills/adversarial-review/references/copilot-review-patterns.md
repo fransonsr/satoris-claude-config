@@ -18,6 +18,23 @@ read the artifact holistically and flag what seems wrong (Classes 8 and 10 are j
 
 ---
 
+## Contents
+
+- [Classifications](#classifications)
+  - [1. State Machine / Control Flow Logic](#1-state-machine--control-flow-logic)
+  - [2. Defensive Guards (null / type / encoding)](#2-defensive-guards-null--type--encoding)
+  - [3. Operator Observability / Error Message Accuracy](#3-operator-observability--error-message-accuracy)
+  - [4. Provenance / Identity Discrimination](#4-provenance--identity-discrimination)
+  - [5. Infrastructure / Environment Handling](#5-infrastructure--environment-handling)
+  - [6. Documentation Accuracy](#6-documentation-accuracy)
+  - [8. Semantic Correctness / Logical Completeness](#8-semantic-correctness--logical-completeness)
+  - [7. Test Integrity](#7-test-integrity)
+  - [9. Operator Spec Completeness](#9-operator-spec-completeness)
+  - [10. Spec Operator Walkthrough](#10-spec-operator-walkthrough)
+  - [11. Cross-File Rule Consistency](#11-cross-file-rule-consistency)
+  - [12. Code Smells / SOLID & Structural Quality](#12-code-smells--solid--structural-quality)
+- [Update Protocol](#update-protocol)
+
 ## Classifications
 
 ### 1. State Machine / Control Flow Logic

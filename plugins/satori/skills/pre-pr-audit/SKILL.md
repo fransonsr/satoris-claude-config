@@ -14,7 +14,7 @@ Catch Copilot and SonarQube issues **before** creating a PR by running defensive
 - User asks to "catch issues early", "avoid PR feedback", "pre-commit review"
 - After implementing a feature but before committing
 - This skill predicts what Copilot will flag BEFORE you push
-- **Self-check (NEW)**: run this even if the user never says a trigger phrase, and even if this
+- **Self-check**: run this even if the user never says a trigger phrase, and even if this
   skill already ran earlier for the current tree (compare the same audited-tree hash **and base
   branch** Step 8 below derives — HEAD plus any uncommitted tracked changes via `git stash
   create`, falling back to `git rev-parse HEAD^{tree}` only when the tree is already clean, plus a
@@ -362,7 +362,7 @@ clear user-visible errors:
 - Flag set before scan → all failures still "successful" (Issue #27)
 - DiagnosticCollector created but never read (Issue #38)
 
-## Step 4.5: Internal Consistency Checks (NEW)
+## Step 4.5: Internal Consistency Checks
 
 After pattern-based checks complete, scan for inconsistencies **within the PR itself**:
 
@@ -975,7 +975,7 @@ The agent reads linearly and flags:
 
 The agent was deliberately given no diff, so `changed_section`/`affected_section` below are its
 own **best-guess** identification of which side of an inconsistency looks newer — inferred from
-context (a "(NEW)" marker, more specific/current-sounding language, an orphaned reference pointing
+context (a "" marker, more specific/current-sounding language, an orphaned reference pointing
 *at* one side and not the other) — not ground truth read from a diff it never saw. Say so if it's
 genuinely unclear which side changed; a correctly-identified inconsistency with an uncertain
 `changed_section` guess is still a valid, actionable finding.

@@ -933,3 +933,44 @@ def test_main_runs_the_self_dated_lens_on_an_eval_suite(tmp_path, capsys):
     assert "eval-suite" in out
     assert "2026-03-25" in out
     assert "never" in out.lower()
+
+
+def test_a_changelog_dated_heading_is_not_a_stale_claim(tmp_path):
+    """A CHANGELOG's `## 2026-04-20 - v1.2` heading is history by definition.
+
+    Flagging it as "due for re-check" is a false positive of the same class the
+    SONAR_TOKEN invariant already exempts: a changelog records what was true then and
+    must not be rewritten to match the present.
+    """
+    doc = write(tmp_path / "CHANGELOG.md", """
+        # Thing Changelog
+
+        ## API Research Notes (2026-01-01)
+        Some history.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=30, today=TODAY)
+    assert findings == [], f"changelog heading flagged as stale: {[f.message for f in findings]}"
+
+
+def test_a_changelog_still_reports_an_explicit_verified_claim(tmp_path):
+    """The exemption is narrow: a `Verified <date>` claim inside a changelog is still a
+    claim about current truth, not a record of when something landed."""
+    doc = write(tmp_path / "CHANGELOG.md", """
+        # Thing Changelog
+
+        ## 2026-01-01 - v1.0
+        Behaviour verified 2026-01-01 against the live API.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=30, today=TODAY)
+    assert len(findings) == 1
+    assert "Verified" in findings[0].message or "verified" in findings[0].message
+
+
+def test_a_non_changelog_dated_heading_is_still_reported(tmp_path):
+    """Only CHANGELOGs get the exemption — a dated heading in live guidance still ages."""
+    doc = write(tmp_path / "SKILL.md", """
+        ## Key Improvement (2026-01-01)
+        Prose.
+        """)
+    findings = check_self_dated_claims(doc, doc.read_text(), max_age_days=30, today=TODAY)
+    assert len(findings) == 1
