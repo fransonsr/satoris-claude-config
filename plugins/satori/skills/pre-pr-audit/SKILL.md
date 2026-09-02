@@ -171,7 +171,7 @@ CHANGED_JAVA_FILES=$(echo "$CHANGED_FILES" | grep "\.java$" || true)
 # — pass it Python files too, not just Java, or that check is permanently unreachable.
 CHANGED_PY_FILES=$(echo "$CHANGED_FILES" | grep "\.py$" || true)
 CHANGED_TEST_FILES=$(echo "$CHANGED_JAVA_FILES" | grep -E "(^|/)src/test/" || true)
-CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md)" || true)
+CHANGED_SPEC_FILES=$(echo "$CHANGED_FILES" | grep -E "(SKILL\.md|README\.md|CONTRIBUTING\.md|USAGE\.md|CONSTRAINTS\.md|DESIGN\.md|SPEC\.md)" || true)
 
 # If no Java or Python files, check if there are other languages to analyze
 if [ -z "$CHANGED_JAVA_FILES" ] && [ -z "$CHANGED_PY_FILES" ]; then
@@ -857,7 +857,7 @@ The skill returns a summary containing: per-round breakdown, findings by class s
 ## Step 4.8: Spec-Completeness Review (Conditional: procedural spec/doc files in diff)
 
 **Trigger**: Only run if `CHANGED_SPEC_FILES` is non-empty (SKILL.md, README.md,
-CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, or DESIGN.md changed — same trigger as Step 4.9,
+CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, SPEC.md, or DESIGN.md changed — same trigger as Step 4.9,
 since both target procedural/spec documents, not just Claude Code skill files).
 
 This step runs the **heuristic checks of the Operator Spec Completeness pattern class** (named,
@@ -945,7 +945,7 @@ Return findings as:
 
 ## Step 4.9: Whole-Document Coherence Walk (Conditional: spec/doc files in diff)
 
-**Trigger**: Run when `CHANGED_SPEC_FILES` is non-empty (SKILL.md, README.md, CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, or DESIGN.md changed).
+**Trigger**: Run when `CHANGED_SPEC_FILES` is non-empty (SKILL.md, README.md, CONTRIBUTING.md, USAGE.md, CONSTRAINTS.md, SPEC.md, or DESIGN.md changed).
 
 **This step runs once, pre-PR. It does not repeat in the adversarial-review fix cycle.**
 
