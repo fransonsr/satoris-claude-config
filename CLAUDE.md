@@ -247,6 +247,17 @@ file's structure, or whether a file has live errors — reach for LSP *before* g
 only after a grep-based attempt already came up short. Verified working in this environment
 2026-08-29 (Java via `jdtls-lsp`, Python via `pyright-lsp`).
 
+**For Java and Python specifically, this is a MUST, not a preference.** Pattern matching
+(grep/ripgrep) against these two languages has repeatedly produced **false negatives** — real
+references silently missed, not just noisy over-matches — because grep can't see semantics: it
+misses references split across lines, inherited/overridden members, indirect calls through an
+interface or a differently-imported alias, and any match whose surrounding tokens don't literally
+contain the search string. A false negative here is worse than a false positive: it reports a
+symbol as unused, or a rename as complete, when it isn't. An agent must use LSP instead of
+grep/ripgrep for symbol-level questions (definition, references, structure, diagnostics) on Java
+or Python files — not "prefer," not "reach for first," but use it, full stop; grep is not an
+acceptable substitute for these two languages even under time pressure.
+
 **Supported Languages** (one shared `LSP` tool dispatches to whichever server matches the file
 type — `ToolSearch(query="select:LSP")` loads it):
 - Java (`jdtls-lsp`) and Python (`pyright-lsp`) — the two languages actually used for skill
@@ -268,28 +279,31 @@ type — `ToolSearch(query="select:LSP")` loads it):
 
 | Task | Use LSP | Use grep/find | Use Read |
 |------|---------|---------------|----------|
-| Find all references to a symbol | ✅ LSP (accurate) | ❌ grep (false positives) | ❌ |
+| Find all references to a symbol (Java/Python) | ✅ LSP (accurate) | ❌ grep — false positives **and** false negatives (misses real, semantically-valid references) | ❌ |
 | Go to definition | ✅ LSP (accurate) | ⚠️ grep (multiple matches) | ❌ |
 | Find symbol in workspace | ✅ LSP (fast, accurate) | ⚠️ find + grep (slower) | ❌ |
 | Understand file structure | ✅ LSP (symbols/outline) | ❌ | ⚠️ Read (must read whole file) |
 | Get diagnostics/errors | ✅ LSP (real-time) | ❌ | ❌ |
 | Type hierarchy/implementations | ✅ LSP (accurate) | ❌ grep (unreliable) | ❌ |
-| Rename refactoring | ✅ LSP (safe) | ❌ grep (misses cases) | ❌ |
+| Rename refactoring | ✅ LSP (safe) | ❌ grep — false negatives (misses cases, leaves stale references behind) | ❌ |
 | Bash script static analysis | ❌ no bash LSP server | ⚠️ grep (pattern-only) | ❌ — use `shellcheck` |
 | Search file contents (plain text, not a symbol) | ❌ | ✅ grep (faster) | ❌ |
 | List directory contents | ❌ | ✅ find (better) | ❌ |
 | Read specific lines | ❌ | ❌ | ✅ Read (best) |
 
 **Best Practices**:
-1. **Load LSP before reaching for grep, not after.** For Java, Python, or any other supported
-   language, if the task involves a named symbol rather than plain text, call
+1. **For Java or Python, use LSP instead of grep for symbol-level questions — this is required,
+   not merely first-choice.** For any other supported language, still load LSP before reaching
+   for grep. If the task involves a named symbol rather than plain text, call
    `ToolSearch(query="select:LSP")` and use it as the first tool.
 2. **Use for navigation**: finding definitions, references, implementations.
 3. **Use for refactoring**: renaming symbols across a project.
 4. **Use for diagnostics**: getting compile/type errors before building.
 5. **Only fall back to grep when**: the search is plain-text/pattern-based rather than a named
    symbol, or the file's language has no LSP server in this environment (bash — use `shellcheck`
-   instead, per above). "LSP felt slower to reach for" is not a qualifying reason.
+   instead, per above). "LSP felt slower to reach for" is not a qualifying reason, and for
+   Java/Python, "grep already looked complete" is not one either — grep's false negatives look
+   exactly like a clean result until LSP finds what it missed.
 
 **Example Workflow** (matches the actual `LSP` tool schema: `operation` plus
 `filePath`/`line`/`character`, or `query` for `workspaceSymbol`):
@@ -942,10 +956,13 @@ live nowhere else.
    a POM, a dependency, or build configuration, drop the `-pl` scope and validate the full build.
 
 6. **LSP is the default tool for symbol-level lookups, not an optional enhancement to reach for
-   only when asked.** Development Tools → LSP — for Java/Python (and any other supported
-   language), load it and use it *before* grep whenever the question concerns a named symbol
-   (definition, references, structure, diagnostics). Grep is the fallback for plain-text search or
-   for bash, which has no LSP server — use `shellcheck` there instead.
+   only when asked — and for Java/Python it is mandatory, not just first-choice.** Development
+   Tools → LSP: pattern matching against these two languages has repeatedly produced false
+   negatives (real references silently missed, not just noisy over-matches), so an agent must use
+   LSP rather than grep whenever the question concerns a named symbol (definition, references,
+   structure, diagnostics) in a Java or Python file. For any other supported language, still load
+   and use LSP before grep. Grep is the fallback for plain-text search or for bash, which has no
+   LSP server — use `shellcheck` there instead.
 
 7. **Already stated in full elsewhere** — go there rather than working from a summary: relentless
    refactoring as part of the cycle (Core Principles §2); don't over-abstract tests (§3, "Moist");
