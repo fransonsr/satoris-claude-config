@@ -23,6 +23,11 @@ INDEX_PATH="$(scip_index_path "$REPO_ROOT")"
 
 mkdir -p "$CACHE_DIR"
 
+# Remove any index left over from a prior run first — otherwise a silent failure this
+# run (scip-java exits 0, writes nothing) would be masked by yesterday's stale file
+# still passing the existence check below.
+rm -f "$INDEX_PATH"
+
 echo "Indexing $(basename "$REPO_ROOT")..."
 echo "(this runs a full build under the hood — e.g. 'mvn clean verify -DskipTests' — not a fast operation)"
 ( cd "$REPO_ROOT" && scip-java index --output "$INDEX_PATH" )

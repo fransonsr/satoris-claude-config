@@ -234,6 +234,27 @@ def test_index_fails_clearly_when_scip_java_exits_zero_but_writes_no_index(tmp_p
     assert not expected_path.exists()
 
 
+def test_index_fails_clearly_on_refresh_even_with_a_stale_index_already_on_disk(tmp_path):
+    """A repo that indexed successfully before, then silently fails on a later `refresh`,
+    must not be masked by the previous run's leftover index.scip still sitting in the
+    cache dir — the existence check has to reflect *this* run, not a stale one."""
+    repo = init_repo(tmp_path, "previously-indexed-repo")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "previously-indexed-repo"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "index.scip").write_bytes(b"stale index from a prior successful run")
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=False)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode != 0
+    assert "Index written to" not in r.stdout
+    expected_path = cache_dir / "index.scip"
+    assert str(expected_path) in r.stderr
+    assert not expected_path.exists()
+
+
 def test_index_succeeds_and_reports_the_path_when_scip_java_actually_writes_it(tmp_path):
     repo = init_repo(tmp_path, "successfully-indexed-repo")
     fake_home = tmp_path / "fake-home"

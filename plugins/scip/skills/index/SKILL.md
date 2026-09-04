@@ -106,7 +106,8 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
   heavyweight database, not navigation). Neither belongs in this skill.
 - **`scip-java index` can exit 0 and print "Index written to..." while writing nothing at all** —
   confirmed against a real repo (`sls-bi-worker` in the Records Platform fleet). `run`/`refresh`
-  (`index.sh`) now checks that the output file actually exists before reporting success and exits
+  (`index.sh`) removes any index left over from a prior run before invoking `scip-java`, then
+  checks that the output file actually exists before reporting success and exits
   non-zero with a clear error if it doesn't — but the underlying cause is worth knowing if you hit
   it on a different repo, since the fix here only makes the failure loud, not go away. Two distinct,
   confirmed causes, found by reading scip-java's own source
@@ -145,6 +146,11 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
     and the multi-line ErrorProne arg collapsed onto one line (temporary, uncommitted, reverted
     after verification), indexing produced a real index — 224 documents, 7,910 definitions, 65,082
     occurrences. Neither fix alone was sufficient; both are needed together.
+  - **These two are what caused `sls-bi-worker`'s failure specifically, not an exhaustive list of
+    every way this symptom can happen.** If a different repo hits the same "exit 0, no index"
+    symptom and neither `<fork>false</fork>` nor a multi-line `<compilerArgs>` value is present,
+    treat it as a new, undocumented cause rather than assuming one of these two must apply — add
+    it here once confirmed.
 
 ## Tests
 
