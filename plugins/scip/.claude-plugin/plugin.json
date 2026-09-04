@@ -1,0 +1,17 @@
+{
+  "name": "scip",
+  "version": "1.0.0",
+  "description": "Manages a SCIP (Sourcegraph Code Intelligence Protocol) index for the current repo: setup, build/refresh, status, cleanup, and go-to-definition/find-references queries. A precomputed, file-based alternative to jdtls-lsp for Java — no long-running server, so nothing accumulates corrupt state across sessions.",
+  "author": {
+    "name": "Satori Franson",
+    "email": "fransonsr@familysearch.org"
+  },
+  "keywords": [
+    "scip",
+    "code-intelligence",
+    "java",
+    "navigation",
+    "find-references",
+    "go-to-definition"
+  ]
+}
