@@ -27,5 +27,13 @@ echo "Indexing $(basename "$REPO_ROOT")..."
 echo "(this runs a full build under the hood — e.g. 'mvn clean verify -DskipTests' — not a fast operation)"
 ( cd "$REPO_ROOT" && scip-java index --output "$INDEX_PATH" )
 
+if [[ ! -f "$INDEX_PATH" ]]; then
+  echo "" >&2
+  echo "scip-java exited 0 but did not write an index to $INDEX_PATH — indexing silently failed." >&2
+  echo "This usually means scip-java's automatic build-tool configuration never took effect for this" >&2
+  echo "repo — see SKILL.md's Known Constraints section for confirmed causes and workarounds." >&2
+  exit 1
+fi
+
 echo ""
 echo "Index written to $INDEX_PATH"

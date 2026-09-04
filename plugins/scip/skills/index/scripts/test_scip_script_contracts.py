@@ -1,12 +1,14 @@
 """Contract tests for the scip skill's orchestration scripts (common.sh, status.sh,
-cleanup.sh, setup.sh, query.sh).
+cleanup.sh, setup.sh, index.sh, query.sh).
 
 These exercise the actual scripts via subprocess rather than re-deriving their logic in
 Python — a script that has never been executed by a test has not demonstrated it works,
-regardless of how straightforward it reads. Deliberately does not exercise `index.sh`
-(run/refresh) or `setup.sh`'s install path: both make a full build / a real network
+regardless of how straightforward it reads. Deliberately does not exercise a real
+`scip-java` build or `setup.sh`'s install path: both make a full build / a real network
 install, which belongs in manual end-to-end verification (see the handoff's Testable
-Acceptance Criteria), not a fast test suite.
+Acceptance Criteria), not a fast test suite. `index.sh`'s own failure-detection logic
+(does the output file actually exist after `scip-java` exits) is exercised below against
+a stub `scip-java` on `PATH` — no real build required to prove that check works.
 
 Requires `bash`, `git`, and `jq` on PATH.
 """
@@ -24,6 +26,7 @@ COMMON_SH = os.path.join(SCRIPTS_DIR, "lib", "common.sh")
 STATUS_SH = os.path.join(SCRIPTS_DIR, "status.sh")
 CLEANUP_SH = os.path.join(SCRIPTS_DIR, "cleanup.sh")
 SETUP_SH = os.path.join(SCRIPTS_DIR, "setup.sh")
+INDEX_SH = os.path.join(SCRIPTS_DIR, "index.sh")
 QUERY_SH = os.path.join(SCRIPTS_DIR, "query.sh")
 
 # A real, small index produced this session's own scip-java pilot — copied into fixture
@@ -180,6 +183,70 @@ def test_setup_is_a_fast_no_op_when_both_tools_are_already_installed(tmp_path):
     assert r.returncode == 0
     assert "Nothing to do" in r.stdout
     assert "curl" not in r.stdout.lower()
+
+
+# ---------------------------------------------- index.sh
+
+
+def _stub_scip_java_dir(tmp_path, write_index):
+    """A stub `scip-java` on PATH — never a real build. When `write_index` is False, it
+    reproduces the exact sls-bi-worker symptom this fix targets: exit 0, output file
+    never written. When True, it writes a placeholder file at the `--output` path, like
+    a real successful run would."""
+    stub_dir = tmp_path / "stub-scip-java-bin"
+    stub_dir.mkdir()
+    script = stub_dir / "scip-java"
+    if write_index:
+        body = textwrap.dedent("""\
+            #!/usr/bin/env bash
+            shift  # drop the "index" subcommand
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --output) echo "fake index bytes" > "$2"; shift 2 ;;
+                *) shift ;;
+              esac
+            done
+            """)
+    else:
+        body = textwrap.dedent("""\
+            #!/usr/bin/env bash
+            # Simulates the real sls-bi-worker failure mode: exits 0, writes nothing.
+            exit 0
+            """)
+    script.write_text(body)
+    script.chmod(0o755)
+    return stub_dir
+
+
+def test_index_fails_clearly_when_scip_java_exits_zero_but_writes_no_index(tmp_path):
+    repo = init_repo(tmp_path, "silently-failing-repo")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=False)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode != 0
+    assert "Index written to" not in r.stdout
+    expected_path = fake_home / ".cache" / "scip" / "silently-failing-repo" / "index.scip"
+    assert str(expected_path) in r.stderr
+    assert not expected_path.exists()
+
+
+def test_index_succeeds_and_reports_the_path_when_scip_java_actually_writes_it(tmp_path):
+    repo = init_repo(tmp_path, "successfully-indexed-repo")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=True)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    expected_path = fake_home / ".cache" / "scip" / "successfully-indexed-repo" / "index.scip"
+    assert f"Index written to {expected_path}" in r.stdout
+    assert expected_path.exists()
 
 
 # ---------------------------------------------- query.sh
