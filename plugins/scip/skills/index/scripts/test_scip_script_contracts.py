@@ -1,0 +1,195 @@
+"""Contract tests for the scip skill's orchestration scripts (common.sh, status.sh,
+cleanup.sh, setup.sh, query.sh).
+
+These exercise the actual scripts via subprocess rather than re-deriving their logic in
+Python — a script that has never been executed by a test has not demonstrated it works,
+regardless of how straightforward it reads. Deliberately does not exercise `index.sh`
+(run/refresh) or `setup.sh`'s install path: both make a full build / a real network
+install, which belongs in manual end-to-end verification (see the handoff's Testable
+Acceptance Criteria), not a fast test suite.
+
+Requires `bash`, `git`, and `jq` on PATH.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import textwrap
+
+import pytest
+
+SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+COMMON_SH = os.path.join(SCRIPTS_DIR, "lib", "common.sh")
+STATUS_SH = os.path.join(SCRIPTS_DIR, "status.sh")
+CLEANUP_SH = os.path.join(SCRIPTS_DIR, "cleanup.sh")
+SETUP_SH = os.path.join(SCRIPTS_DIR, "setup.sh")
+QUERY_SH = os.path.join(SCRIPTS_DIR, "query.sh")
+
+# A real, small index produced this session's own scip-java pilot — copied into fixture
+# HOME dirs below so status.sh exercises a genuine `scip stats --from` run, not a stub.
+REAL_INDEX = os.path.expanduser("~/.cache/scip/sls-locking-service/index.scip")
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("git") is None or shutil.which("jq") is None,
+    reason="requires bash, git, and jq",
+)
+
+
+def run(cmd, **kw):
+    kw.setdefault("timeout", 30)
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def init_repo(path, name):
+    repo = path / name
+    repo.mkdir()
+    run(["git", "init", "-q"], cwd=repo)
+    run(["git", "config", "user.email", "test@example.com"], cwd=repo)
+    run(["git", "config", "user.name", "Test"], cwd=repo)
+    (repo / "README.md").write_text("fixture repo\n")
+    run(["git", "add", "-A"], cwd=repo)
+    run(["git", "commit", "-q", "-m", "init"], cwd=repo)
+    return repo
+
+
+# ---------------------------------------------- common.sh
+
+
+def test_repo_root_fails_outside_a_git_repository(tmp_path):
+    r = run(
+        ["bash", "-c", f'source "{COMMON_SH}" && scip_repo_root'],
+        cwd=tmp_path,
+    )
+    assert r.returncode != 0
+    assert "Not inside a git repository" in r.stderr
+
+
+def test_repo_root_succeeds_inside_a_git_repository(tmp_path):
+    repo = init_repo(tmp_path, "demo-repo")
+    r = run(["bash", "-c", f'source "{COMMON_SH}" && scip_repo_root'], cwd=repo)
+    assert r.returncode == 0
+    assert r.stdout.strip() == str(repo)
+
+
+def test_cache_dir_and_index_path_are_keyed_by_repo_basename(tmp_path):
+    repo = init_repo(tmp_path, "my-service")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home)}
+    r = run(
+        ["bash", "-c", f'source "{COMMON_SH}" && scip_cache_dir "{repo}" && scip_index_path "{repo}"'],
+        env=env,
+    )
+    assert r.returncode == 0
+    cache_dir, index_path = r.stdout.strip().splitlines()
+    assert cache_dir == str(fake_home / ".cache" / "scip" / "my-service")
+    assert index_path == str(fake_home / ".cache" / "scip" / "my-service" / "index.scip")
+
+
+# ---------------------------------------------- status.sh
+
+
+def test_status_reports_missing_index_without_crashing(tmp_path):
+    repo = init_repo(tmp_path, "no-index-yet")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home)}
+    r = run(["bash", STATUS_SH], cwd=repo, env=env)
+    assert r.returncode == 0
+    assert "No SCIP index found" in r.stdout
+    assert "Traceback" not in r.stdout and "Traceback" not in r.stderr
+
+
+@pytest.mark.skipif(not os.path.exists(REAL_INDEX), reason="fixture index not present on this machine")
+def test_status_reports_path_size_age_and_real_scip_stats(tmp_path):
+    repo = init_repo(tmp_path, "sls-locking-service")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "sls-locking-service"
+    cache_dir.mkdir(parents=True)
+    shutil.copyfile(REAL_INDEX, cache_dir / "index.scip")
+    env = {**os.environ, "HOME": str(fake_home)}
+
+    r = run(["bash", STATUS_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    assert str(cache_dir / "index.scip") in r.stdout
+    assert "Size:" in r.stdout
+    assert "Built:" in r.stdout
+    stats_json = r.stdout[r.stdout.index("{"):]
+    stats = json.loads(stats_json)
+    assert stats["documents"] > 0
+    assert stats["definitions"] > 0
+    assert stats["occurrences"] > 0
+
+
+# ---------------------------------------------- cleanup.sh
+
+
+def test_cleanup_reports_nothing_to_clean_up_when_no_cache_exists(tmp_path):
+    repo = init_repo(tmp_path, "never-indexed")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home)}
+    r = run(["bash", CLEANUP_SH], cwd=repo, env=env)
+    assert r.returncode == 0
+    assert "nothing to clean up" in r.stdout
+
+
+def test_cleanup_removes_the_cache_dir_and_only_the_cache_dir(tmp_path):
+    repo = init_repo(tmp_path, "indexed-repo")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "indexed-repo"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "index.scip").write_bytes(b"fake index bytes")
+    env = {**os.environ, "HOME": str(fake_home)}
+
+    r = run(["bash", CLEANUP_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    assert not cache_dir.exists()
+    assert (repo / "README.md").exists()  # repo's own working tree untouched
+
+
+# ---------------------------------------------- setup.sh fast path
+
+
+def _stub_bin_dir(tmp_path):
+    """A directory with stub `scip`/`scip-java`/`java` executables, so the 'already
+    installed' fast path can be exercised without touching the network or a real JVM."""
+    stub_dir = tmp_path / "stub-bin"
+    stub_dir.mkdir()
+    for name, output in (
+        ("scip", "scip version v0.10.0"),
+        ("scip-java", "scip-java help text"),
+        ("java", "openjdk version stub"),
+    ):
+        script = stub_dir / name
+        script.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            echo "{output}"
+            """))
+        script.chmod(0o755)
+    return stub_dir
+
+
+def test_setup_is_a_fast_no_op_when_both_tools_are_already_installed(tmp_path):
+    stub_dir = _stub_bin_dir(tmp_path)
+    env = {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+    r = run(["bash", SETUP_SH], env=env)
+    assert r.returncode == 0
+    assert "Nothing to do" in r.stdout
+    assert "curl" not in r.stdout.lower()
+
+
+# ---------------------------------------------- query.sh
+
+
+def test_query_fails_clearly_when_no_index_exists(tmp_path):
+    repo = init_repo(tmp_path, "no-index-for-query")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home)}
+    r = run(["bash", QUERY_SH, "symbol", "anything"], cwd=repo, env=env)
+    assert r.returncode != 0
+    assert "No SCIP index found" in r.stderr

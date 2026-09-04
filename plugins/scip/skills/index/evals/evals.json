@@ -1,0 +1,44 @@
+{
+  "skill_name": "scip:index",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm about to refactor `deleteExpiredLocks` in SLSMutexStoreImpl (repo at ~/github/records-platform-workspace/repos/services/sls-locking-service) but jdtls-lsp keeps crashing on me every time I try to find its callers. Can you find every place in the codebase that calls it before I touch it?",
+      "expected_output": "A list of real callers of SLSMutexStoreImpl#deleteExpiredLocks, found via the scip:index skill's scripts rather than grep. In this repo, that method genuinely has zero production callers -- only test callers (SLSMutexStoreImplTest.java ~line 50) -- so the correct answer says so rather than fabricating a production caller.",
+      "files": [],
+      "assertions": [
+        "Used the scip:index skill's own scripts (setup/run/query) to find the callers, rather than falling back to grep/manual reading",
+        "Answer includes the real test caller of SLSMutexStoreImpl#deleteExpiredLocks (SLSMutexStoreImplTest.java, around line 50)",
+        "Answer does not fabricate production (src/main) callers that don't actually exist -- deleteExpiredLocks genuinely has zero production call sites, only test callers",
+        "Explains, even briefly, why jdtls-lsp isn't the tool used for this (its known crash) rather than silently switching tools without acknowledging the user's stated problem",
+        "git status --short in the target repo (sls-locking-service) is confirmed clean -- no modifications to the repo's own working tree"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "jdtls-lsp is crashing again in this Java repo (~/github/records-platform-workspace/repos/services/sls-dlq-worker). Can you get code navigation working again so I can look up definitions and references?",
+      "expected_output": "A first-time setup + index build for this repo (no cached index exists yet), followed by a demonstrated real query proving navigation works, without touching the repo's own working tree.",
+      "files": [],
+      "assertions": [
+        "Actually ran setup (installing scip/scip-java if needed) and a real index build, rather than claiming success without doing the work",
+        "Report demonstrates a real, successful query against the freshly built index (a real class/method and a real result), not just a claim that it works",
+        "Reports roughly how long the build took and whether setup had to install anything or found the tools already present -- basic transparency about a non-instant operation",
+        "git status --short in the target repo (sls-dlq-worker) is confirmed clean -- no modifications to the repo's own working tree",
+        "Does not claim the index is placed inside the repo -- it should land under ~/.cache/scip/, not as an untracked file in the repo"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Before I rename `addMutexIfAbsent` to something clearer in the sls-locking-service repo (~/github/records-platform-workspace/repos/services/sls-locking-service), find every place in the codebase that calls it.",
+      "expected_output": "The real production call sites of addMutexIfAbsent in LockController.java (around lines 344, 538, 549), found without the prompt ever mentioning jdtls/LSP -- tests whether the skill triggers on implicit need, and whether it avoids misreporting Javadoc-only mentions as real calls.",
+      "files": [],
+      "assertions": [
+        "Decided to use the scip:index skill (or, for the no-skill baseline, some real symbol-aware tool) even though the prompt never mentions jdtls-lsp, LSP, or a crash -- this is the trigger-robustness test",
+        "Answer includes the real production call sites in LockController.java (around lines 344, 538, 549)",
+        "Answer does not misreport Javadoc-only mentions of addMutexIfAbsent (e.g. comments in SLSMutexStore.java / LockController.java) as actual call sites",
+        "git status --short in the target repo (sls-locking-service) is confirmed clean -- no modifications to the repo's own working tree",
+        "If an index for this repo already existed (from the sibling eval), reused it via 'status' rather than blindly rebuilding from scratch"
+      ]
+    }
+  ]
+}

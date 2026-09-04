@@ -51,3 +51,6 @@ Thumbs.db
 
 # Stray HOME-relative state from running scripts/tests in-tree
 .local/
+
+# skill-creator eval run outputs (reproducible by re-running; evals.json itself is tracked)
+*-workspace/

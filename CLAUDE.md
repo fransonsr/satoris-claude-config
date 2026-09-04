@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-08-30
+**Last Updated**: 2026-09-03
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -241,45 +241,48 @@ success is assumed rather than checked.
 
 ### LSP (Language Server Protocol) Integration
 
-**Status**: ✅ Available for all projects. **Default-first, not a fallback tried after grep**:
-whenever a question is about a named symbol — where it's defined, everywhere it's called, a
-file's structure, or whether a file has live errors — reach for LSP *before* grep/ripgrep, not
-only after a grep-based attempt already came up short. Verified working in this environment
-2026-08-29 (Java via `jdtls-lsp`, Python via `pyright-lsp`).
+**Status**: ✅ Available for Python. **Default-first, not a fallback tried after grep**: whenever
+a question is about a named symbol — where it's defined, everywhere it's called, a file's
+structure, or whether a file has live errors — reach for LSP *before* grep/ripgrep, not only after
+a grep-based attempt already came up short. Verified working in this environment 2026-08-29
+(Python via `pyright-lsp`). **Java does not use this tool** — see "Java Code Navigation: scip, not
+LSP" below for why and what to use instead.
 
-**For Java and Python specifically, this is a MUST, not a preference.** Pattern matching
-(grep/ripgrep) against these two languages has repeatedly produced **false negatives** — real
-references silently missed, not just noisy over-matches — because grep can't see semantics: it
-misses references split across lines, inherited/overridden members, indirect calls through an
-interface or a differently-imported alias, and any match whose surrounding tokens don't literally
-contain the search string. A false negative here is worse than a false positive: it reports a
-symbol as unused, or a rename as complete, when it isn't. An agent must use LSP instead of
-grep/ripgrep for symbol-level questions (definition, references, structure, diagnostics) on Java
-or Python files — not "prefer," not "reach for first," but use it, full stop; grep is not an
-acceptable substitute for these two languages even under time pressure.
+**For Python specifically, this is a MUST, not a preference.** Pattern matching (grep/ripgrep)
+against Python has repeatedly produced **false negatives** — real references silently missed, not
+just noisy over-matches — because grep can't see semantics: it misses references split across
+lines, inherited/overridden members, indirect calls through an interface or a differently-imported
+alias, and any match whose surrounding tokens don't literally contain the search string. A false
+negative here is worse than a false positive: it reports a symbol as unused, or a rename as
+complete, when it isn't. An agent must use LSP instead of grep/ripgrep for symbol-level questions
+(definition, references, structure, diagnostics) on Python files — not "prefer," not "reach for
+first," but use it, full stop; grep is not an acceptable substitute even under time pressure.
 
 **Supported Languages** (one shared `LSP` tool dispatches to whichever server matches the file
 type — `ToolSearch(query="select:LSP")` loads it):
-- Java (`jdtls-lsp`) and Python (`pyright-lsp`) — the two languages actually used for skill
-  scripts and production code in this environment; both confirmed working.
+- Python (`pyright-lsp`) — confirmed working; this environment routes all Python symbol-level
+  questions through it.
+- Java (`jdtls-lsp`) remains registered as an LSP server here, but is **not** the recommended tool
+  for Java anymore — it has a known, unfixed crash (see "Java Code Navigation" below). Don't reach
+  for it via the `LSP` tool for Java; use the `scip:index` skill instead.
 - **Available in the marketplace but NOT currently enabled** — `enabledPlugins` holds only the two
-  above, so these need enabling before they will do anything: C/C++ (`clangd-lsp`), C#
-  (`csharp-lsp`), Go (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP (`php-lsp`), Ruby
-  (`ruby-lsp`), Rust (`rust-analyzer-lsp`), Swift (`swift-lsp`), TypeScript/JavaScript
-  (`typescript-lsp`). Verified 2026-08-29. This bullet previously read "Also enabled," which would
-  lead an agent to reach for LSP on a Go or TypeScript file, get nothing, and conclude LSP is broken
-  rather than not enabled for that language.
+  above (`jdtls-lsp`, `pyright-lsp`), so these need enabling before they will do anything: C/C++
+  (`clangd-lsp`), C# (`csharp-lsp`), Go (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP
+  (`php-lsp`), Ruby (`ruby-lsp`), Rust (`rust-analyzer-lsp`), Swift (`swift-lsp`),
+  TypeScript/JavaScript (`typescript-lsp`). Verified 2026-08-29. This bullet previously read "Also
+  enabled," which would lead an agent to reach for LSP on a Go or TypeScript file, get nothing, and
+  conclude LSP is broken rather than not enabled for that language.
 - **Bash/shell has no LSP server in this environment.** Use `shellcheck <file>` (installed at
   `/usr/bin/shellcheck`) for static analysis instead — it catches unused vars, quoting bugs, and
   unsafe patterns. It's a linter, not a language server, so there's no goToDefinition/
   findReferences equivalent for shell; grep remains the right tool for plain text search in
   scripts.
 
-**When to Use LSP vs Other Tools**:
+**When to Use LSP vs Other Tools** (Python; for Java see "Java Code Navigation" below):
 
 | Task | Use LSP | Use grep/find | Use Read |
 |------|---------|---------------|----------|
-| Find all references to a symbol (Java/Python) | ✅ LSP (accurate) | ❌ grep — false positives **and** false negatives (misses real, semantically-valid references) | ❌ |
+| Find all references to a symbol (Python) | ✅ LSP (accurate) | ❌ grep — false positives **and** false negatives (misses real, semantically-valid references) | ❌ |
 | Go to definition | ✅ LSP (accurate) | ⚠️ grep (multiple matches) | ❌ |
 | Find symbol in workspace | ✅ LSP (fast, accurate) | ⚠️ find + grep (slower) | ❌ |
 | Understand file structure | ✅ LSP (symbols/outline) | ❌ | ⚠️ Read (must read whole file) |
@@ -292,18 +295,19 @@ type — `ToolSearch(query="select:LSP")` loads it):
 | Read specific lines | ❌ | ❌ | ✅ Read (best) |
 
 **Best Practices**:
-1. **For Java or Python, use LSP instead of grep for symbol-level questions — this is required,
-   not merely first-choice.** For any other supported language, still load LSP before reaching
-   for grep. If the task involves a named symbol rather than plain text, call
-   `ToolSearch(query="select:LSP")` and use it as the first tool.
+1. **For Python, use LSP instead of grep for symbol-level questions — this is required, not
+   merely first-choice.** For any other supported language (once enabled), still load LSP before
+   reaching for grep. If the task involves a named symbol rather than plain text, call
+   `ToolSearch(query="select:LSP")` and use it as the first tool. **For Java, use the `scip:index`
+   skill instead** — the `LSP` tool is not the path for Java symbol lookups in this environment.
 2. **Use for navigation**: finding definitions, references, implementations.
 3. **Use for refactoring**: renaming symbols across a project.
 4. **Use for diagnostics**: getting compile/type errors before building.
 5. **Only fall back to grep when**: the search is plain-text/pattern-based rather than a named
    symbol, or the file's language has no LSP server in this environment (bash — use `shellcheck`
-   instead, per above). "LSP felt slower to reach for" is not a qualifying reason, and for
-   Java/Python, "grep already looked complete" is not one either — grep's false negatives look
-   exactly like a clean result until LSP finds what it missed.
+   instead, per above). "LSP felt slower to reach for" is not a qualifying reason, and for Python,
+   "grep already looked complete" is not one either — grep's false negatives look exactly like a
+   clean result until LSP finds what it missed.
 
 **Example Workflow** (matches the actual `LSP` tool schema: `operation` plus
 `filePath`/`line`/`character`, or `query` for `workspaceSymbol`):
@@ -314,7 +318,7 @@ Load LSP tool: ToolSearch(query="select:LSP")
 # When exploring code
 - Find where a symbol is defined: LSP(operation="goToDefinition", filePath="...", line=N, character=N)
 - Find all usages: LSP(operation="findReferences", filePath="...", line=N, character=N)
-- See file/class structure: LSP(operation="documentSymbol", filePath="path/to/File.java", line=1, character=1)
+- See file/class structure: LSP(operation="documentSymbol", filePath="path/to/file.py", line=1, character=1)
 - Search by name across the workspace: LSP(operation="workspaceSymbol", query="methodName", filePath="...", line=1, character=1)
 - Check for errors: diagnostics surface automatically as a system reminder after editing a file
 
@@ -329,7 +333,7 @@ Load LSP tool: ToolSearch(query="select:LSP")
 
 **Note**: LSP is a deferred tool - use ToolSearch to load it before first use in a session.
 
-**Common Use Cases**:
+**Common Use Cases** (Python, via the `LSP` tool):
 
 1. **Consistency Checking** (e.g., PR #6 Round 10):
    ```
@@ -347,8 +351,43 @@ Load LSP tool: ToolSearch(query="select:LSP")
    ```
    Before renaming totalFilesScanned → totalFilesWithFindings:
    - LSP(operation="findReferences", ...) on totalFilesScanned shows all locations
-   - More reliable than grep (handles Java naming conventions)
+   - More reliable than grep (handles indirect references and aliasing)
    ```
+
+### Java Code Navigation: scip, not LSP
+
+**Java does not use the `LSP` tool.** `jdtls-lsp` (Claude Code's built-in Java language server)
+has a known, unfixed crash: its Eclipse workspace doesn't shut down cleanly between Claude Code
+sessions, so on the next startup it replays stale delta-tree state that references a Maven
+`target/` file a routine `mvn clean` already removed, throwing `ObjectNotFoundException` and
+crashing the server. The two upstream issues that map to this (no clean LSP-server shutdown/reuse
+across sessions, no way to exclude build directories from file-watching) are real and open, but
+both were closed by GitHub's stale-bot as `not_planned` — there is no upstream fix coming.
+
+Use the **`scip:index` skill** instead: it manages a [SCIP](https://github.com/scip-code/scip)
+index for the current repo — a precomputed, file-based index of definitions/references, built once
+via `scip-java`, then queried without any live server process. Since there's no long-running
+mutable server, there's nothing to accumulate corrupt state across sessions.
+
+**This is a MUST for Java, the same way LSP is a MUST for Python** — the identical false-negative
+risk from grep/ripgrep applies to Java too (missed references split across lines, inherited/
+overridden members, aliased imports). Use `scip:index`'s `query` operation instead of grep for
+symbol-level questions (definition, references) on Java files. `scip:index` does not cover file
+structure or live diagnostics the way the `LSP` tool does for Python — read the file directly for
+those.
+
+```bash
+SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/index/scripts"   # the scip plugin's index skill
+
+bash "$SCRIPTS/setup.sh"                                 # once per machine
+bash "$SCRIPTS/index.sh"                                 # once per repo — a real build, not fast
+bash "$SCRIPTS/query.sh" at path/to/File.java:LINE:COL   # go to definition / find references
+bash "$SCRIPTS/query.sh" symbol "ClassName#methodName"   # find by name when you don't have a location
+```
+
+Full details, known constraints (Maven-validated only; Gradle auto-detection unverified; module-
+scoping flags deliberately omitted from the default build), and troubleshooting: the `scip:index`
+skill's own SKILL.md.
 
 ## Core Principles
 
@@ -850,32 +889,6 @@ Prefer false positives (extra process) over false negatives (missed bugs).
 
 ## Examples from sls-bi-worker
 
-### Good Test-First Example: FutureTracker
-
-```java
-// Complex batch tracking logic - used test-first approach
-
-// Step 1: RED - Write failing test
-@Test
-void testAutoFlush_WhenBatchSizeReached() {
-    FutureTracker tracker = new FutureTracker(10, LOGGER);
-
-    // Track exactly 10 futures (batch size)
-    for (int i = 0; i < 10; i++) {
-        KinesisResult result = new KinesisResult(true, "shard-001", "seq-" + i, 1);
-        tracker.track(Futures.immediateFuture(result), "record-" + i);
-    }
-
-    assertEquals(10, tracker.getPendingCount());
-
-    // Step 2: GREEN - flushIfFull should trigger flush
-    tracker.flushIfFull();
-    assertEquals(0, tracker.getPendingCount());
-}
-
-// Step 3: REFACTOR - Extract constants, improve naming if needed
-```
-
 ### Good Test-After Example: CSV Validation
 
 ```java
@@ -904,31 +917,6 @@ void shouldSkipLineWithInsufficientColumns() {
 // Step 3: REFACTOR - (minimal needed - already clear)
 ```
 
-### Good SOLID Example: SlsBIClientConfig
-
-```java
-// Single Responsibility: Only holds configuration
-// Open/Closed: Can add fields without changing constructor
-// Liskov Substitution: N/A (no inheritance)
-// Interface Segregation: Minimal interface
-// Dependency Inversion: No dependencies on concrete classes
-
-public class SlsBIClientConfig {
-    private final boolean includeMetricsInHeaders;
-    private final int futureBatchSize;
-
-    public SlsBIClientConfig(boolean includeMetricsInHeaders, int futureBatchSize) {
-        if (futureBatchSize <= 0) {
-            throw new IllegalArgumentException("futureBatchSize must be positive");
-        }
-        this.includeMetricsInHeaders = includeMetricsInHeaders;
-        this.futureBatchSize = futureBatchSize;
-    }
-
-    // ... getters only, immutable
-}
-```
-
 ## Notes to Claude Code
 
 Everything above applies when working on fransonsr's projects. This section is not a recap of it —
@@ -955,14 +943,14 @@ live nowhere else.
    Workflow Examples → Example 3 runs `mvn clean compile test -pl <module>`; when the change touches
    a POM, a dependency, or build configuration, drop the `-pl` scope and validate the full build.
 
-6. **LSP is the default tool for symbol-level lookups, not an optional enhancement to reach for
-   only when asked — and for Java/Python it is mandatory, not just first-choice.** Development
-   Tools → LSP: pattern matching against these two languages has repeatedly produced false
-   negatives (real references silently missed, not just noisy over-matches), so an agent must use
-   LSP rather than grep whenever the question concerns a named symbol (definition, references,
-   structure, diagnostics) in a Java or Python file. For any other supported language, still load
-   and use LSP before grep. Grep is the fallback for plain-text search or for bash, which has no
-   LSP server — use `shellcheck` there instead.
+6. **Symbol-level lookups always go through a dedicated tool, never grep — but Java and Python
+   use different ones, and neither is optional.** Development Tools → LSP (Python) and → Java Code
+   Navigation: scip, not LSP. Pattern matching against both languages has repeatedly produced false
+   negatives (real references silently missed, not just noisy over-matches). For Python, that means
+   the `LSP` tool (`pyright-lsp`); for Java, it means the `scip:index` skill's `query` operation —
+   `jdtls-lsp` has a known, unfixed crash and is not the path for Java anymore. For any other
+   LSP-supported language, still load and use LSP before grep. Grep is the fallback for plain-text
+   search or for bash, which has no LSP server — use `shellcheck` there instead.
 
 7. **Already stated in full elsewhere** — go there rather than working from a summary: relentless
    refactoring as part of the cycle (Core Principles §2); don't over-abstract tests (§3, "Moist");
