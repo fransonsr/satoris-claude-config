@@ -1,12 +1,14 @@
 """Contract tests for the scip skill's orchestration scripts (common.sh, status.sh,
-cleanup.sh, setup.sh, query.sh).
+cleanup.sh, setup.sh, index.sh, query.sh).
 
 These exercise the actual scripts via subprocess rather than re-deriving their logic in
 Python — a script that has never been executed by a test has not demonstrated it works,
-regardless of how straightforward it reads. Deliberately does not exercise `index.sh`
-(run/refresh) or `setup.sh`'s install path: both make a full build / a real network
+regardless of how straightforward it reads. Deliberately does not exercise a real
+`scip-java` build or `setup.sh`'s install path: both make a full build / a real network
 install, which belongs in manual end-to-end verification (see the handoff's Testable
-Acceptance Criteria), not a fast test suite.
+Acceptance Criteria), not a fast test suite. `index.sh`'s own failure-detection logic
+(does the output file actually exist after `scip-java` exits) is exercised below against
+a stub `scip-java` on `PATH` — no real build required to prove that check works.
 
 Requires `bash`, `git`, and `jq` on PATH.
 """
@@ -16,6 +18,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+import time
 
 import pytest
 
@@ -24,6 +27,7 @@ COMMON_SH = os.path.join(SCRIPTS_DIR, "lib", "common.sh")
 STATUS_SH = os.path.join(SCRIPTS_DIR, "status.sh")
 CLEANUP_SH = os.path.join(SCRIPTS_DIR, "cleanup.sh")
 SETUP_SH = os.path.join(SCRIPTS_DIR, "setup.sh")
+INDEX_SH = os.path.join(SCRIPTS_DIR, "index.sh")
 QUERY_SH = os.path.join(SCRIPTS_DIR, "query.sh")
 
 # A real, small index produced this session's own scip-java pilot — copied into fixture
@@ -180,6 +184,142 @@ def test_setup_is_a_fast_no_op_when_both_tools_are_already_installed(tmp_path):
     assert r.returncode == 0
     assert "Nothing to do" in r.stdout
     assert "curl" not in r.stdout.lower()
+
+
+# ---------------------------------------------- index.sh
+
+
+def _stub_scip_java_dir(tmp_path, write_index):
+    """A stub `scip-java` on PATH — never a real build. When `write_index` is False, it
+    reproduces the exact sls-bi-worker symptom this fix targets: exit 0, output file
+    never written. When True, it writes a placeholder file at the `--output` path, like
+    a real successful run would."""
+    stub_dir = tmp_path / "stub-scip-java-bin"
+    stub_dir.mkdir()
+    script = stub_dir / "scip-java"
+    if write_index:
+        body = textwrap.dedent("""\
+            #!/usr/bin/env bash
+            shift  # drop the "index" subcommand
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --output) echo "fake index bytes" > "$2"; shift 2 ;;
+                *) shift ;;
+              esac
+            done
+            """)
+    else:
+        body = textwrap.dedent("""\
+            #!/usr/bin/env bash
+            # Simulates the real sls-bi-worker failure mode: exits 0, writes nothing.
+            exit 0
+            """)
+    script.write_text(body)
+    script.chmod(0o755)
+    return stub_dir
+
+
+def test_index_fails_clearly_when_scip_java_exits_zero_but_writes_no_index(tmp_path):
+    repo = init_repo(tmp_path, "silently-failing-repo")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=False)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode != 0
+    assert "Index written to" not in r.stdout
+    expected_path = fake_home / ".cache" / "scip" / "silently-failing-repo" / "index.scip"
+    assert str(expected_path) in r.stderr
+    assert not expected_path.exists()
+
+
+def test_index_fails_clearly_on_refresh_even_with_a_stale_index_already_on_disk(tmp_path):
+    """A repo that indexed successfully before, then silently fails on a later `refresh`,
+    must not be masked by the previous run's leftover index.scip still sitting in the
+    cache dir — the check has to reflect *this* run, not a stale one. The stale file is
+    left in place (not deleted) rather than destroyed on the mere possibility of a
+    failure — see the crash-preservation test below for why that matters."""
+    repo = init_repo(tmp_path, "previously-indexed-repo")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "previously-indexed-repo"
+    cache_dir.mkdir(parents=True)
+    stale_bytes = b"stale index from a prior successful run"
+    (cache_dir / "index.scip").write_bytes(stale_bytes)
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=False)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode != 0
+    assert "Index written to" not in r.stdout
+    expected_path = cache_dir / "index.scip"
+    assert str(expected_path) in r.stderr
+    assert expected_path.read_bytes() == stale_bytes  # untouched, not deleted
+
+
+def test_index_preserves_a_valid_index_when_scip_java_crashes_outright(tmp_path):
+    """A genuine scip-java/build crash (nonzero exit) is a different failure mode from
+    the silent-success bug this script otherwise guards against — it must not destroy a
+    previously valid index still sitting in the cache dir. `set -e` aborts the script at
+    the scip-java call itself, before either post-build check runs."""
+    repo = init_repo(tmp_path, "crash-during-refresh-repo")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "crash-during-refresh-repo"
+    cache_dir.mkdir(parents=True)
+    valid_bytes = b"previously valid index"
+    (cache_dir / "index.scip").write_bytes(valid_bytes)
+    stub_dir = tmp_path / "stub-crash-bin"
+    stub_dir.mkdir()
+    script = stub_dir / "scip-java"
+    script.write_text("#!/usr/bin/env bash\necho 'build crashed' >&2\nexit 1\n")
+    script.chmod(0o755)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode != 0
+    expected_path = cache_dir / "index.scip"
+    assert expected_path.read_bytes() == valid_bytes
+
+
+def test_index_replaces_a_stale_index_on_a_genuinely_successful_refresh(tmp_path):
+    """The flip side of the two tests above: when scip-java *does* freshly rewrite the
+    index this run, that has to be recognized as success even though a stale file already
+    existed beforehand — the mtime-comparison check must not itself become a false
+    failure on the normal, working refresh path."""
+    repo = init_repo(tmp_path, "refreshed-repo")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "refreshed-repo"
+    cache_dir.mkdir(parents=True)
+    stale_path = cache_dir / "index.scip"
+    stale_path.write_bytes(b"stale index from a prior run")
+    old_time = time.time() - 3600  # backdate well clear of the new write's mtime
+    os.utime(stale_path, (old_time, old_time))
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=True)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    assert f"Index written to {stale_path}" in r.stdout
+    assert stale_path.read_bytes() == b"fake index bytes\n"
+
+
+def test_index_succeeds_and_reports_the_path_when_scip_java_actually_writes_it(tmp_path):
+    repo = init_repo(tmp_path, "successfully-indexed-repo")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=True)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    expected_path = fake_home / ".cache" / "scip" / "successfully-indexed-repo" / "index.scip"
+    assert f"Index written to {expected_path}" in r.stdout
+    assert expected_path.exists()
 
 
 # ---------------------------------------------- query.sh

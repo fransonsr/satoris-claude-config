@@ -104,6 +104,55 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
 - **Out of scope by design**: Python code intelligence (still `pyright-lsp` via the `LSP` tool) and
   CodeQL (a different tool solving a different problem — security-pattern queries over a
   heavyweight database, not navigation). Neither belongs in this skill.
+- **`scip-java index` can exit 0 and print "Index written to..." while writing nothing at all** —
+  confirmed against a real repo (`sls-bi-worker` in the Records Platform fleet). `run`/`refresh`
+  (`index.sh`) now checks that the output file both exists and actually changed (by mtime) since
+  before this run started, exiting non-zero with a clear error otherwise — deliberately not by
+  deleting any prior index up front, so a genuine `scip-java`/build crash (a different failure mode
+  from the one this checks for) can't destroy a previously valid index. But the underlying cause is
+  worth knowing if you hit this on a different repo, since the check here only makes the failure
+  loud, not go away. Two distinct,
+  confirmed causes, found by reading scip-java's own source
+  (`MavenBuildTool.kt`/`Embedded.kt`/`custom-javac.sh`/`InjectScipOptions.java` in
+  `scip-code/scip-java`) rather than its docs — the docs describe `<compilerArgs>` injection as the
+  *manual* configuration path, but `scip-java index`'s *automatic* Maven path never touches
+  `<compilerArgs>` at all:
+  1. **A hardcoded `<fork>false</fork>` in the repo's own `maven-compiler-plugin` config silently
+     defeats indexing.** `scip-java index` drives Maven via
+     `-Dmaven.compiler.fork=true -Dmaven.compiler.executable=<generated wrapper>` system
+     properties — it never edits the POM. An explicit, literal `<fork>false</fork>` in the repo's
+     own `<configuration>` always wins over that `-D` default (Maven's normal precedence rules), so
+     Maven compiles in-process and the executable override is never consulted. In-process
+     compilation can't run scip-java's wrapper, so no SCIP plugin ever gets injected — the build
+     succeeds completely normally (whatever the repo's own compiler args do, e.g. ErrorProne, keeps
+     working), but zero index output is produced anywhere. Repos with no `<fork>` override (e.g.
+     `sls-internal-workers`, which indexed successfully) are unaffected.
+     **Workaround**: locally/temporarily flip `<fork>false</fork>` to `<fork>true</fork>` to test;
+     a permanent fix needs that change committed to the repo's own `pom.xml` — out of scope for
+     this skill to do on someone else's repo, and worth a heads-up to that repo's owner rather than
+     a silent one-off edit.
+  2. **A separate scip-java bug, only reachable once fork is no longer suppressed**: with fork
+     correctly enabled, `InjectScipOptions.java` (scip-java's own compiler-arg rewriter) reads the
+     forked compiler's `@argfile` with a plain `Files.readAllLines()` and reprocesses it **one line
+     at a time** — not a real whitespace/quote-aware tokenizer. Any single logical compiler argument
+     that itself spans multiple lines in the POM's `<arg>` XML value (e.g. a long `-Xplugin:...`
+     value formatted across several lines with trailing backslashes for readability — harmless to
+     real Maven/javac, which treats the whole value as one token) gets re-split at every newline,
+     turning a line like `-Xplugin:ErrorProne \` into its own standalone argument ending in a bare
+     `\`, which javac then rejects with `error: invalid flag: \`. **Workaround**: reformat the
+     affected `<arg>` onto a single line (no embedded newlines) in the repo's own `pom.xml` — same
+     out-of-scope caveat as above. This looks like a genuine scip-java upstream limitation
+     (naive argfile line-splitting), not a Maven or repo misconfiguration — worth a real upstream
+     issue against `scip-code/scip-java` if it recurs on another repo.
+  - **Both fixes verified together, directly, against `sls-bi-worker`**: with `<fork>true</fork>`
+    and the multi-line ErrorProne arg collapsed onto one line (temporary, uncommitted, reverted
+    after verification), indexing produced a real index — 224 documents, 7,910 definitions, 65,082
+    occurrences. Neither fix alone was sufficient; both are needed together.
+  - **These two are what caused `sls-bi-worker`'s failure specifically, not an exhaustive list of
+    every way this symptom can happen.** If a different repo hits the same "exit 0, no index"
+    symptom and neither `<fork>false</fork>` nor a multi-line `<compilerArgs>` value is present,
+    treat it as a new, undocumented cause rather than assuming one of these two must apply — add
+    it here once confirmed.
 
 ## Tests
 
@@ -111,9 +160,12 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
 condition containment checks, role labeling, index-cache staleness) with real captured
 `scip print --json` fixtures where possible. `scripts/test_scip_script_contracts.py` exercises the
 orchestration scripts (`common.sh`, `status.sh`, `cleanup.sh`, `setup.sh`'s already-installed fast
-path, `query.sh`) against real or realistic fixtures — it deliberately excludes `index.sh`'s actual
-build and `setup.sh`'s actual install path, since both require a real network/build and belong in
-manual end-to-end verification instead.
+path, `index.sh`, `query.sh`) against real or realistic fixtures, including `index.sh`'s
+failure-detection logic against a stub `scip-java` — covering a first-ever silent failure, the same
+failure masked by a stale index left over from a prior run, a genuine build crash that must leave a
+prior valid index untouched, and a genuinely successful refresh that replaces stale content — it
+deliberately excludes a real `scip-java` build and `setup.sh`'s actual install path, since both
+require a real network/build and belong in manual end-to-end verification instead.
 
 ```bash
 cd "${CLAUDE_PLUGIN_ROOT}/skills/index/scripts" && python3 -m pytest -v
