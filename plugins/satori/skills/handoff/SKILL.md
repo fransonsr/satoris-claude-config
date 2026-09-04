@@ -188,6 +188,10 @@ Set expectations for when the implementing session should stop and ask rather th
        aoe-session-title: <task-id>-<slug>, or ~<task-id>-<slug> if parent-linked — see step 4(e)
        launched-path: <absolute path the session was launched from>
        launched-at: <ISO 8601 timestamp>
+       orchestrator-address: <the orchestrating session's own ListAgents self-identification
+                              value, captured at the same moment as the rest of this block —
+                              see step 4(g); omit this one field (not the whole block) if
+                              ListAgents doesn't return a self-identification line>
      ---
      ```
    - Verify all `key-files` paths exist before writing — fail if any path is wrong. Record the
@@ -216,13 +220,28 @@ Set expectations for when the implementing session should stop and ask rather th
 
      Create your progress doc now, before touching anything else:
      `~/.claude/handoff/active/<task-id>-<slug>-PROGRESS.md`, from
-     `<resolved-template-path>`. That file is your only channel back to the orchestrating
-     session — it does not read your conversation, only that file.
+     `<resolved-template-path>`. That file is your only *durable* channel back to the
+     orchestrating session — it does not read your conversation, only that file.
 
      If this session was started via aoe (`aoe session current` succeeds), the orchestrating
      session may also nudge you live via `aoe send` — treat any such nudge as a backup prompt
      only, never a substitute for updating the progress doc itself; the file is what actually
      gets read.
+
+     If this handoff's frontmatter `dispatch:` block includes an `orchestrator-address` field,
+     you may also **proactively** notify the orchestrating session yourself, rather than only
+     writing to the progress file and waiting for it to be checked: use the `SendMessage` tool
+     (`to: "<orchestrator-address>"`) with a short pointer only — "PROGRESS.md updated, please
+     review", "task complete, see PROGRESS.md", "blocked, see Blockers section" — whenever
+     something needs its attention. Never put substantive content in the message itself; the
+     progress doc remains where the actual content lives. **Caveat, and don't let it block you**:
+     this address is only valid for as long as the orchestrating session's current identity
+     persists — it can change across the orchestrator's own context compaction/resume. If a
+     `SendMessage` to this address doesn't produce a reply within a reasonable time, the address
+     may have gone stale — that's fine, fall back to the `-PROGRESS.md` file as the authoritative
+     record regardless; it remains correct and complete even if the live nudge never arrives. No
+     `orchestrator-address` field present → this channel isn't available for this task; the
+     progress doc and any `aoe send` nudges above are your only channels.
 
      If you can successfully run `aoe session current`, mirror your progress doc's `**Status**`
      field into your own aoe session color as it changes:
@@ -481,9 +500,18 @@ Set expectations for when the implementing session should stop and ask rather th
    - Write the `dispatch:` block (see step 2's frontmatter template) into the handoff document's
      frontmatter *now*, right after (f) resolves an id — with `aoe-session-id`,
      `aoe-session-title` (the actual title used, `~` prefix included if applicable),
-     `launched-path`, and `launched-at` (ISO 8601, now). This is the one frontmatter field this
-     skill updates outside the normal "stable" policy — see the carve-out in "When to Update
-     Handoff Document" below.
+     `launched-path`, `launched-at` (ISO 8601, now), and `orchestrator-address`. This is the one
+     frontmatter field this skill updates outside the normal "stable" policy — see the carve-out
+     in "When to Update Handoff Document" below.
+   - `orchestrator-address`: call `ListAgents` now (from the orchestrating session, not the new
+     one) and record its self-identification line's value verbatim — that's the address the
+     implementing session's own `## Before You Start` section will later use to `SendMessage`
+     back (see "aoe as a Backup/Live Communication Channel" below). This works regardless of
+     whether the orchestrating session is itself aoe-managed — `ListAgents` self-identification
+     is a harness-level capability, not an aoe one. If `ListAgents` doesn't return a
+     self-identification line for some reason, omit just this field (not the whole `dispatch:`
+     block) rather than guessing — it's optional metadata, not required for the dispatched
+     session to stay traceable.
    - Do this regardless of what happens next: (h)'s readiness-poll timeout, and (i)'s kickoff
      message being skipped as a result, must NOT skip this step. A session that exists but never
      got a kickoff message is still a real, running (and possibly aoe-colored) session — it needs
@@ -678,8 +706,23 @@ message directly into the live session's terminal.
   subject to that mechanism's own non-guaranteed-delivery caveats (see the same CLAUDE.md
   section). `aoe send` is the mechanism this skill documents and relies on; it is not the sole
   route.
+- **This channel is bidirectional — the implementing session can initiate it too, not just
+  receive it.** The generated handoff's `## Before You Start` section grants the implementing
+  session the same `SendMessage` capability in reverse: using the `orchestrator-address` value
+  recorded in the handoff's own `dispatch:` frontmatter (populated at step 4(g) from the
+  orchestrating session's own `ListAgents` self-identification line), the implementing session
+  may proactively notify the orchestrator — task complete, blocked, a question needing
+  real-time attention — with the same terse-pointer, no-substantive-content discipline as every
+  other direction of this channel. This is a supported, intended use of `SendMessage`'s general
+  reachability, not an incidental side effect of it. The same non-guaranteed-delivery caveat
+  applies, compounded by the orchestrator's own address being able to go stale across its own
+  context compaction — the implementing session's `-PROGRESS.md` file remains correct and
+  authoritative regardless of whether a proactive nudge in either direction ever arrives.
 - Only usable if the orchestrating session resolved the dispatched session's id in step 4(f) —
-  without it, fall back to reading the `-PROGRESS.md` file cold.
+  without it, fall back to reading the `-PROGRESS.md` file cold. The reverse direction has its
+  own, independent precondition instead: it depends on `orchestrator-address` having actually
+  been captured in step 4(g). Missing one doesn't block the other — the two are independently
+  resolved metadata fields.
 
 ### Responsibility Model
 
@@ -695,6 +738,10 @@ message directly into the live session's terminal.
 - Updates progress document frequently — **this is the primary feedback channel back to the
   orchestrator** (`aoe send` nudges are a backup, not a substitute — see "aoe as a Backup/Live
   Communication Channel" above)
+- May proactively `SendMessage` the orchestrator directly, using `orchestrator-address` from the
+  handoff's frontmatter when present — a terse pointer only ("task complete, see PROGRESS.md",
+  "blocked, see Blockers section"), never a substitute for the progress document and never
+  carrying substantive content itself (see "aoe as a Backup/Live Communication Channel" above)
 - Records decisions, progress, blockers, questions in progress document (NOT in memory)
 - May request handoff updates for fundamental changes
 - **Does NOT archive** — leave both files in `active/` when done; the orchestrating session archives after verifying
