@@ -23,10 +23,15 @@ INDEX_PATH="$(scip_index_path "$REPO_ROOT")"
 
 mkdir -p "$CACHE_DIR"
 
-# Remove any index left over from a prior run first — otherwise a silent failure this
-# run (scip-java exits 0, writes nothing) would be masked by yesterday's stale file
-# still passing the existence check below.
-rm -f "$INDEX_PATH"
+# Note whether an index already exists, and from when — deliberately not deleted up
+# front. A genuine scip-java/build crash (nonzero exit) aborts the script right here via
+# `set -e`, before either check below ever runs, so any previously valid index survives
+# that failure mode untouched. The checks below instead catch the *other* failure mode
+# this script exists for: scip-java exiting 0 having done nothing.
+PREVIOUS_MTIME=""
+if [[ -f "$INDEX_PATH" ]]; then
+  PREVIOUS_MTIME="$(scip_mtime_epoch "$INDEX_PATH")"
+fi
 
 echo "Indexing $(basename "$REPO_ROOT")..."
 echo "(this runs a full build under the hood — e.g. 'mvn clean verify -DskipTests' — not a fast operation)"
@@ -37,6 +42,14 @@ if [[ ! -f "$INDEX_PATH" ]]; then
   echo "scip-java exited 0 but did not write an index to $INDEX_PATH — indexing silently failed." >&2
   echo "This usually means scip-java's automatic build-tool configuration never took effect for this" >&2
   echo "repo — see SKILL.md's Known Constraints section for confirmed causes and workarounds." >&2
+  exit 1
+fi
+
+if [[ -n "$PREVIOUS_MTIME" ]] && [[ "$(scip_mtime_epoch "$INDEX_PATH")" == "$PREVIOUS_MTIME" ]]; then
+  echo "" >&2
+  echo "scip-java exited 0 but left $INDEX_PATH unchanged from a prior run — indexing silently" >&2
+  echo "failed this time (the file on disk is stale, not fresh). See SKILL.md's Known Constraints" >&2
+  echo "section for confirmed causes and workarounds." >&2
   exit 1
 fi
 

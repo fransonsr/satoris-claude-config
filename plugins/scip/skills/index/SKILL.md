@@ -106,10 +106,12 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
   heavyweight database, not navigation). Neither belongs in this skill.
 - **`scip-java index` can exit 0 and print "Index written to..." while writing nothing at all** —
   confirmed against a real repo (`sls-bi-worker` in the Records Platform fleet). `run`/`refresh`
-  (`index.sh`) removes any index left over from a prior run before invoking `scip-java`, then
-  checks that the output file actually exists before reporting success and exits
-  non-zero with a clear error if it doesn't — but the underlying cause is worth knowing if you hit
-  it on a different repo, since the fix here only makes the failure loud, not go away. Two distinct,
+  (`index.sh`) now checks that the output file both exists and actually changed (by mtime) since
+  before this run started, exiting non-zero with a clear error otherwise — deliberately not by
+  deleting any prior index up front, so a genuine `scip-java`/build crash (a different failure mode
+  from the one this checks for) can't destroy a previously valid index. But the underlying cause is
+  worth knowing if you hit this on a different repo, since the check here only makes the failure
+  loud, not go away. Two distinct,
   confirmed causes, found by reading scip-java's own source
   (`MavenBuildTool.kt`/`Embedded.kt`/`custom-javac.sh`/`InjectScipOptions.java` in
   `scip-code/scip-java`) rather than its docs — the docs describe `<compilerArgs>` injection as the
@@ -159,9 +161,11 @@ condition containment checks, role labeling, index-cache staleness) with real ca
 `scip print --json` fixtures where possible. `scripts/test_scip_script_contracts.py` exercises the
 orchestration scripts (`common.sh`, `status.sh`, `cleanup.sh`, `setup.sh`'s already-installed fast
 path, `index.sh`, `query.sh`) against real or realistic fixtures, including `index.sh`'s
-failure-detection logic against a stub `scip-java` that exits 0 but writes nothing — it deliberately
-excludes a real `scip-java` build and `setup.sh`'s actual install path, since both require a real
-network/build and belong in manual end-to-end verification instead.
+failure-detection logic against a stub `scip-java` — covering a first-ever silent failure, the same
+failure masked by a stale index left over from a prior run, a genuine build crash that must leave a
+prior valid index untouched, and a genuinely successful refresh that replaces stale content — it
+deliberately excludes a real `scip-java` build and `setup.sh`'s actual install path, since both
+require a real network/build and belong in manual end-to-end verification instead.
 
 ```bash
 cd "${CLAUDE_PLUGIN_ROOT}/skills/index/scripts" && python3 -m pytest -v
