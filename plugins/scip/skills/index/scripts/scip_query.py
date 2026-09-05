@@ -43,14 +43,22 @@ def normalize_range(occ: dict):
     found empirically by inspecting real `scip print --json` output, not documented
     anywhere — don't trust the .proto schema's implied JSON shape without re-checking
     real CLI output if the `scip` version changes.
+
+    Every sub-field is read with a 0 default because protobuf JSON omits zero-valued
+    scalars entirely: a symbol starting at column 0 has no `start_character` key, and one
+    on the file's first line has no `line`/`start_line` key. Indexing these directly
+    raises KeyError on ordinary input — observed on a real records-platform-mcp index,
+    where 86 of 22647 occurrences omit `start_character`.
     """
     typed = occ.get("TypedRange", {})
     if "SingleLineRange" in typed:
         r = typed["SingleLineRange"]
-        return r["line"], r["start_character"], r["line"], r["end_character"]
+        line = r.get("line", 0)
+        return line, r.get("start_character", 0), line, r.get("end_character", 0)
     if "MultiLineRange" in typed:
         r = typed["MultiLineRange"]
-        return r["start_line"], r["start_character"], r["end_line"], r["end_character"]
+        return (r.get("start_line", 0), r.get("start_character", 0),
+                r.get("end_line", 0), r.get("end_character", 0))
     r = occ.get("range", [])
     if len(r) == 3:
         return r[0], r[1], r[0], r[2]

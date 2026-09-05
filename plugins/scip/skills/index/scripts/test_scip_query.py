@@ -49,6 +49,42 @@ def test_multi_line_range_uses_start_and_end_line():
     assert normalize_range(occ) == (9, 4, 21, 1)
 
 
+def test_single_line_range_omits_start_character_when_it_is_zero():
+    """Protobuf JSON drops zero-valued scalars, so a symbol at column 0 has no
+    `start_character` key at all. Verbatim shape from `scip print --json` on a real
+    records-platform-mcp index, where 86 of 22647 occurrences look like this."""
+    occ = {"TypedRange": {"SingleLineRange": {"line": 13, "end_character": 7}}}
+    assert normalize_range(occ) == (13, 0, 13, 7)
+
+
+def test_single_line_range_omits_line_when_it_is_zero():
+    """A symbol on the file's first line (line 0) has no `line` key."""
+    occ = {"TypedRange": {"SingleLineRange": {"start_character": 4, "end_character": 11}}}
+    assert normalize_range(occ) == (0, 4, 0, 11)
+
+
+def test_multi_line_range_omits_start_character_when_it_is_zero():
+    occ = {"TypedRange": {"MultiLineRange": {
+        "start_line": 9, "end_line": 21, "end_character": 1,
+    }}}
+    assert normalize_range(occ) == (9, 0, 21, 1)
+
+
+def test_multi_line_range_omits_start_line_when_it_is_zero():
+    """A declaration spanning from the file's first line has no `start_line` key."""
+    occ = {"TypedRange": {"MultiLineRange": {
+        "start_character": 4, "end_line": 21, "end_character": 1,
+    }}}
+    assert normalize_range(occ) == (0, 4, 21, 1)
+
+
+def test_multi_line_range_omits_end_character_when_it_is_zero():
+    occ = {"TypedRange": {"MultiLineRange": {
+        "start_line": 9, "start_character": 4, "end_line": 21,
+    }}}
+    assert normalize_range(occ) == (9, 4, 21, 0)
+
+
 def test_legacy_three_element_range_array_is_single_line():
     """[line, start_char, end_char] — no TypedRange wrapper at all."""
     occ = {"range": [5, 2, 9]}

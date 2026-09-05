@@ -325,6 +325,74 @@ def test_index_succeeds_and_reports_the_path_when_scip_java_actually_writes_it(t
 # ---------------------------------------------- query.sh
 
 
+def _stub_scip_java_recording_argv(tmp_path):
+    """A stub `scip-java` that writes its own argv to a file for inspection, then behaves
+    like a real successful run (writes the `--output` file) — used to assert on exactly
+    which flags index.sh passes, not just the end result."""
+    stub_dir = tmp_path / "stub-scip-java-argv-bin"
+    stub_dir.mkdir()
+    argv_log = tmp_path / "argv.log"
+    script = stub_dir / "scip-java"
+    script.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        printf '%s\\n' "$@" > "{argv_log}"
+        shift  # drop the "index" subcommand
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --output) echo "fake index bytes" > "$2"; shift 2 ;;
+            *) shift ;;
+          esac
+        done
+        """))
+    script.chmod(0o755)
+    return stub_dir, argv_log
+
+
+def test_index_passes_targetroot_outside_the_repo(tmp_path):
+    """scip-java's default Maven targetroot is <repo>/target/scip-targetroot. In a
+    multi-module reactor whose aggregator POM sorts last, the aggregator's own
+    clean:clean phase deletes <repo>/target *after* the other modules have already
+    compiled and written SCIP shards there — destroying them before aggregation, so
+    scip-java exits 0 having silently produced nothing. Confirmed on a real repo
+    (records-platform-mcp): passing --targetroot outside the repo fixed it. index.sh
+    must always pass an explicit --targetroot under the cache dir, never the default."""
+    repo = init_repo(tmp_path, "reactor-repo")
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    stub_dir, argv_log = _stub_scip_java_recording_argv(tmp_path)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    argv = argv_log.read_text().splitlines()
+    assert "--targetroot" in argv
+    targetroot = argv[argv.index("--targetroot") + 1]
+    assert str(repo) not in targetroot
+    cache_dir = fake_home / ".cache" / "scip" / "reactor-repo"
+    assert targetroot.startswith(str(cache_dir))
+
+
+def test_index_wipes_any_stale_targetroot_before_rebuilding(tmp_path):
+    """The targetroot is intermediate build output, not the final artifact (index.scip
+    is) — unlike index.scip, which index.sh deliberately never deletes up front, a
+    leftover targetroot from an interrupted prior run must not linger into the next
+    build and get mistaken for fresh output."""
+    repo = init_repo(tmp_path, "stale-targetroot-repo")
+    fake_home = tmp_path / "fake-home"
+    cache_dir = fake_home / ".cache" / "scip" / "stale-targetroot-repo"
+    stale_targetroot = cache_dir / "scip-targetroot"
+    stale_targetroot.mkdir(parents=True)
+    (stale_targetroot / "leftover-shard.semanticdb").write_bytes(b"stale shard")
+    stub_dir = _stub_scip_java_dir(tmp_path, write_index=True)
+    env = {**os.environ, "HOME": str(fake_home), "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+    r = run(["bash", INDEX_SH], cwd=repo, env=env)
+
+    assert r.returncode == 0
+    assert not (stale_targetroot / "leftover-shard.semanticdb").exists()
+
+
 def test_query_fails_clearly_when_no_index_exists(tmp_path):
     repo = init_repo(tmp_path, "no-index-for-query")
     fake_home = tmp_path / "fake-home"
