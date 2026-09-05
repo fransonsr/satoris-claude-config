@@ -401,8 +401,8 @@ Set expectations for when the implementing session should stop and ask rather th
      this launch": that conflation is what let three live-dispatched sessions land directly in a
      shared, un-worktreed workspace-root checkout with no worktree question ever asked, which then
      collided with each other on Claude Code's directory-keyed session identity (aoe silently
-     reattached one session's conversation to a different session's — see the aoe
-     shared-directory-session-collision write-up for the mechanism).
+     reattached one session's conversation to a different session's — see
+     `references/aoe-session-collision.md` for the mechanism).
    - Otherwise, existing fleet worktree convention detected at the confirmed path's workspace
      root — check explicitly, e.g. `test -f "<workspace-root>/repos/worktree.sh"` or
      `ls -d "<workspace-root>/repos/"*"-worktrees" 2>/dev/null` for a pre-existing
