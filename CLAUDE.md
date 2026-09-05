@@ -203,6 +203,14 @@ above, generalized to agent-to-agent dispatch — subagents spawned via `Agent`,
 - A useful side effect: reduces how often a persistent/forked-terminal ("tmux-backed") agent is
   actually needed, since a fresh dispatch can reconstruct full context by reading the shared files
   rather than requiring a live process to remember it.
+- **A separate risk, orthogonal to the file-routing guidance above**: if the dispatching session
+  itself is aoe-managed, dispatching `Agent`/`Workflow` subagents risks aoe mis-tracking the
+  *coordinator's own* Claude Code transcript — not a file-routing problem, a session-identity one.
+  Confirmed live against this exact class of session: aoe's live-observation heuristic picked a
+  spent subagent's leftover transcript as "fresher" than the coordinator's real one and silently
+  reattached the coordinator to it. See
+  `plugins/satori/skills/handoff/references/aoe-session-collision.md` for the confirmed mechanism,
+  what does and doesn't mitigate it, and why `aoe session set-session-id` does not help here.
 
 **Concurrent Agents & Shared Mutable State**: guards against two more failure shapes distinct from
 the dispatch-communication issue above — agents racing on scratch files, and a mutation whose
