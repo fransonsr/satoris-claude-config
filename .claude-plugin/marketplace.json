@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "satoris-claude-config",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "Custom Claude Code plugins for Satori's development workflow",
   "owner": {
     "name": "Satori Franson",
