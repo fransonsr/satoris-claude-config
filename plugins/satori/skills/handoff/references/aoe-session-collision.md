@@ -262,5 +262,8 @@ change happens to provide incidentally.
   "aoe-managed coordinator dispatching subagents" case (shape 2).
 - [fs-eng/records-platform-workspace#175](https://github.com/fs-eng/records-platform-workspace/issues/175)
   — the filed issue this investigation traces back to, from `rp-fleet:refit`'s angle. Not modified
-  by this task; Q4's finding is directly relevant to its suggested-fix discussion and should be
-  left as a comment there rather than acted on here.
+  by this task; Q4's finding was posted as a comment there rather than acted on here.
+- [agent-of-empires/agent-of-empires#3773](https://github.com/agent-of-empires/agent-of-empires/issues/3773)
+  — the upstream bug report filed from Q5's finding (aoe already validates a stored sid's
+  existence on disk at launch time, but the live "fresher observation" comparison doesn't check a
+  candidate transcript's first line for the `agent-setting` subagent marker before adopting it).
