@@ -20,8 +20,22 @@ fi
 REPO_ROOT="$(scip_repo_root)"
 CACHE_DIR="$(scip_cache_dir "$REPO_ROOT")"
 INDEX_PATH="$(scip_index_path "$REPO_ROOT")"
+TARGET_ROOT="$CACHE_DIR/scip-targetroot"
 
 mkdir -p "$CACHE_DIR"
+
+# scip-java's default Maven targetroot is <repo>/target/scip-targetroot. In a
+# multi-module reactor whose aggregator POM sorts last (no source of its own), the
+# aggregator's own clean:clean phase deletes <repo>/target *after* the other modules
+# have already compiled and written SCIP shards there — destroying them before
+# aggregation, so scip-java exits 0 having silently produced nothing. Confirmed on
+# records-platform-mcp. Always pointing --targetroot outside the repo (alongside
+# index.scip, under the cache dir) sidesteps this regardless of reactor ordering.
+#
+# Unlike index.scip — the final artifact, deliberately never deleted up front — this is
+# intermediate build output, so wiping any leftover from an interrupted prior run is
+# safe and prevents stale shards from lingering into the next build.
+rm -rf "$TARGET_ROOT"
 
 # Note whether an index already exists, and from when — deliberately not deleted up
 # front. A genuine scip-java/build crash (nonzero exit) aborts the script right here via
@@ -35,7 +49,7 @@ fi
 
 echo "Indexing $(basename "$REPO_ROOT")..."
 echo "(this runs a full build under the hood — e.g. 'mvn clean verify -DskipTests' — not a fast operation)"
-( cd "$REPO_ROOT" && scip-java index --output "$INDEX_PATH" )
+( cd "$REPO_ROOT" && scip-java index --output "$INDEX_PATH" --targetroot "$TARGET_ROOT" )
 
 if [[ ! -f "$INDEX_PATH" ]]; then
   echo "" >&2

@@ -79,11 +79,13 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
 
 ## Known Constraints
 
-- **Maven-only, validated.** The plain `scip-java index --output <path>` invocation — no
-  module-scoping flags — was validated against a single-module repo and a 6-module Maven reactor.
-  Gradle repos are auto-detected by `scip-java` per its own docs, but that path is **unverified
-  here**. If `run`/`refresh` fails on a Gradle repo, treat it as a real gap, not something to paper
-  over with an untested flag — surface the failure rather than guessing at Gradle-specific flags.
+- **Maven-only, validated.** The `scip-java index --output <path> --targetroot <cache-dir>/scip-
+  targetroot` invocation — no module-scoping flags — was validated against a single-module repo, a
+  6-module Maven reactor, and a 3-module reactor with a last-sorted aggregator (see the third
+  silent-failure cause below for why `--targetroot` is always passed explicitly). Gradle repos are
+  auto-detected by `scip-java` per its own docs, but that path is **unverified here**. If
+  `run`/`refresh` fails on a Gradle repo, treat it as a real gap, not something to paper over with
+  an untested flag — surface the failure rather than guessing at Gradle-specific flags.
 - **No module-scoping flags by default, on purpose.** Adding `-pl`/`-am` "just in case" would
   misfire on repos with a different module layout than the ones tested. Only add them if the plain
   invocation genuinely fails, and say so explicitly if it does.
@@ -111,7 +113,7 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
   deleting any prior index up front, so a genuine `scip-java`/build crash (a different failure mode
   from the one this checks for) can't destroy a previously valid index. But the underlying cause is
   worth knowing if you hit this on a different repo, since the check here only makes the failure
-  loud, not go away. Two distinct,
+  loud, not go away. Three distinct,
   confirmed causes, found by reading scip-java's own source
   (`MavenBuildTool.kt`/`Embedded.kt`/`custom-javac.sh`/`InjectScipOptions.java` in
   `scip-code/scip-java`) rather than its docs — the docs describe `<compilerArgs>` injection as the
@@ -148,11 +150,25 @@ src/test/java/org/example/FooTest.java:20:13	reference	scip-java maven . . org/e
     and the multi-line ErrorProne arg collapsed onto one line (temporary, uncommitted, reverted
     after verification), indexing produced a real index — 224 documents, 7,910 definitions, 65,082
     occurrences. Neither fix alone was sufficient; both are needed together.
-  - **These two are what caused `sls-bi-worker`'s failure specifically, not an exhaustive list of
+  3. **A multi-module Maven reactor whose aggregator POM sorts last silently destroys its own
+     output.** `scip-java`'s default Maven targetroot is `<repo>/target/scip-targetroot` — where
+     each module's forked-javac shard accumulates during the build. An aggregator (parent) module
+     with no source of its own still runs Maven's `clean` lifecycle phase like any other module;
+     if the reactor orders it last (as Maven does for a module nothing else depends on), its
+     `clean:clean` deletes `<repo>/target` — shards and all — **after** every real module has
+     already compiled, but **before** `scip-java` gets a chance to aggregate them. The build itself
+     reports `BUILD SUCCESS` throughout; only the missing index reveals anything went wrong.
+     Confirmed on `records-platform-mcp`: the forked wrapper's javac genuinely ran (visible in the
+     build log), yet `~/.cache/scip/records-platform-mcp/index.scip` never appeared. Unlike causes
+     1 and 2 above, **this one is fixed at the skill level, not the repo's** — `index.sh` always
+     passes `--targetroot <cache-dir>/scip-targetroot`, outside the repo entirely, so no reactor
+     ordering can touch it. Verified fixed: the same repo, same plain `index.sh` invocation,
+     produced a real index (documents=76, definitions=3125, occurrences=22647, 3.0M) once this
+     shipped.
+  - **These three are what caused the two failures investigated so far, not an exhaustive list of
     every way this symptom can happen.** If a different repo hits the same "exit 0, no index"
-    symptom and neither `<fork>false</fork>` nor a multi-line `<compilerArgs>` value is present,
-    treat it as a new, undocumented cause rather than assuming one of these two must apply — add
-    it here once confirmed.
+    symptom and none of the above apply, treat it as a new, undocumented cause rather than assuming
+    one of these three must apply — add it here once confirmed.
 
 ## Tests
 
