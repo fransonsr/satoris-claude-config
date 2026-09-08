@@ -1,5 +1,32 @@
 # Address PR Issues Skill - Changelog
 
+## 2026-09-07 - v1.7.9: Axis-Cascade Redesign Churn signal
+
+**Context**: `fs-eng/cc-plugins-java-stack#179` (`starter:logging` mainline-graduation update) ran
+36 `address-pr-issues` rounds before converging. Two functions accounted for a disproportionate
+share of the churn: `check_no_duplicate_target_ref` was redesigned four times across rounds 30-33
+(each redesign fixing the prior round's counterexample while introducing a new one), and a
+dependency/config duplicate-detection model needed 5 successive identity-axis additions (groupId
+→ top-level-vs-profile scope → Maven `<scope>` → springProfile/if-else disjointness →
+classifier/type) across the full 36 rounds. Neither shape matched an existing Step 8 signal:
+Pattern Class Recurrence is about breadth (same bug, new callsite); Mechanism-Level Diminishing
+Returns is about mechanism choice (a heuristic needs a real parser) — but these functions were
+already correct, exact code, not heuristics, so there was no better tool to swap in.
+
+Added a third plateau signal, **Axis-Cascade Redesign Churn** (Step 8): a single function
+*redesigned* (not merely extended) 2+ times within one PR, each redesign fixing the previous
+round's counterexample while introducing a new one on a *different axis* of the same
+multi-dimensional identity/correctness model. Response: stop reactive point-fixing after the
+second redesign, enumerate every axis visible across all prior rounds as one seed list, and do a
+single union-of-every-known-failure-mode redesign instead of a third reactive patch — with an
+explicit escape valve, routed through the existing Convergence Criterion, for when the domain
+proves genuinely open-ended even after a deliberate enumeration pass: scope-cut the remaining axis
+gaps into documented won't-fix/accepted findings and get human/owner review rather than continuing
+indefinitely against an automated reviewer with no natural stopping point. This is what actually
+broke PR #179's loop — the user's own framing ("36 rounds is excessive — why won't this converge?")
+is exactly the trigger this signal now names explicitly, rather than requiring it to be
+independently recognized each time it recurs.
+
 ## 2026-08-31 - v1.7.8: Workspace namespacing, escalation target, doc/code reconciliation
 
 Backfilled 2026-08-31 — this file had stopped at v1.7.6 while two commits changed shipped

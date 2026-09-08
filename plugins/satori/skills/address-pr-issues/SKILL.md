@@ -1850,6 +1850,77 @@ it's a design conversation, not another fix to implement. This mirrors
 round cap — see that skill's Phase E for the same signal viewed from its internal round-cap
 angle.
 
+### Axis-Cascade Redesign Churn
+
+A third plateau signal, distinct from the two above: **Pattern Class Recurrence** is a breadth
+problem (same bug shape, more callsites — sweep wider). **Mechanism-Level Diminishing Returns** is
+a mechanism-choice problem (a heuristic keeps meeting new *kinds* of input — replace it with a real
+parser/tool). This one is neither — it's a single function's own design being reactively patched
+instead of holistically enumerated, and no better underlying tool would fix it, because the
+function is already correct code, not a heuristic standing in for one.
+
+**How to recognize it**: one specific function or predicate — not the whole PR, not a whole
+mechanism — has been **redesigned** (its core logic or signature changed, not just extended with
+one more case) **2+ times** within this PR, and each redesign fixed the *previous* round's
+counterexample while introducing a *new* one the prior design didn't anticipate. Look for this
+shape specifically in any function that decides whether two things are "the same," "colliding," or
+"a duplicate" — these functions frequently reason about a domain with several independent axes
+(e.g., for a dependency coordinate: groupId/artifactId, version, `<scope>`, `<type>`/`<classifier>`;
+for a config-collision check: literal value, profile-activation scope, conditional-branch scope),
+and a round that fixes one axis while leaving the others unconsidered sets up the *next* round's
+counterexample on a different axis — not a new bug class, the same underage domain model.
+
+**Why this happens**: reactive single-axis patching. Each round fixes exactly the counterexample
+the reviewer just found without asking "what is the *full* set of axes this kind of check needs to
+reason about, today?" A function redesigned 3-4 times this way could very plausibly have converged
+in one redesign, had the first fix enumerated every axis already visible instead of reacting to one
+counterexample at a time — the churn is self-inflicted, not evidence the domain itself is
+unbounded (that's the *Mechanism-Level* signal instead; see below for telling the two apart).
+
+**Response**:
+1. Once a single function has been *redesigned* (not merely extended) twice within this PR, stop
+   patching that function reactively — do not attempt a 3rd point-fix against only the latest
+   counterexample.
+2. Enumerate every axis of the identity/correctness model this function reasons about, using every
+   counterexample found so far **across all rounds** (not just the two that triggered this
+   recognition) as the seed list for the enumeration.
+3. Design once against the full enumerated set — a union-of-every-known-failure-mode redesign, not
+   another reactive point-fix — and add a regression test **per axis**, not just for the newest one.
+4. If new axes keep surfacing even *after* a deliberate enumeration pass — this correctness domain
+   is genuinely open-ended, not just under-enumerated — that's the same plateau the Convergence
+   Criterion below names. Present the user the same choice it describes: keep going with one more
+   deliberate full-domain audit across every function reasoning about the same identity model (not
+   just this one instance), or scope-cut the remaining axis gaps into documented won't-fix/accepted
+   findings and get human/owner review instead of continuing indefinitely against an automated
+   reviewer with no natural stopping point.
+
+**Telling this apart from Mechanism-Level Diminishing Returns**: ask whether the function under
+scrutiny is itself a heuristic standing in for a real tool (regex/string-matching approximating
+what a parser would do exactly) or is already exact, correct-by-construction logic reasoning over a
+genuinely multi-dimensional domain. A regex needing a 5th structurally-new extension is the
+Mechanism-Level signal (replace the mechanism). A real disjointness/identity function needing its
+4th full redesign because each fix covered one axis and missed another is this signal (enumerate
+the domain, don't replace the function) — there is no better tool to swap in; the fix is enumerating
+the domain the function already correctly models, just incompletely.
+
+**Example** (cc-plugins-java-stack PR #179, `starter:logging` mainline-graduation update, 36
+review rounds): `check_no_duplicate_target_ref` was redesigned four times across rounds 30-33 —
+round 30 conflated name-collision with gate-defeat (wrong invariant, copied from an unrelated
+check); round 31's count-based redesign was defeated by an element getting double-counted through
+overlapping gate constructs; round 32's "at most one total element" redesign rejected the
+legitimate pattern of two independently-gated elements in provably disjoint profiles; round 33's
+4th design — built explicitly as the union of every failure mode found in rounds 30-32 (every
+element gated by membership, AND no two elements may coexist unless provably disjoint) — finally
+held clean through the rest of the PR. A single pass enumerating gate-defeat, double-counting, and
+legitimate-disjoint-duplicates — all three already visible by round 30 — would very likely have
+reached the round-33 design in one attempt. Separately, that same PR's dependency/config
+duplicate-detection logic needed 5 successive axis additions (groupId → top-level-vs-profile scope
+→ Maven `<scope>` → springProfile/if-else disjointness → classifier/type) across the full 36
+rounds — each addition correct in isolation, each one reopening a function already believed correct
+for a *different* axis. The PR converged only once this was named explicitly and the user chose to
+scope-cut the remaining classifier/type and transitive-`dependencyManagement` gaps into documented
+Known Limitations rather than keep auditing indefinitely.
+
 ### Convergence Criterion
 
 Convergence is measured by cross-file yield, not zero findings. A round's yield is the count

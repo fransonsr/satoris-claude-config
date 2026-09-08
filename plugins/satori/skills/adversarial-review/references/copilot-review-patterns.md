@@ -443,6 +443,17 @@ Common forms:
    function, validated by another): ask "do both sides agree on the format/casing/encoding?"
 4. For every multi-section document: read two sections that describe related behavior and ask
    "do they agree? Could a reader follow both and end up with contradictory actions?"
+5. **Multi-axis identity models**: for every identity/equality/duplicate-detection function that
+   decides whether two "same-looking" things are actually the same (dependency coordinates, config
+   entries, resource identifiers), enumerate every axis this domain is known to vary along — for
+   Maven dependency coordinates: groupId, artifactId, version, `<scope>`, `<type>`, `<classifier>`;
+   for Spring/Logback config-collision checks: literal value, springProfile activation scope,
+   `<if>/<then>/<else>` branch scope. Does the function check every one, or does it silently
+   collapse two axis-distinct values into "the same" (or "colliding") because only a subset of axes
+   happen to be exercised by current tests/fixtures? This gap is easy to introduce incrementally: a
+   function correctly handles the axes known when it was written, then a later round adds awareness
+   of one new axis (e.g. Maven `<scope>`) to *that* function without auditing every other
+   identity/equality function in the same file for the same gap.
 
 **Example — regex too permissive** (Round 10, fleet_runner.py):
 ```python
@@ -490,6 +501,37 @@ def _branch_name(repo_name, jira_ticket=None, today=None):
     if jira_ticket:
         return f"logging-migration/{jira_ticket.strip().upper()}-{slug}-{today}"
 ```
+
+**Example — identity model omits Maven type/classifier** (heuristic 5; PR #179,
+cc-plugins-java-stack, Round 36):
+```python
+# BEFORE (bug): the duplicate-dependency predicate compares only groupId/artifactId/scope — a
+# same-artifact dependency differing only by <classifier> (e.g. a `tests`-classifier jar) is
+# treated as an identical duplicate of the real runtime dependency
+def dependency_matches(dep, group_id, artifact_id):
+    return child_text(dep, "groupId") == group_id and child_text(dep, "artifactId") == artifact_id
+
+# Recorded as an accepted Known Limitation rather than fixed in-round: closing it means also
+# comparing <type>/<classifier>, since two dependencies sharing groupId+artifactId+scope are still
+# DISTINCT artifacts if their classifier/type differ.
+```
+This was the 5th distinct identity axis this same duplicate-detection logic needed across 36
+review rounds (after groupId, top-level-vs-profile scope, Maven `<scope>`, springProfile
+disjointness, and Logback `<if>/<then>/<else>` disjointness) — each addition reopened ground
+already believed correct for a previously-added axis, rather than being caught by enumerating the
+full domain once up front. See also the companion bug this same PR's round 36 review found: a
+gate-validity check (`gated_then_subtrees()`) collected candidate gate properties document-wide
+with no springProfile-scope check at all, so a property declared in a profile provably disjoint
+from where the gated condition lives was still accepted as a real gate — the same "accepts a
+broader domain than intended" shape as this class's existing regex/fall-through examples above,
+just surfaced through a scope axis instead of a value axis.
+
+**Provenance note (heuristic 5)**: empirical — cc-plugins-java-stack PR #179, 36 Copilot review
+rounds extending a Maven-dependency/Spring-config duplicate-detection model one identity axis at a
+time. The existing heuristics above already ask "does this accept exactly the intended domain,"
+but heuristic 5 makes the multi-axis-identity case concrete and actionable: it's easy to satisfy
+every existing heuristic on the axes already known while missing one nobody enumerated yet, and
+that's exactly what happened here across more than 30 rounds before it was named explicitly.
 
 ---
 
@@ -1056,4 +1098,4 @@ last refreshed.
 - Provenance note
 - Relationship to the nearest adjacent class (to prevent overlap drift)
 
-*Last updated: 2026-08-29.*
+*Last updated: 2026-09-07.*
