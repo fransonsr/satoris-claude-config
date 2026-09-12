@@ -154,6 +154,16 @@ above, should be rare. It is not needed for Opus/Sonnet/Haiku work.
   rotating the token in the keyring, any shell/session already running (including an in-progress
   Claude Code session) keeps the stale value until it gets a fresh one. If auth fails right after a
   known-good rotation, suspect a stale shell before suspecting the new token.
+- **SonarQube MCP is a single shared HTTP container, not one-per-session** (fixed 2026-09-12,
+  see `[[aoe-sonarqube-mcp-shared-http-server]]` in memory): the global `mcpServers.sonarqube`
+  entry in `~/.claude.json` points at `http://127.0.0.1:8080/mcp` (container `sonarqube-mcp`,
+  `docker run -d --restart unless-stopped`, mounts `~/github` read-only). Because one server now
+  serves every repo, tools no longer get an auto-detected project key baked in per session — pass
+  `projectKey` explicitly on every project-scoped `mcp__sonarqube__*` call. Resolve it in this
+  order before calling: (1) `sonar.projectKey=` in the repo's `sonar-project.properties`; (2)
+  `projectKey` in `.sonarlint/connectedMode.json`; (3) neither exists → call
+  `search_my_sonarqube_projects` with a query derived from the repo name. Resolve once per session
+  and reuse it rather than re-resolving on every tool call.
 - **`gh` CLI, verifying a just-pushed PR**: `gh pr diff <n>` and plain `gh pr view <n>` can serve
   stale/cached content immediately after a push — confirmed twice in one session, each time reading
   as "the agent hasn't actually pushed yet" when it had. Use the forms that hit the API directly
@@ -211,6 +221,28 @@ above, generalized to agent-to-agent dispatch — subagents spawned via `Agent`,
   reattached the coordinator to it. See
   `plugins/satori/skills/handoff/references/aoe-session-collision.md` for the confirmed mechanism,
   what does and doesn't mitigate it, and why `aoe session set-session-id` does not help here.
+- **Termination discipline — a spawned agent must be `TaskStop`'d, not told to stand down.**
+  Sending a named background `Agent`, a forked agent, or an agent-team teammate a plain
+  `SendMessage` saying it's done/"stand down"/"you can stop now" does not terminate it — the
+  recipient has no tool that turns a plain-text instruction into ending its own process, so it
+  just goes idle in place, still holding its resource slot. Once a spawned agent's work is
+  confirmably finished (its report has been read, or its task is otherwise done), call
+  `TaskStop(task_id=<name>)` directly: pass the agent's name for a named background agent, or
+  `name@team` (or the bare teammate name) for an agent-team teammate — both are accepted directly
+  by `TaskStop`, no lookup needed. The graceful `shutdown_request`/`shutdown_response` handshake
+  `SendMessage` supports is a legitimate alternative when the target should approve its own
+  termination rather than being force-stopped — either is fine, but a bare "please stop" text
+  message alone is not, since nothing then calls the tool that actually ends the process.
+  **Hard exclusion: never terminate an aoe-managed session, by any mechanism.** The persistent,
+  user-visible, tmux-backed sessions in the aoe dashboard are not in scope for this rule at
+  all — not via `TaskStop`, not via aoe's own commands (`aoe session archive`, `aoe remove`), not
+  by killing the underlying tmux pane/process. Terminating one of those is the user's call alone,
+  never an agent's, regardless of how idle or "done" it looks. This bullet governs only the
+  ephemeral subagents/teammates a session spawns for its own work — aoe's top-level session fleet
+  is never a target of it.
+  - **Why:** observed live — a coordinator finishing with a spawned subagent or team sent a
+    plain-text stand-down instruction instead of `TaskStop`, leaving the agent idle-but-alive and
+    consuming resources indefinitely instead of actually terminating.
 
 **Concurrent Agents & Shared Mutable State**: guards against two more failure shapes distinct from
 the dispatch-communication issue above — agents racing on scratch files, and a mutation whose
