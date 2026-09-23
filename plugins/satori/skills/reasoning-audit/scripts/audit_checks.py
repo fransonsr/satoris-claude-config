@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """audit_checks.py — the mechanically decidable lenses of /satori:reasoning-audit.
 
-Decides lenses 3 (citations), 5 (self-dated claims), 6-static (bypassed scripts)
-and 7 (structure conventions). Lenses 1, 2 and 4 need judgment and are left to
-the skill's own reasoning; this script only supplies evidence for them.
+Decides lenses 3 (citations), 5 (self-dated claims), 6-static (bypassed scripts),
+7 (structure conventions) and 7's auto-memory analogue, `memory-contract` (the
+Claude Code memory frontmatter and index contract). Lenses 1, 2 and 4 need
+judgment and are left to the skill's own reasoning; this script only supplies
+evidence for them.
 
 Exit codes are the interface, so the same script serves a hook, a CI job and an
 interactive run without modification:
@@ -24,11 +26,13 @@ Usage:
 
 import argparse
 import datetime
+import io
+import os
 import pathlib
 import re
 import sys
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import yaml
 
@@ -134,13 +138,21 @@ MEMORY_WHY_MARKER = re.compile(r"^\s*\*\*Why\b", re.IGNORECASE | re.MULTILINE)
 MEMORY_HOW_MARKER = re.compile(r"^\s*\*\*How to apply\b", re.IGNORECASE | re.MULTILINE)
 MEMORY_RATIONALE_TYPES = {"feedback", "project"}
 MEMORY_RATIONALE_SAMPLE = 3     # how many filenames to name before "and N more"
-# The harness loads memories by their frontmatter, so an unusable block is not a
-# style problem — the file is inert whatever it contains.
-MEMORY_FRONTMATTER_CONSEQUENCE = {
-    "absent": ("; the harness loads memories by their frontmatter, so this file is "
-               "inert whatever it contains"),
-}
-MEMORY_INDEX_MAX_LINES = 200    # the harness truncates MEMORY.md past this
+# The harness loads memories by their frontmatter, so ANY unusable block — absent,
+# unclosed, invalid YAML, or not a mapping — leaves the file inert. One clause rather
+# than a table keyed by shape, because it is equally true of all four, and the caller
+# owns the separator here exactly as it does for SKILL_FRONTMATTER_CONSEQUENCE.
+MEMORY_FRONTMATTER_CONSEQUENCE = ("the harness loads memories by their frontmatter, so "
+                                  "this file is inert whatever it contains")
+# One wording for the one `_read_text_or_none` failure mode, because two call sites said
+# it in slightly different words and a test pins the distinction that wording carries.
+MEMORY_UNREADABLE_PROBLEM = "could not be read (unreadable, or not decodable text)"
+# An unreadable file's frontmatter is UNKNOWN, not unusable, so it gets its own
+# consequence rather than borrowing the frontmatter one — otherwise the operator is sent
+# to inspect a YAML block in a file that cannot be opened.
+MEMORY_UNREADABLE_CONSEQUENCE = ("nothing about its contents — frontmatter included — "
+                                 "could be checked")
+MEMORY_INDEX_MAX_LINES = 200    # documented budget; no truncation mechanism cited
 MEMORY_ENTRY_MAX_CHARS = 150    # documented as "under ~150" — the tilde is load-bearing
 # Anchored on `](target)` rather than on the whole `[title](target)` shape: a title
 # containing `]` (two real index entries contain brackets) defeats a `\[([^\]]*)\]\(`
@@ -191,9 +203,9 @@ SKILL_FRONTMATTER_CONSEQUENCE = {
 
 def check_frontmatter(path: pathlib.Path) -> List[Finding]:
     """Validate SKILL.md frontmatter against the conventions above."""
-    data, problem, kind = _load_frontmatter(path.read_text(), with_kind=True)
-    if problem is not None:
-        consequence = SKILL_FRONTMATTER_CONSEQUENCE.get(kind)
+    data, problem, kind = _classify_frontmatter(path.read_text(encoding="utf-8"))
+    if problem:
+        consequence = SKILL_FRONTMATTER_CONSEQUENCE.get(kind, "")
         message = f"{problem}; {consequence}" if consequence else problem
         return [Finding(str(path), 1, "frontmatter", message)]
     return _validate_frontmatter_fields(path, data)
@@ -261,7 +273,7 @@ def check_skill_structure(skill_dir: pathlib.Path) -> List[Finding]:
 
     skill_md = skill_dir / "SKILL.md"
     if skill_md.is_file():
-        lines = len(skill_md.read_text().splitlines())
+        lines = len(skill_md.read_text(encoding="utf-8").splitlines())
         if lines > SKILL_MD_MAX_LINES:
             findings.append(Finding(str(skill_md), None, "structure",
                                     f"SKILL.md is {lines} lines (past {SKILL_MD_MAX_LINES}); "
@@ -273,7 +285,7 @@ def check_skill_structure(skill_dir: pathlib.Path) -> List[Finding]:
 
 
 def _check_reference_toc(reference: pathlib.Path) -> List[Finding]:
-    lines = reference.read_text().splitlines()
+    lines = reference.read_text(encoding="utf-8").splitlines()
     if len(lines) <= REFERENCE_TOC_LINES:
         return []
     head = "\n".join(lines[:50]).lower()
@@ -325,6 +337,11 @@ def _walk_prose_lines(text: str):
 
     for lineno, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
+        # `previous` advances on every line, including the ones that `continue` below.
+        # Assigning it only on the fall-through path left the lookback comparing against
+        # a line from before a fence or an Examples block, which suppressed real findings
+        # an arbitrary distance past the illustrative content.
+        was_previous, previous = previous, line
 
         if stripped.startswith("```"):
             in_fence = not in_fence
@@ -345,9 +362,8 @@ def _walk_prose_lines(text: str):
 
         # Check the previous line too: prose wraps, so an "e.g." can introduce a
         # sample that lands on the next line.
-        context = (previous + " " + line).lower()
+        context = (was_previous + " " + line).lower()
         yield lineno, line, any(cue in context for cue in ILLUSTRATIVE_CUES)
-        previous = line
 
 
 def _is_list_item(stripped: str) -> bool:
@@ -378,13 +394,28 @@ def _check_one_citation(path, lineno, cited, terms, root=None) -> List[Finding]:
     if not target.is_file():
         return []
     try:
-        content = target.read_text()
+        content = target.read_text(encoding="utf-8")
     except OSError:
         return []
     return [Finding(str(path), lineno, "citations",
                     f"`{cited}` resolves but does not contain the cited term `{term}` — "
                     "the link works, so nothing looks broken")
             for term in terms if term not in content]
+
+
+def _exists(path: pathlib.Path) -> bool:
+    """Whether a path resolves — for a path built from text this module did not write.
+
+    `Path.exists()` swallows only ENOENT/ENOTDIR/EBADF/ELOOP and ValueError and re-raises
+    every other OSError, ENAMETOOLONG among them, so on a hostile path it raises instead
+    of answering. Every caller here is asking a yes/no question about an unvalidated
+    token — a backticked citation, an index link target — so a path that cannot be
+    answered for is a "no", not a crash.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _resolve_citation(path: pathlib.Path, cited: str,
@@ -397,12 +428,12 @@ def _resolve_citation(path: pathlib.Path, cited: str,
     """
     if cited.startswith("~"):
         expanded = pathlib.Path(cited).expanduser()
-        return expanded if expanded.exists() else None
+        return expanded if _exists(expanded) else None
 
     for base in _search_bases(path, root):
         if "/" in cited:
             for ancestor in (base, *list(base.parents)[:ANCESTOR_SEARCH_DEPTH]):
-                if (ancestor / cited).exists():
+                if _exists(ancestor / cited):
                     return ancestor / cited
             found = _find_by_path_suffix(base, cited)
         else:
@@ -638,7 +669,7 @@ def _reachable_scripts(scripts: List[pathlib.Path], skill_texts: List[str]) -> s
     wrapper_texts = []
     for wrapper in direct:
         try:
-            wrapper_texts.append(wrapper.read_text())
+            wrapper_texts.append(wrapper.read_text(encoding="utf-8"))
         except OSError:
             continue
     indirect = {s for s in scripts
@@ -647,7 +678,7 @@ def _reachable_scripts(scripts: List[pathlib.Path], skill_texts: List[str]) -> s
 
 
 def _collect_skill_texts(root: pathlib.Path) -> List[str]:
-    return [p.read_text() for p in root.rglob("SKILL.md") if p.is_file()]
+    return [p.read_text(encoding="utf-8") for p in root.rglob("SKILL.md") if p.is_file()]
 
 
 def _iter_shipped_scripts(root: pathlib.Path):
@@ -677,10 +708,10 @@ class _MemoryDocument:
     a ~90-file corpus several times over.
     """
     path: pathlib.Path
-    data: Optional[dict]
+    data: dict
     body: str
-    problem: Optional[str]
-    kind: Optional[str]
+    problem: str
+    kind: str
 
     @property
     def declared_type(self):
@@ -689,12 +720,40 @@ class _MemoryDocument:
         Returned raw rather than normalized so a caller reporting a bad value can
         show what was actually written.
         """
-        if self.data is None:
-            return None
         metadata = self.data.get("metadata")
         if isinstance(metadata, dict) and "type" in metadata:
             return metadata["type"]
         return self.data.get("type")
+
+
+def _memory_target_role(target: pathlib.Path) -> str:
+    """What this target IS: "corpus", "index" or "memory". Decided once, here.
+
+    Four branches used to re-derive this from the same two primitives, `is_dir()` and the
+    filename, and the findings half and the notes half derived it separately — two
+    definitions of one identity, which is structurally what round 1's headline bug was
+    made of. One function, one answer, and the role is what every branch dispatches on.
+    """
+    if target.is_dir():
+        return "corpus"
+    return "index" if _is_index_role(target) else "memory"
+
+
+def _is_index_role(target: pathlib.Path) -> bool:
+    """MEMORY.md beside at least one real memory — the harness's own entry list.
+
+    Frontmatter-agnostic on purpose. Making its ABSENCE an admission condition made the
+    "carries frontmatter" finding unreachable on the single-file route, since that is the
+    very input the finding exists to report: one file got two verdicts depending on
+    whether you pointed at it or at its directory. The frontmatter question belongs
+    entirely to `_check_index_integrity`, which is the function that answers it.
+
+    The sibling requirement is what keeps the role evidence-based — the name alone would
+    claim any MEMORY.md anywhere — and the index itself is excluded from supplying that
+    evidence, or a MEMORY.md carrying memory frontmatter would vouch for its own role.
+    """
+    return (target.name == MEMORY_INDEX_NAME
+            and any(_is_memory_file(p) for p in _memory_documents(target.parent)))
 
 
 def memory_notes(target: pathlib.Path) -> List[str]:
@@ -703,12 +762,36 @@ def memory_notes(target: pathlib.Path) -> List[str]:
     Kept off the findings list so they cannot change the verdict: an informational
     item that moves the exit code is a finding wearing a softer word.
     """
-    if not target.is_dir():
-        return [("single-file target: the corpus-level checks did not run — index "
-                 "integrity, orphan detection, duplicate `name` values and wikilink "
-                 "resolution all need the whole directory. Point at the memory "
-                 "directory for those")]
-    return _dangling_wikilink_notes(target)
+    role = _memory_target_role(target)
+    notes = [] if role == "corpus" else _single_file_scope_note(role)
+    if role == "memory":
+        return notes
+
+    index = target if role == "index" else target / MEMORY_INDEX_NAME
+    text = _read_text_or_none(index) if index.is_file() else None
+    if text is not None:
+        notes.extend(_index_budget_notes(index, text))
+    if role == "corpus":
+        notes.extend(_dangling_wikilink_notes(target))
+    return notes
+
+
+def _single_file_scope_note(role: str) -> List[str]:
+    """Name every check that did not run, so `clean` cannot overstate its coverage.
+
+    The list differs by role, and the note built to stop `clean` overstating coverage
+    understated it twice: first by omitting the rationale convention, then — for the new
+    index route — by omitting that an index target never opens the memories beside it,
+    so the per-file contract runs on nothing at all.
+    """
+    skipped = ["orphan detection", "duplicate `name` values",
+               "the Why/How-to-apply convention", "wikilink resolution"]
+    if role == "index":
+        skipped.append("the per-file contract on the memories beside it")
+    else:
+        skipped.insert(0, "index integrity")
+    return [f"single-file target: {', '.join(skipped)} did not run — each needs the "
+            "whole directory. Point at the memory directory for those"]
 
 
 def _dangling_wikilink_notes(directory: pathlib.Path) -> List[str]:
@@ -742,7 +825,7 @@ def _known_link_targets(documents: List[_MemoryDocument]) -> set:
     known = set()
     for document in documents:
         known.add(document.path.stem)
-        name = (document.data or {}).get("name")
+        name = document.data.get("name")
         if isinstance(name, str):
             known.add(name)
     return known
@@ -759,9 +842,85 @@ def check_memory_contract(target: pathlib.Path) -> List[Finding]:
     A directory is a corpus and gets the corpus-level checks too; a single file
     gets only what can be decided from that file alone.
     """
-    if target.is_dir():
+    role = _memory_target_role(target)
+    if role == "corpus":
         return _check_memory_corpus(target)
+    if role == "index":
+        return _check_index_document(target)
     return _check_memory_document(_load_memory_document(target))
+
+
+def _check_index_document(index: pathlib.Path) -> List[Finding]:
+    """The index, audited as an index rather than as a memory.
+
+    The two rules are genuine opposites: a memory must carry frontmatter, an index must
+    not. Handing MEMORY.md to the per-file contract therefore reported it for the one
+    property that made it an index, on the one file the harness certainly loads.
+
+    Role is decided by `_is_index_role`, on the filename plus a real memory sibling, and
+    deliberately not on whether frontmatter is present: that question is this branch's to
+    answer, so making its answer an admission condition is what made the finding
+    unreachable here in the first place.
+
+    No unreadable guard: every route here decoded this file during classification, so the
+    only way to a read failure is a race between the two, and `main`'s own handler turns
+    that into CANNOT_CHECK. An unfalsifiable guard was rejected for the same reason
+    `_lacks_rationale`'s dead branch was deleted rather than tested.
+    """
+    return _check_index_integrity(index, index.read_text(encoding="utf-8"))
+
+
+def _check_index_integrity(index: pathlib.Path, text: str,
+                           memory_count: Optional[int] = None) -> List[Finding]:
+    """Everything decidable from the index's own claims, shared by both entry points.
+
+    Its claims are: whether it carries frontmatter, whether it lists any entries at all,
+    and whether each entry it lists resolves beside it. Not "from the index file alone" —
+    resolution reads the filesystem around it — so `text` must be the contents of
+    `index`, because entries resolve against `index.parent`.
+
+    Sharing is the point rather than a convenience: the entry-less test lived in the
+    corpus path only, so the single-file branch could not tell an index from a
+    hand-written status document and returned `clean` on one that loads nothing.
+
+    Orphan detection is deliberately NOT here: a dead entry is a claim the index itself
+    makes, while an orphan is a file the index omits, which needs the corpus to see.
+    `memory_count` is the corpus's one enrichment — whether the index is entry-less is
+    decidable from `text`, but how many memories that strands is not.
+    """
+    findings = []
+    if text.startswith("---"):
+        findings.append(Finding(str(index), 1, "memory-contract",
+                                f"{MEMORY_INDEX_NAME} carries frontmatter, but it is an "
+                                "index, not a memory; the harness loads it as the entry "
+                                "list"))
+    targets = _index_link_targets(text)
+    if not targets:
+        findings.append(_entry_less_index_finding(index, memory_count))
+    findings.extend(_check_dead_index_entries(index, targets))
+    return findings
+
+
+def _entry_less_index_finding(index: pathlib.Path,
+                              memory_count: Optional[int]) -> Finding:
+    """One root cause, not N symptoms: a file named MEMORY.md need not be an index at
+    all. The bulk-export corpus's is a hand-written project-status document.
+
+    The corpus entry point knows how many memories that strands, and says why it is not
+    also listing each of them as an orphan. A single-file target knows neither.
+    """
+    if memory_count:
+        stranded = (f"none of the {memory_count} memories beside it can be loaded into a "
+                    "session. Reporting the cause rather than each file, because it is "
+                    "one problem")
+    else:
+        stranded = "nothing beside it can be loaded into a session"
+    return Finding(str(index), None, "memory-contract",
+                   f"{MEMORY_INDEX_NAME} contains no entries, so {stranded}")
+
+
+def _index_link_targets(text: str) -> set:
+    return {t for line in text.splitlines() for t in INDEX_LINK.findall(line)}
 
 
 def _check_memory_corpus(directory: pathlib.Path) -> List[Finding]:
@@ -787,25 +946,18 @@ def _check_memory_index(directory: pathlib.Path,
     index = directory / MEMORY_INDEX_NAME
     text = _read_text_or_none(index) if index.is_file() else None
     if text is None:
-        return _unreachable_corpus_finding(directory, documents,
-                                           "there is no readable MEMORY.md")
+        return _unreachable_corpus_finding(
+            directory, documents, f"there is no readable {MEMORY_INDEX_NAME}")
 
-    findings = []
-    if text.startswith("---"):
-        findings.append(Finding(str(index), 1, "memory-contract",
-                                "MEMORY.md carries frontmatter, but it is an index, not "
-                                "a memory; the harness loads it as the entry list"))
-    findings.extend(_check_index_budget(index, text))
+    findings = _check_index_integrity(index, text, memory_count=len(documents))
 
-    targets = {t for line in text.splitlines() for t in INDEX_LINK.findall(line)}
+    targets = _index_link_targets(text)
     if not targets:
-        # One root cause, not N symptoms: a file named MEMORY.md need not be an index
-        # at all. The bulk-export corpus's is a hand-written project-status document.
-        return findings + _unreachable_corpus_finding(
-            directory, documents, "MEMORY.md contains no entries")
+        # `_check_index_integrity` has already named the one root cause; listing every
+        # file as an orphan on top of it would report N symptoms of it.
+        return findings
 
     findings.extend(_check_orphans(directory, documents, targets))
-    findings.extend(_check_dead_index_entries(index, directory, targets))
     return findings
 
 
@@ -832,13 +984,27 @@ def _check_orphans(directory, documents, targets: set) -> List[Finding]:
                else f"{len(orphans)} memories have")
     pronoun = "it" if len(orphans) == 1 else "them"
     return [Finding(str(directory), None, "memory-contract",
-                    f"{subject} no entry in MEMORY.md, so nothing loads {pronoun}: "
+                    f"{subject} no entry in {MEMORY_INDEX_NAME}, so nothing loads "
+                    f"{pronoun}: "
                     f"{', '.join(orphans)}")]
 
 
-def _check_dead_index_entries(index, directory, targets: set) -> List[Finding]:
+def _check_dead_index_entries(index: pathlib.Path, targets: set) -> List[Finding]:
+    """Entries the index claims, that do not resolve beside it.
+
+    `directory` was dropped as a parameter once one caller remained: it always equalled
+    `index.parent`, and an argument that must equal a derivable value invites a future
+    caller to pass something else — entries would then resolve against the wrong
+    directory and produce a plausible wrong list rather than an error.
+
+    An entry that cannot even be stat'd counts as dead, via `_exists`. A malformed entry
+    is precisely what this check exists to report, so it must not abort the run: one
+    over-long link target used to degrade the whole audit to "CANNOT CHECK: <directory>
+    could not be read", losing every other finding and blaming the directory.
+    """
+    directory = index.parent
     dead = sorted(t for t in targets
-                  if _is_local_document(t) and not (directory / t).exists())
+                  if _is_local_document(t) and not _exists(directory / t))
     if not dead:
         return []
     subject = ("1 index entry points" if len(dead) == 1
@@ -851,28 +1017,35 @@ def _is_local_document(target: str) -> bool:
     return target.endswith(".md") and "://" not in target and not target.startswith("#")
 
 
-def _check_index_budget(index: pathlib.Path, text: str) -> List[Finding]:
-    """Length and entry width, as ONE soft-budget observation.
+def _index_budget_notes(index: pathlib.Path, text: str) -> List[str]:
+    """Length and entry width, as ONE soft-budget observation — a note, not a finding.
 
-    Measured 2026-09-16: the real index was 66 lines (well inside the limit) but 63 of
-    those 66 exceeded 150 characters. A check firing on 95% of a working corpus is
-    noise, so this reports a count and the worst case once — never one finding per line.
+    Measured 2026-09-16: the real index was 66 lines (inside the line budget) but 63 of
+    those 66 exceeded 150 characters. The documented rule reads "under ~150 characters"
+    and the tilde is load-bearing — this is a budget, not something the harness enforces.
+    Reported as a finding it moved the exit code, so every real index in the fleet failed
+    on a soft convention and the exit code stopped distinguishing anything.
+
+    Takes `(index, text)` to match `_check_index_integrity`: one convention for the index
+    helpers, and the caller owns the read and the unreadable case exactly once.
     """
     lines = text.splitlines()
     overlong = [len(line) for line in lines if len(line) > MEMORY_ENTRY_MAX_CHARS]
 
     problems = []
     if len(lines) > MEMORY_INDEX_MAX_LINES:
-        problems.append(f"it is {len(lines)} lines, past the {MEMORY_INDEX_MAX_LINES} "
-                        "the harness truncates at, so the tail never loads")
+        problems.append(f"it is {len(lines)} lines, past the documented "
+                        f"{MEMORY_INDEX_MAX_LINES}-line budget (a documented budget, not a "
+                        "measured harness limit)")
     if overlong:
         problems.append(f"{len(overlong)} of {len(lines)} lines exceed the ~"
                         f"{MEMORY_ENTRY_MAX_CHARS}-character entry budget "
                         f"(longest {max(overlong)})")
     if not problems:
         return []
-    return [Finding(str(index), None, "memory-contract",
-                    "MEMORY.md is over budget: " + "; ".join(problems))]
+    return [f"{index.name} is over budget: " + "; ".join(problems)
+            + " — a documented convention, not a harness limit, so it is reported "
+              "here rather than as a finding"]
 
 
 def _check_duplicate_names(directory, documents) -> List[Finding]:
@@ -882,7 +1055,7 @@ def _check_duplicate_names(directory, documents) -> List[Finding]:
     """
     by_name = {}
     for document in documents:
-        name = (document.data or {}).get("name")
+        name = document.data.get("name")
         if isinstance(name, str):
             by_name.setdefault(name, []).append(document.path.name)
     return [Finding(str(directory), None, "memory-contract",
@@ -907,10 +1080,10 @@ def _memory_documents(directory: pathlib.Path) -> List[pathlib.Path]:
 def _load_memory_document(path: pathlib.Path) -> _MemoryDocument:
     text = _read_text_or_none(path)
     if text is None:
-        return _MemoryDocument(path, None, "",
-                               "file could not be read as UTF-8 text", None)
-    data, problem, kind = _load_frontmatter(text, with_kind=True)
-    body = text.split("---", 2)[2] if problem is None else ""
+        return _MemoryDocument(path, {}, "", f"file {MEMORY_UNREADABLE_PROBLEM}",
+                               "unreadable")
+    data, problem, kind = _classify_frontmatter(text)
+    body = text.split("---", 2)[2] if not problem else ""
     return _MemoryDocument(path, data, body, problem, kind)
 
 
@@ -920,10 +1093,12 @@ def _check_memory_document(document: _MemoryDocument) -> List[Finding]:
     An unusable frontmatter block stops the file there: every later check would be
     restating a consequence of the same defect.
     """
-    if document.problem is not None:
-        consequence = MEMORY_FRONTMATTER_CONSEQUENCE.get(document.kind, "")
-        return [Finding(str(document.path), 1, "memory-contract",
-                        f"{document.problem}{consequence}")]
+    if document.problem:
+        # No line number for an unreadable file: `:1` implies a location that was never
+        # parsed, and the reader is being told a line to go and look at.
+        line = None if document.kind == "unreadable" else 1
+        return [Finding(str(document.path), line, "memory-contract",
+                        f"{document.problem}; {_memory_consequence(document.kind)}")]
 
     findings = []
     for field in MEMORY_REQUIRED_FIELDS:
@@ -931,8 +1106,22 @@ def _check_memory_document(document: _MemoryDocument) -> List[Finding]:
             findings.append(Finding(str(document.path), 1, "memory-contract",
                                     f"required field '{field}' is absent"))
     findings.extend(_check_memory_name(document))
+    findings.extend(_check_memory_description(document))
     findings.extend(_check_memory_type(document))
     return findings
+
+
+def _memory_consequence(kind: str) -> str:
+    """Why the file is inert — which is not one answer for every way it can be.
+
+    `kind` is the provenance marker saying WHY a document is unusable, and this is its
+    consumer. Collapsing the per-kind table to a single string widened the frontmatter
+    clause onto a fifth shape it does not fit: a file whose bytes could not be read has
+    an UNKNOWN frontmatter, not an unusable one, and telling the operator otherwise sends
+    them to inspect a YAML block in a file that cannot be opened.
+    """
+    return (MEMORY_UNREADABLE_CONSEQUENCE if kind == "unreadable"
+            else MEMORY_FRONTMATTER_CONSEQUENCE)
 
 
 def _check_memory_name(document: _MemoryDocument) -> List[Finding]:
@@ -955,26 +1144,56 @@ def _check_memory_name(document: _MemoryDocument) -> List[Finding]:
     return []
 
 
+def _check_memory_description(document: _MemoryDocument) -> List[Finding]:
+    """`description` is loaded as text, so a non-string value is a defect to report.
+
+    `name` has been type-checked since the first version; `description` was the one
+    untyped required field on the memory path, while the skill lens type-checks its own
+    two functions away. The classification gate must not be what catches this — refusing
+    to classify a file is a refusal to report it.
+
+    An empty string is deliberately left alone: it is present and it is a string, and
+    there is no evidence in the corpus that it is a problem worth a finding.
+    """
+    description = document.data.get("description")
+    if description is None or isinstance(description, str):
+        return []      # absent is already reported by the required-field loop
+    return [Finding(str(document.path), 1, "memory-contract",
+                    f"description must be a string, "
+                    f"got {type(description).__name__}")]
+
+
 def _check_memory_type(document: _MemoryDocument) -> List[Finding]:
     declared = document.declared_type
-    if _is_memory_type(declared) and _nests_type_under_metadata(document.data):
+    nested = _nests_type_under_metadata(document.data)
+    if _is_memory_type(declared) and nested:
         return []
 
-    allowed = ", ".join(sorted(MEMORY_TYPES))
+    if _is_memory_type(declared):
+        # Valid value, wrong place. Appending the allowed set here read as "'feedback'
+        # ... must be one of: feedback, project, reference, user" on the live corpus —
+        # true, and it misdirects the operator to the value instead of the nesting.
+        return [Finding(str(document.path), 1, "memory-contract",
+                        f"type is declared at the top level as {declared!r}; the "
+                        "contract nests it under `metadata`, and the harness routes "
+                        "memories by `metadata.type`, so a top-level `type:` is not "
+                        "read at all")]
+
     if declared is None:
         detail = "metadata.type is absent"
-    elif not _nests_type_under_metadata(document.data):
+    elif not nested:
         detail = (f"type is declared at the top level as {declared!r}; "
                   "the contract nests it under `metadata`")
     else:
         detail = f"metadata.type is {declared!r}"
+    allowed = ", ".join(sorted(MEMORY_TYPES))
     return [Finding(str(document.path), 1, "memory-contract",
                     f"{detail}. The harness routes memories by this field, so it must "
                     f"be one of: {allowed}")]
 
 
-def _nests_type_under_metadata(data: Optional[dict]) -> bool:
-    metadata = (data or {}).get("metadata")
+def _nests_type_under_metadata(data: dict) -> bool:
+    metadata = data.get("metadata")
     return isinstance(metadata, dict) and "type" in metadata
 
 
@@ -982,11 +1201,16 @@ def _check_rationale_convention(directory: pathlib.Path,
                                 documents: List[_MemoryDocument]) -> List[Finding]:
     """Report the missing Why / How-to-apply convention ONCE, with a count.
 
-    Measured 2026-09-16: 54 of 86 real feedback/project files lack these, because the
+    Measured 2026-09-16: 33 of 86 real feedback/project files lack these, because the
     convention postdates most of the corpus. One finding per file would bury every
     check that actually matters under dozens of style complaints — the same failure
     this skill's own tuning notes record, where 40 findings against correct work were
     cut to 2.
+
+    That 33 is the count under the tolerant match below. A strict `**Why:**` literal
+    measures 54, and the 21-file difference is entirely files that carry their reasoning
+    under variant wording — so 54 is the number a reader re-measuring with the obvious
+    regex would get, and it is the wrong one.
     """
     missing = sorted(d.path.name for d in documents if _lacks_rationale(d))
     if not missing:
@@ -1003,8 +1227,13 @@ def _check_rationale_convention(directory: pathlib.Path,
 
 
 def _lacks_rationale(document: _MemoryDocument) -> bool:
-    if document.problem is not None:
-        return False      # already reported; one defect, one finding
+    """Whether a feedback/project memory is missing its reasoning or its trigger.
+
+    A file whose frontmatter is unusable returns False here through declared_type being
+    None: one defect, one finding, rather than reporting the same file twice. The
+    type-check is also what keeps an unhashable `type:` value out of the set-membership
+    test below, which would raise TypeError rather than answering.
+    """
     if not _is_memory_type(document.declared_type):
         return False
     if document.declared_type not in MEMORY_RATIONALE_TYPES:
@@ -1024,56 +1253,54 @@ def _read_text_or_none(path: pathlib.Path) -> Optional[str]:
     the run in a traceback rather than a clean refusal.
     """
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
 
-def _read_frontmatter(path: pathlib.Path):
-    """Parse a file's frontmatter mapping, or None when there is not one to use.
+def _read_frontmatter(path: pathlib.Path) -> dict:
+    """A file's frontmatter mapping, empty when there is not one to use.
 
-    Collapses "unreadable", "absent", "unclosed", "invalid YAML" and "not a
-    mapping" into a single None, because classification only ever asks whether
-    usable evidence is present. The memory-contract lens distinguishes those
-    cases itself, since for it the difference is the finding.
+    Collapses "unreadable", "absent", "unclosed", "invalid YAML" and "not a mapping"
+    into one empty mapping, because classification only ever asks whether usable
+    evidence is present. The memory-contract lens distinguishes those cases itself,
+    since for it the difference is the finding.
     """
     text = _read_text_or_none(path)
-    return None if text is None else _frontmatter_of(text)
+    return {} if text is None else _frontmatter_of(text)
 
 
-def _frontmatter_of(text: str):
-    """The frontmatter mapping, or None. Discards WHY it failed — see _load_frontmatter."""
-    return _load_frontmatter(text)[0]
+def _frontmatter_of(text: str) -> dict:
+    """The frontmatter mapping, empty if there is not a usable one."""
+    return _classify_frontmatter(text)[0]
 
 
-def _load_frontmatter(text: str, with_kind: bool = False):
-    """Return (mapping, problem[, kind]); exactly one of mapping/problem is non-None.
+def _classify_frontmatter(text: str) -> tuple[dict, str, str]:
+    """Return (mapping, problem, kind); on success problem and kind are empty strings.
 
-    Classification only asks whether usable evidence exists, but both lenses that
-    report on frontmatter need to say which way it is broken, because that difference
-    is the finding. One parse serves all three by keeping the reason rather than
-    discarding it; `kind` lets a caller append the consequence for ITS kind of file,
-    since the same broken block means different things to a skill and to a memory.
+    Both lenses that report on frontmatter need to say which way it is broken, because
+    that difference is the finding, so one parse keeps the reason rather than discarding
+    it. `kind` lets each caller append the consequence for ITS kind of file, since the
+    same malformed block means different things to a skill and to a memory.
+
+    Empty values rather than None on every path: an absent mapping and an empty one lead
+    to the same answer everywhere downstream, and keeping the types unconditional is what
+    lets a type checker verify the callers instead of trusting a docstring precondition.
     """
-    data, problem, kind = _classify_frontmatter(text)
-    return (data, problem, kind) if with_kind else (data, problem)
-
-
-def _classify_frontmatter(text: str):
     if not text.startswith("---"):
-        return None, "file does not open with '---'", "absent"
+        return {}, "file does not open with '---'", "absent"
     parts = text.split("---", 2)
     if len(parts) < 3:
-        return None, "frontmatter block is not closed by a second '---'", "unclosed"
+        return {}, "frontmatter block is not closed by a second '---'", "unclosed"
     try:
         data = yaml.safe_load(parts[1])
     except yaml.YAMLError as exc:
         detail = str(exc).splitlines()[0]
-        return None, f"frontmatter is not valid YAML ({detail})", "invalid-yaml"
+        return {}, f"frontmatter is not valid YAML ({detail})", "invalid-yaml"
     if not isinstance(data, dict):
-        return (None, f"frontmatter parses as {type(data).__name__}, not a mapping",
+        return ({}, f"frontmatter parses as {type(data).__name__}, not a mapping",
                 "not-a-mapping")
-    return data, None, None
+    return data, "", ""
 
 
 def _is_memory_file(path: pathlib.Path) -> bool:
@@ -1084,15 +1311,28 @@ def _is_memory_file(path: pathlib.Path) -> bool:
     `type:` is too weak to stand alone — it is an ordinary key in static-site
     generators — so the legacy shape must also carry `name` and `description`.
     Requiring all three there costs nothing real: both legacy files have all three.
+
+    `name` must be a usable string, not merely present: it is the identity a [[link]]
+    resolves against, and a presence test is satisfied by `name:` with a null value while
+    a null test is satisfied by `name: 42` — either would carry a non-memory file through
+    the gate whose whole purpose is keeping them out.
+
+    `description` is deliberately only required to be PRESENT. Typing it here rejected
+    two different provenances when only one should be rejected: a docs page, which must
+    be refused, and a real but incomplete legacy memory whose `description:` is blank,
+    which the contract check has a purpose-built finding for. A gate that declassifies a
+    broken memory turns a reportable defect into a silent exit-2 refusal of its whole
+    corpus, so the typing lives in `_check_memory_description` where it is reported.
     """
     data = _read_frontmatter(path)
-    if data is None:
+    if not data:
         return False
     metadata = data.get("metadata")
     if isinstance(metadata, dict) and _is_memory_type(metadata.get("type")):
         return True
     return (_is_memory_type(data.get("type"))
-            and all(field in data for field in MEMORY_REQUIRED_FIELDS))
+            and isinstance(data.get("name"), str)
+            and "description" in data)
 
 
 def _is_memory_type(declared) -> bool:
@@ -1102,22 +1342,6 @@ def _is_memory_type(declared) -> bool:
 
 def _holds_memory_files(directory: pathlib.Path) -> bool:
     return any(_is_memory_file(p) for p in sorted(directory.glob("*.md")))
-
-
-def _looks_like_memory_index(path: pathlib.Path) -> bool:
-    """MEMORY.md, carrying no frontmatter, beside at least one real memory.
-
-    The sibling requirement is what keeps this evidence-based: the name alone
-    would classify any MEMORY.md anywhere. It is granted to this one filename
-    only — a stray frontmatter-less note in the same directory never claimed the
-    contract and must not be audited against it.
-    """
-    if path.name != MEMORY_INDEX_NAME:
-        return False
-    text = _read_text_or_none(path)
-    if text is None or text.startswith("---"):
-        return False
-    return _holds_memory_files(path.parent)
 
 
 def classify_target(path: pathlib.Path) -> str:
@@ -1142,7 +1366,7 @@ def classify_target(path: pathlib.Path) -> str:
         return _classify_claude_md(path)
     if _looks_like_eval_suite(path):
         return "eval-suite"
-    if _is_memory_file(path) or _looks_like_memory_index(path):
+    if _is_memory_file(path) or _is_index_role(path):
         return "auto-memory"
     return "unclassified"
 
@@ -1159,7 +1383,7 @@ def _looks_like_eval_suite(path: pathlib.Path) -> bool:
     if "evals" not in {part.lower() for part in path.parts}:
         return False
     try:
-        return _has_results_evidence(path.read_text())
+        return _has_results_evidence(path.read_text(encoding="utf-8"))
     except OSError:
         return False
 
@@ -1174,7 +1398,7 @@ def _has_results_evidence(text: str) -> bool:
 
 
 def _classify_claude_md(path: pathlib.Path) -> str:
-    lowered = path.read_text().lower()
+    lowered = path.read_text(encoding="utf-8").lower()
     project = sum(1 for s in PROJECT_SIGNALS if s in lowered)
     standards = sum(1 for s in STANDARDS_SIGNALS if s in lowered)
 
@@ -1285,18 +1509,35 @@ def _citation_documents(skill_dir: pathlib.Path) -> List[pathlib.Path]:
 
 
 def main(argv=None) -> int:
+    _force_utf8_output()
     args = _parse_args(argv)
-    target = pathlib.Path(args.target)
+    # Expand once, here: a `~` or `$VAR` the shell did not expand (from a hook, a config
+    # file, or a quoted argument) otherwise reports as a missing file rather than as an
+    # unexpanded one, which is a different problem with a different fix.
+    target = pathlib.Path(os.path.expandvars(os.path.expanduser(args.target)))
+    typed = "" if str(target) == args.target else f" (from '{args.target}')"
 
-    if not target.exists():
-        print(f"CANNOT CHECK: {target} does not exist", file=sys.stderr)
+    try:
+        present = target.exists()
+    except OSError as exc:
+        # An unusable argument is REFUSED, not folded into "does not exist": an
+        # expansion long enough to raise ENAMETOOLONG otherwise escaped as a traceback,
+        # whose exit status is 1 — the value the module docstring reserves for FINDINGS.
+        print(f"CANNOT CHECK: {args.target} cannot be examined ({exc})", file=sys.stderr)
+        return CANNOT_CHECK
+    if not present:
+        print(f"CANNOT CHECK: {target}{typed} does not exist", file=sys.stderr)
         return CANNOT_CHECK
 
-    kind = classify_target(target)
+    try:
+        kind = classify_target(target)
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"CANNOT CHECK: {target} could not be classified ({exc})", file=sys.stderr)
+        return CANNOT_CHECK
+
     if kind == "unclassified":
-        print(f"CANNOT CHECK: {target} is unclassified — no positive evidence of a known "
-              "artifact kind (skill frontmatter, project-context markers, or standards "
-              "markers). Skipping rather than guessing a kind.", file=sys.stderr)
+        print(f"CANNOT CHECK: {target} is unclassified — {_unclassified_reason(target)} "
+              "Skipping rather than guessing a kind.", file=sys.stderr)
         return CANNOT_CHECK
 
     try:
@@ -1309,8 +1550,44 @@ def main(argv=None) -> int:
     return _report(target, kind, findings, notes)
 
 
+def _unclassified_reason(target: pathlib.Path) -> str:
+    """Name only the evidence `classify_target` actually looked for on THIS shape.
+
+    A directory is asked two questions; a file is asked six. Listing all of them either
+    way reports reasons that were never evaluated — measured on the live corpus, 11 of 31
+    refused directory scopes were told their project-context and standards markers were
+    missing, neither of which is consulted for a directory. The `*.md` count is there so
+    an empty directory and a directory of non-conforming notes read differently in one
+    line; the old message described both as having no evidence at all.
+    """
+    if target.is_dir():
+        candidates = len(list(target.glob("*.md")))
+        return (f"it holds no SKILL.md, and none of its {candidates} *.md file(s) "
+                "carries memory frontmatter (`metadata.type`, or a legacy top-level "
+                "`type:` with a string `name` and a `description`).")
+    return ("it is not named SKILL.md or CLAUDE.md, has no .py/.sh suffix, carries no "
+            "memory frontmatter, is not MEMORY.md beside a real memory, and is not a "
+            "dated results document under an evals/ directory.")
+
+
+def _force_utf8_output() -> None:
+    """Declare this tool's output encoding instead of inheriting the locale's.
+
+    The input half of this bug was reading files without `encoding=`; this is the
+    output half, and it is just as real: the checker's own finding messages contain em
+    dashes, so under LC_ALL=C (locale encoding ANSI_X3.4-1968) printing a finding
+    raised UnicodeEncodeError — a traceback whose exit status is 1, the value the module
+    docstring reserves for FINDINGS. Found 2026-09-17 while fixing the read side.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # isinstance rather than hasattr: reconfigure() belongs to TextIOWrapper, and
+        # under a redirection either stream may be something else entirely.
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def _report(target: pathlib.Path, kind: str, findings: List[Finding],
-            notes: List[str] = ()) -> int:
+            notes: Sequence[str] = ()) -> int:
     lenses = ", ".join(LENSES_BY_KIND[kind])
     if not findings:
         print(f"clean: {target} (kind: {kind}) — no findings from lenses: {lenses}")
@@ -1325,7 +1602,7 @@ def _report(target: pathlib.Path, kind: str, findings: List[Finding],
     return FINDINGS
 
 
-def _print_notes(notes: List[str]) -> None:
+def _print_notes(notes: Sequence[str]) -> None:
     """Informational output, printed either way and counted neither way."""
     for note in notes:
         print(f"note: {note}")
@@ -1338,7 +1615,8 @@ def _parse_args(argv):
                              "or auto-memory file or directory")
     parser.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS,
                         help=f"re-check window for self-dated claims "
-                             f"(default {DEFAULT_MAX_AGE_DAYS})")
+                             f"(default {DEFAULT_MAX_AGE_DAYS}; not kind-aware — pass 30 "
+                             f"for auto-memory and for model/tool capability content)")
     return parser.parse_args(argv)
 
 
