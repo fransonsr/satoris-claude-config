@@ -163,6 +163,10 @@ WIKILINK = re.compile(r"\[\[([^\]]*)\]\]")
 # real memory bodies in prose as well as in fenced blocks. A shape test excludes them
 # where a fence test alone would not, while still admitting `cc-plugins-java-stack#152`.
 WIKILINK_TARGET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9#._-]*$")
+# An inline code span, matched within one line so an unpaired backtick cannot swallow
+# the rest of the file. Prose that writes the link shape inside backticks is prose ABOUT
+# the notation, not a reference to a memory.
+CODE_SPAN = re.compile(r"`+[^`\n]*`+")
 
 PROJECT_SIGNALS = (
     "## commands", "## architecture", "## key files", "## setup",
@@ -832,8 +836,34 @@ def _known_link_targets(documents: List[_MemoryDocument]) -> set:
 
 
 def _wikilink_targets(body: str) -> List[str]:
-    return [target.strip() for target in WIKILINK.findall(body)
+    return [target.strip() for target in WIKILINK.findall(_prose_without_code(body))
             if WIKILINK_TARGET.match(target.strip())]
+
+
+def _prose_without_code(text: str) -> str:
+    """Body text with fenced blocks and inline code spans removed.
+
+    Found by dogfooding 2026-09-24: a memory whose prose *explained* the link notation,
+    writing the shape inside backticks, was reported as linking to a memory named
+    "link". That is the illustrative-context distinction lenses 3 and 5 already draw,
+    which this extractor never got.
+
+    Fence tracking alone would not be enough — measured on this corpus, most code-span
+    occurrences are inline rather than fenced — so inline spans are stripped too. The
+    stripping is per line and leaves a space behind, so a real link sharing a line with
+    a code span still resolves; losing a real reference would be the worse error, since
+    a dangling link is only informational while a dropped one makes the corpus look
+    better connected than it is.
+    """
+    prose = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            prose.append(CODE_SPAN.sub(" ", line))
+    return "\n".join(prose)
 
 
 def check_memory_contract(target: pathlib.Path) -> List[Finding]:

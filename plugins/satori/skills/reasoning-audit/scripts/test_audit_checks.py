@@ -1895,6 +1895,45 @@ def test_a_dangling_wikilink_is_a_note_and_never_a_finding(tmp_path):
     assert any("not-written-yet" in n for n in notes), notes
 
 
+def test_a_wikilink_shape_inside_an_inline_code_span_is_not_a_link(tmp_path):
+    """Found by dogfooding on 2026-09-24: a memory whose prose *explained* wikilink
+    behaviour, writing the shape inside backticks, was reported as linking to a memory
+    named "link". Prose about the notation is not a reference to a memory — the same
+    illustrative-context problem lenses 3 and 5 already filter for, which the wikilink
+    extractor never got.
+    """
+    memory = memory_corpus(
+        tmp_path / "memory",
+        "# Memory Index\n\n- [Kept](project-kept.md) — hook\n",
+        project_kept="Named in prose rather than as a `[[link]]` here.\n\n" + RATIONALE,
+    )
+    assert memory_notes(memory) == []
+
+
+def test_a_wikilink_shape_inside_a_fenced_block_is_not_a_link(tmp_path):
+    memory = memory_corpus(
+        tmp_path / "memory",
+        "# Memory Index\n\n- [Kept](project-kept.md) — hook\n",
+        project_kept="Example:\n\n```\nSee [[some-example]] for the shape.\n```\n\n" + RATIONALE,
+    )
+    assert memory_notes(memory) == []
+
+
+def test_a_real_wikilink_beside_a_code_span_on_one_line_still_counts(tmp_path):
+    """The guard against over-stripping. Losing a real link is worse than counting a
+    fake one: a dangling link is informational, but a silently dropped reference makes
+    the corpus look more connected than it is.
+    """
+    memory = memory_corpus(
+        tmp_path / "memory",
+        "# Memory Index\n\n- [Kept](project-kept.md) — hook\n",
+        project_kept="Unlike `[[ignored]]`, see [[really-missing]].\n\n" + RATIONALE,
+    )
+    notes = memory_notes(memory)
+    assert any("really-missing" in n for n in notes), notes
+    assert not any("ignored" in n for n in notes), notes
+
+
 def test_a_wikilink_naming_a_filename_stem_is_not_dangling(tmp_path):
     """Real mismatch: feedback-wsl-parallel-agent-crash.md carries
     `name: wsl-parallel-agent-crash`, and links are written to the STEM.
