@@ -1,6 +1,6 @@
 ---
 name: reasoning-audit
-description: "Periodically re-examine an existing CLAUDE.md, skill, or script for reasoning that has gone stale — thresholds with no evidence, capability claims overtaken by reality, citations that no longer resolve, guards that stopped guarding, and scripts being bypassed. Use when asked to audit, re-check, refresh, or tighten up instructions/skills/scripts, when asked whether guidance is still current, or on a periodic maintenance pass. Read-only and diagnostic: it reports and recommends, and never edits the target."
+description: "Periodically re-examine an existing CLAUDE.md, skill, script, or Claude Code auto-memory corpus for reasoning that has gone stale — thresholds with no evidence, capability claims overtaken by reality, citations that no longer resolve, guards that stopped guarding, and scripts being bypassed. Use when asked to audit, re-check, refresh, or tighten up instructions/skills/scripts, when asked whether guidance is still current, or on a periodic maintenance pass. Read-only and diagnostic: it reports and recommends, and never edits the target."
 argument-hint: '[target-path | plugin-name | --fleet]'
 ---
 
@@ -52,12 +52,29 @@ it poorly for missing build commands and architecture sections it correctly shou
 | **standards CLAUDE.md** | Documents principles, process mandates, tool/model policy, review checklists; applies across projects; often a symlink target (check with `readlink -f`) |
 | **skill** | Has `SKILL.md` with `name`/`description` frontmatter |
 | **eval-suite** | Markdown under an `evals/` directory carrying per-case validation dates or a results table |
+| **auto-memory** | A `.md` whose frontmatter declares `metadata.type` as one of `user`/`feedback`/`project`/`reference`; a directory holding at least one such file |
 | **script** | Executable under a `scripts/` dir, or referenced as one from a SKILL.md |
 
 The `eval-suite` kind was added 2026-08-29 after an eval of this skill surfaced that **the artifact
 family which motivated it was the one kind it could not classify** — lens 5 named the
 `Verified: <date> - PASS` convention while Step 0 refused any file that used it. A stale eval suite
 is the founding example; it should not require a judgment workaround to audit.
+
+The `auto-memory` kind was added 2026-09-16 for the same reason, one artifact family later.
+Claude Code auto-memory (`~/.claude/projects/<launch-path>/memory/`) could not be classified at
+all, so a 128-file fleet-wide memory audit was blocked behind the applicability gate — the gate
+refusing exactly the corpus that most needed reading. Two real shapes qualify: the modern
+`metadata.type`, and an older top-level `type:` which must also carry `name` and `description`,
+since a bare `type:` is an ordinary key in static-site generators.
+
+**Two different questions, two different rules — do not collapse them.** Deciding the *kind* is
+evidence-based: a directory qualifies because a file inside it carries memory frontmatter.
+Identifying `MEMORY.md`'s *role inside* an already-classified corpus is name-based, because that
+filename is the harness's own contract — it is the file the harness loads. So a frontmatter-less
+file classifies only when it is named `MEMORY.md` **and** a sibling supplies the evidence. A stray
+note beside the memories never claimed that filename's contract, so it is never audited as an
+index — but pointed at the directory, every `*.md` in it is read, and a note with no frontmatter is
+reported as inert. That finding is the point, not a false positive.
 
 **If classification is undetermined, skip that target and say so** — report it as
 `unclassified`, name what evidence was missing, and move on. This is an applicability gate: a rule
@@ -96,7 +113,13 @@ Verify against a live source — the tool's own schema, `--help`, a web search �
 checked. An unverified suspicion is reportable as such; state it as unverified.
 
 ### 3. Citations that no longer resolve — `M`
-*Applies to: all kinds.*
+*Applies to: the file-path form on every kind except auto-memory; the `[[wikilink]]` form on auto-memory only.*
+
+For auto-memory the file-path half is **out of scope**: memory cites paths in other repositories by
+nature, so the cross-repo limitation below would become the dominant output — the
+40-findings-of-correct-work failure this skill's own tuning notes record. The wikilink half is
+covered under `memory-contract`, and a dangling `[[link]]` is reported as information, never a
+finding: the documented contract says it marks something worth writing later.
 
 A reference to another file, section, heading, or field that either does not exist, or exists and
 does not say what it is cited as saying. The second form is the dangerous one: the link resolves,
@@ -123,8 +146,10 @@ answer is "never," it has not demonstrated it can.
 *Applies to: all kinds.*
 
 Text carrying its own validation date or re-check window, where that window has passed. Recognized
-phrasings: a bare "Verified"/"Last Updated"/"Last Tested" plus an ISO date; a results-table row with
-a date cell; a dated section header like `## Key Improvement (2026-04-17)`; and — added
+phrasings are a verification keyword beside an ISO date — the checker's `DATED_CLAIM` pattern
+holds the list. Each keyword is word-anchored, so `unverified 2026-01-01` does not match
+`verified`; the accepted cost is that `reconfirmed` does not match either. Also recognized: a
+results-table row with a date cell; a dated section header like `## Key Improvement (2026-04-17)`; and — added
 2026-08-29 — two shapes the first version missed entirely:
 
 - **A results row with no date at all** (`| case | — | Pending |`). This is *worse* than stale: the
@@ -142,6 +167,16 @@ governs: "Verified X, re-verified Y" is a maintained claim, not a stale one.
 repo's own standard for model claims ("age in weeks, not months"). Pass `--max-age-days 30` — or
 tighter — when auditing model/tool capability content, or lens 5 will report clean on a section its
 own file says decays in weeks.
+
+**For auto-memory, always pass `--max-age-days 30`** — memory is dense with exactly that content:
+tool paths, model routing, CLI behaviour. The checker's default is 90 and is not kind-aware, so a
+default run under-reports this kind by design.
+
+The date keywords were widened 2026-09-16 (`measured`, `confirmed`, `observed`, `re-checked`,
+`rechecked`, `re-validated`, `as of`) because memory dates its claims overwhelmingly in those words
+and this lens — the headline lens for that kind — was near-blind on it. The change affects every
+kind; measured on this repo, it removed no findings from any other artifact and added none once
+illustrative content was excluded.
 
 ### 6. Scripts that exist but are bypassed — `M` (static) + `J` (behavioral)
 *Applies to: skills, scripts.*
@@ -165,7 +200,7 @@ needs transcript evidence and is out of scope for a static pass; recommend `skil
 analyzer for that.
 
 ### 7. Structure conventions — `M`
-*Applies to: skills.*
+*Applies to: skills; realized for auto-memory as the `memory-contract` lens.*
 
 Checked against the conventions in `references/skill-conventions.md`, which records where each
 limit came from and when it was verified. Frontmatter validity (including strict YAML parse),
@@ -174,6 +209,46 @@ limit came from and when it was verified. Frontmatter validity (including strict
 
 Treat that reference file's own limits as subject to lens 1 — they are copied numbers, and one
 source we copied from was itself stale (see the file's provenance notes).
+
+### 7a. `memory-contract` — lens 7 for auto-memory — `M`
+*Applies to: auto-memory only.*
+
+Memory has its own contract, and the skill conventions do not transfer: real memory frontmatter
+carries extra `metadata` keys the harness writes (`node_type`, `originSessionId`, `modified`), and
+descriptions containing `<`/`>` are fine where a skill's would not be. Checking memory against the
+skill rubric manufactures findings against correct work, so this lens is built separately.
+
+Per file: frontmatter present, valid YAML and a mapping (otherwise one finding, and that file stops
+there); `name` and `description` present and string-valued; `metadata.type` present and in the
+allowed set; `name` kebab-case. **`name` is deliberately not required to match the filename stem** — 78 of ~211 real
+files legitimately differ, so that rule would produce 78 false findings.
+
+Per corpus: `MEMORY.md` carries no frontmatter and lists at least one entry; every memory has an
+index entry; every index entry resolves; no two files share a `name`; and `feedback`/`project`
+memories carry a `**Why:**` and a `**How to apply:**` line. Index length and entry width are
+checked too, but as a note rather than a finding — see the table below.
+
+**Normative source.** 7a leans on the phrase "the contract" repeatedly, so: the contract is the
+Claude Code memory-system rules the harness itself applies. Unlike lens 7, which routes its limits
+through `references/skill-conventions.md` with a source and a verification date for each, **there
+is no file in this repo that documents these**. Every threshold the checker carries for this kind
+is therefore a copied constant under lens 1 — re-derive it from the harness's own memory
+documentation before relying on it in a judgment call.
+
+Reporting shape is load-bearing here, because the counts are large and mostly benign:
+
+| Check | Shape | Why |
+|---|---|---|
+| Orphaned memories | One finding, **full filename list** | 28 of 92 in one real scope. One problem, but each orphan is an individual keep-or-delete call, so the list is the payload |
+| `MEMORY.md` has no entries | One root-cause finding, **instead of** the orphan list | A file named `MEMORY.md` need not be an index; one real scope's is a hand-written status doc. N symptoms would misdescribe one cause |
+| Missing `**Why:**`/`**How to apply:**` | One aggregate finding with a count | 33 of 86 real files, because the convention postdates the corpus. Matched on the bold marker with variant wording allowed (`**Why this matters**` counts) — demanding the literal string would report 21 files that plainly do carry their reasoning |
+| Index length and entry width | **Informational, never a finding** — count plus worst case | Nearly every line of a healthy real index breaches the ~150-character budget, so a finding here would mean no real index could ever exit 0 |
+| Dangling `[[links]]` | **Informational, never a finding** | The contract says a dangling link marks something worth writing later. Resolved against `name:` values *or* filename stems, since authors link by the stem |
+
+A single-file target says which checks did not run, so `clean` never overstates what was examined.
+Which checks those are depends on the file: a memory gets the per-file contract and loses index
+integrity, a `MEMORY.md` gets index integrity and never opens the memories beside it. Both lose
+the corpus-wide checks.
 
 ---
 
@@ -189,6 +264,8 @@ explicitly and name the invocation, so the user decides rather than discovering 
 | A skill's behavior claims are unverified, or "does this still beat not having it" | `claude plugin eval --threshold 0.9 --ablation with-without` | Real sessions + LLM grading; the only mechanism here with a non-zero exit code, and the only one that can produce a no-plugin baseline delta |
 | A bash script with no static analysis | `shellcheck <path>` | No bash LSP exists in this environment; shellcheck is installed |
 | A finding that is an actual code defect in a script | `/satori:pre-pr-audit` or `/satori:adversarial-review` | Those own diff-scoped defect review |
+| An auto-memory file in the legacy top-level `type:` shape, or with no frontmatter at all | **Migrate the file's frontmatter** — nest `type:` under `metadata:`, or add the block | The finding is a migration prompt, not a false positive: the shape classifies so that it can be reported. Only 2 of 211 real files are affected |
+| A stale, duplicate, superseded or orphaned auto-memory entry | **Edit the memory files directly** (and `MEMORY.md` with them) | There is no skill for this, and **not** `claude-md-improver` — its rubric is for CLAUDE.md files and would push memory toward the wrong shape, the same mistake that entry's own warning guards against for standards CLAUDE.md |
 
 Recommend at most what the findings justify. `claude plugin eval` spawns real sessions and draws
 down the token budget; it earns its cost on a skill whose behavior is genuinely in question, not
@@ -240,6 +317,7 @@ from what the skill intends to check:
   LENSES      7 applied, 0 skipped
   CHECKER     scripts/audit_checks.py — exit 1 (findings)
   FINDINGS    mechanical 3   judgment 2   unclassified 0
+  NOTES       2 (budget, dangling links) — reported, never counted toward the verdict
   ESCALATIONS skill-creator (1: triggering unverified)
   NEXT        review the 3 mechanical findings below; none are auto-fixed
 ```
@@ -258,11 +336,16 @@ why. "Clean" without that qualifier overstates what a static pass can establish.
   to resolve against. Those findings are real in the sense that the path cannot be verified from
   here, and noise in the sense that nothing is wrong. Triage them as unverifiable rather than
   broken.
-- **Suppression of illustrative paths is heuristic.** The checker skips fenced code blocks,
-  `Examples` lists, and lines carrying phrasing like "e.g." or "a name like" — because the first
-  dogfood run reported 40 findings against one skill, nearly all of them correct work. That
-  tuning cut it to 2. A path introduced illustratively in phrasing not on that list will still
-  be flagged, and a genuinely broken citation inside a code block will be missed.
+- **Suppression of illustrative content is heuristic, and now governs two lenses.** The checker
+  skips fenced code blocks, `Examples` lists, and lines carrying phrasing like "e.g." or "a name
+  like" — because the first dogfood run reported 40 findings against one skill, nearly all of them
+  correct work. That tuning cut it to 2. Extended to lens 5 on 2026-09-16, when the widened date
+  keywords reached a `(measured <date>)` baseline inside the example handoff document that
+  `handoff/SKILL.md` instructs the reader to write, and reported it twice as a 154-day-old claim.
+  The cost runs both ways in both lenses: content introduced illustratively in phrasing not on
+  that list is still flagged, and a genuinely broken citation — or a genuinely stale date, an
+  un-run results row, or a thicket of undated novelty markers — written inside a code block is
+  missed.
 - **Static only.** Lens 6's behavioral half and any "is this skill actually being used correctly"
   question need transcript or run evidence this pass does not gather.
 - **Lens 1 and 2 are judgment lenses**, so two runs over an unchanged target can disagree. The
