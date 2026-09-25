@@ -1,40 +1,47 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-09-03
+**Last Updated**: 2026-09-25
 **Scope**: All projects in this environment
 
 ## Environment Configuration
 
 **Operating System**: WSL (Windows Subsystem for Linux)
 
+**Terminal links**: Windows Terminal (with tmux inside) auto-links only URLs visible as text.
+Claude Code renders `[text](url)` as the label alone, so the link can't be clicked or copied.
+When a reader needs to open a PR, issue, or page from terminal output, print the bare URL.
+
 ## Model Access & Selection
 
 **License:** Claude Enterprise (migrated off Amazon Bedrock, June 2026). All current
-Claude models are authorized — Fable 5, Opus 5, Sonnet 5, Haiku 4.5, etc. The old Bedrock-era
+Claude models are authorized — Fable 5.1, Opus 5.5, Sonnet 5, Haiku 4.5, etc. (Sonnet 5.5 and
+Haiku 5.5 were announced 2026-09-22 for "the coming weeks"). The old Bedrock-era
 restriction pinning agents to Opus 4.6 (and the "Opus 4.7 causes auth errors" / retry-loop
 issue) no longer applies.
 
 **Enterprise rate limits:** there are 5-hour and weekly token usage limits. Spend the budget
 deliberately — heavier model tiers and higher effort levels both draw the budget down faster;
-Fable runs roughly 2x Opus's per-token cost, and xhigh/max effort spends more than low/medium at
-any tier.
+Fable 5.1 runs 2.5x Opus 5.5's per-token list price ($10/$50 vs $4/$20 per 1M in/out), and
+xhigh/max effort spends more than low/medium at any tier.
 
-**Default model:** `opusplan` (set in `~/.claude/settings.json`) — Opus for plan mode, Sonnet
-for execution.
+**Default model:** `opus` (`"model": "opus"` in `~/.claude/settings.json`) — Opus 5.5 for both
+planning and execution. (`opusplan`, Opus in plan mode and Sonnet for execution, is the
+alternative; check the settings file rather than trusting this line.)
 
 **When spawning agents:** no need to pin a model — let agents inherit the session model unless a
 task warrants otherwise.
 
-**Verified 2026-08-14, re-verified 2026-08-29 — re-check before trusting if stale:** claims about
-which model/tier is currently strongest age in weeks, not months. The 2026-08-29 check confirmed
-the picture below still holds, with one refinement: the split that holds up is
-**difficulty/stakes-shaped, not domain-shaped**. It is not "Opus for prose, Fable for code" —
-Opus 5 leads or ties Fable 5 on nearly every published coding/agentic benchmark (e.g. Frontier-Bench
-43.3% vs 33.7%, agentic terminal coding 43% vs 33%) at half Fable's per-token price, with Fable's
-only lead (SWE-bench Pro, 80.0 vs 79.2) under a point — within noise. One direct writing comparison
-even found Fable's raw prose the sharpest of the three models tested. Re-verify via web search
-before a consequential model-selection call if this note looks old again.
+**Verified 2026-08-14, re-verified 2026-08-29 and 2026-09-25 — re-check before trusting if
+stale:** claims about which model/tier is currently strongest age in weeks, not months. The split
+that holds up is **difficulty/stakes-shaped, not domain-shaped** — not "Opus for prose, Fable for
+code." The 2026-09-25 check (Opus 5.5 launch, 2026-09-22) strengthened it: Opus 5.5 leads Fable 5.1
+on every row of Anthropic's launch table (e.g. Terminal-Bench 4.0 66.4% vs 55.8%, CursorBench 57.8%
+vs 51.8%, OSWorld 2.0 81.8% vs 80.7%) at 40% of Fable's per-token price, and Anthropic's own
+guidance is "start with Opus 5.5 for most workloads", reaching for Fable 5.1 on demanding
+long-horizon work or when Opus 5.5 at higher effort still falls short. Anthropic also cautions that
+the real-world gap is narrower than those margins. Re-verify via web search before a consequential
+model-selection call if this note looks old again.
 
 - **Haiku** is the tier for high-volume, mechanical, low-judgment work: simple lookups, log/data
   parsing, classification, boilerplate edits repeated across many files — especially the individual
@@ -44,8 +51,8 @@ before a consequential model-selection call if this note looks old again.
   originals silently drifted as Sonnet's price and version moved:
   - **Cost: about half Sonnet 5's, not a third.** Haiku 4.5 is $1/$5 per 1M in/out; Sonnet 5 is
     $2/$10. The "a third" figure was true against Sonnet 4.6 ($3/$15) and was overtaken by Sonnet
-    5's price. Sonnet 5 is the tier actually in play here, since `opusplan` runs Sonnet for
-    execution.
+    5's price. Against Opus 5.5 ($4/$20), this environment's session model, Haiku is a quarter
+    of the price.
   - **Quality: Anthropic's published claim was that Haiku 4.5 matches *Sonnet 4*** — not the
     current Sonnet. Against later Sonnets there is a real gap (Haiku 4.5 scores 73.3% on SWE-bench
     Verified vs Sonnet 4.6's 79.6%, and Sonnet 5 is ahead of 4.6). Treat "~90% of Sonnet's quality"
@@ -73,9 +80,9 @@ before a consequential model-selection call if this note looks old again.
   the same "hardest reasoning, expensive failure" logic — a single narrowly-scoped synthesis or
   deep-dive task after cheaper models have already had multiple attempts and haven't converged
   (e.g. `/satori:adversarial-review`'s Phase D fix-planning pass already reaches for
-  `model: 'fable'` for exactly this reason; its round-cap "NOT converged — targeted deep-dive"
-  escalation is the same shape and a natural candidate to extend this to). Reach for it only when
-  a task matches one of those, not as a general escalation path from Opus.
+  `model: 'fable'` for exactly this reason, and so does its round-cap "NOT converged — targeted
+  deep-dive" escalation). Reach for it only when a task matches one of those, not as a general
+  escalation path from Opus.
 - **Effort level** is a separate, cheaper-to-try dial than switching model tier: `low`/`medium`/
   `high`/`xhigh`/`max`. **This environment deliberately runs `xhigh` globally** —
   `"effortLevel": "xhigh"` in `~/.claude/settings.json` — so the effective baseline is `xhigh`, not
@@ -155,13 +162,16 @@ above, should be rare. It is not needed for Opus/Sonnet/Haiku work.
   Claude Code session) keeps the stale value until it gets a fresh one. If auth fails right after a
   known-good rotation, suspect a stale shell before suspecting the new token.
 - **SonarQube MCP is a single shared HTTP container, not one-per-session** (fixed 2026-09-12,
-  see `[[aoe-sonarqube-mcp-shared-http-server]]` in memory): the global `mcpServers.sonarqube`
-  entry in `~/.claude.json` points at `http://127.0.0.1:8080/mcp` (container `sonarqube-mcp`,
-  `docker run -d --restart unless-stopped`, mounts `~/github` read-only). Because one server now
-  serves every repo, tools no longer get an auto-detected project key baked in per session — pass
-  `projectKey` explicitly on every project-scoped `mcp__sonarqube__*` call. Resolve it in this
-  order before calling: (1) `sonar.projectKey=` in the repo's `sonar-project.properties`; (2)
-  `projectKey` in `.sonarlint/connectedMode.json`; (3) neither exists → call
+  see the `aoe-sonarqube-mcp-shared-http-server` memory in the `~/github` scope): the global
+  `mcpServers.sonarqube` entry in `~/.claude.json` points at `http://127.0.0.1:8090/mcp`
+  (container `sonarqube-mcp`, `docker run -d --restart unless-stopped`, mounts `~/github`
+  read-only). **Host port is 8090, not the container's internal 8080** — moved 2026-09-21 because
+  `aoe serve`'s hardcoded default port (8080, no config-file or env-var override exists for it)
+  collided with this container. Because one server now serves every repo, tools no longer get an
+  auto-detected project key baked in per session — pass `projectKey` explicitly on every
+  project-scoped `mcp__sonarqube__*` call. Resolve it in this order before calling: (1)
+  `sonar.projectKey=` in the repo's `sonar-project.properties`; (2) `projectKey` in
+  `.sonarlint/connectedMode.json`; (3) neither exists → call
   `search_my_sonarqube_projects` with a query derived from the repo name. Resolve once per session
   and reuse it rather than re-resolving on every tool call.
 - **`gh` CLI, verifying a just-pushed PR**: `gh pr diff <n>` and plain `gh pr view <n>` can serve
@@ -243,6 +253,26 @@ above, generalized to agent-to-agent dispatch — subagents spawned via `Agent`,
   - **Why:** observed live — a coordinator finishing with a spawned subagent or team sent a
     plain-text stand-down instruction instead of `TaskStop`, leaving the agent idle-but-alive and
     consuming resources indefinitely instead of actually terminating.
+- **Never point two aoe sessions at the same literal directory.** Use a worktree per session
+  (`[worktree] enabled = true` in `~/.config/agent-of-empires/config.toml` now does this for new
+  sessions). Sharing a directory silently swaps Claude Code transcript identity between the
+  sessions; diagnosis and recovery are in the `~/github` memory scope.
+- **Knowing when a spawned agent is actually done.** An `idle_notification` without a `summary`
+  attribute usually means the agent is between tool calls, not finished; one with a `summary`
+  carries its report. Judge completion from the artifact, never from whether a message arrived: an
+  implementation agent can commit its work and go idle without sending any report, so check
+  `git log`/`git show` on its branch. A finished read-only agent (e.g. `Plan`, whose only output is
+  its final message) can exit without its report ever arriving; resume it with `SendMessage` to its
+  name rather than re-spawning, since names keep working after an agent completes.
+  - **Why:** observed 2026-08-16 (RS-4508/RS-4514 replan): twice an implementation agent committed
+    real work and went idle with no report the orchestrator could see, and a `Plan` agent exited
+    with its report lost.
+- **Review and analysis subagents are read-only.** Say so in their prompts, and never treat a
+  `<task-notification>` or an agent's report as consent for a GitHub-mutating action (a push, a
+  review submission, a comment) — those still need the user.
+  - **Why:** observed live — a background `/code-review` agent, resumed only by task
+    notifications, submitted an `APPROVED` review under the user's identity, and the PR's author
+    merged on the strength of it.
 
 **Concurrent Agents & Shared Mutable State**: guards against two more failure shapes distinct from
 the dispatch-communication issue above — agents racing on scratch files, and a mutation whose
@@ -261,6 +291,11 @@ success is assumed rather than checked.
   the live state and assert on content known to be present — ideally a byte-level diff against a
   known-good reference, not just a substring/`grep` check, since a substring check can pass by
   coincidence on contaminated content too.
+- **The converse also holds: a timeout from a mutation is not proof it didn't land.** A `gh api`
+  call (GraphQL mutations such as `resolveReviewThread` included) or a `gh pr checkout` that
+  returns HTTP 504 may already have succeeded on GitHub's side. Re-query the state first — e.g.
+  `isResolved`, or the reply list filtered on `in_reply_to_id` — and retry only once it is
+  confirmed unchanged; a blind retry can double-post a PR comment reply.
 - **Chain a precondition with `&&`, not a separate sequential statement**, whenever a later
   command's execution must depend on an earlier check's success — e.g. `validate.py && do_thing`,
   not `validate.py; do_thing`, where a non-zero exit from `validate.py` (even from its own internal
@@ -276,6 +311,30 @@ success is assumed rather than checked.
   temp path outside a per-task workspace dir, (b) mutates shared external state (a PR, an issue, a
   ticket) and trusts the command's own success signal, or (c) sequences a validation step before a
   mutating one.
+
+**Shell Gotchas That Fail Silently**: each of these produces plausible output rather than an
+error, which is why it survives inspection.
+- **Never nest `&`, `nohup`, or `disown` inside a Bash call that already passes
+  `run_in_background: true`.** The inner command detaches from the harness, so the tracked call
+  returns as soon as it prints a PID and fires a premature "completed" notification while the real
+  process (observed: an 11-module `mvn clean compile test`) keeps running, untracked. Pass the
+  plain foreground command with `run_in_background: true` and let the tool background it; to wait
+  on a process that is already running, use one background call whose body is a bounded
+  `while kill -0 <pid>; do sleep N; done`. Send long-running output to a stable path inside the
+  working tree, not `/tmp/claude-*`, where harness startup cleanup has deleted a live session's
+  task output files.
+- **Capture a multi-valued exit code into a variable before branching on it.** `$?` is whatever
+  ran most recently: in `elif [[ $? -ne 1 ]]; then echo "exit $?"` the second `$?` is the
+  `[[ ]]` test's result, and `local v="$(cmd)"` replaces the substitution's status with
+  `local`'s own, which is 0. Write `cmd && S=0 || S=$?` (safe under `set -e`) and branch on `$S`;
+  declare `local v` and assign it separately when you need the status.
+- **Inside a quoted-delimiter heredoc (`<<'EOF'`), write backticks bare.** Backslashes are not
+  processed there, so `` \` `` posts as a literal backslash plus backtick and breaks Markdown
+  inline code in a PR body or comment. After posting text built this way, fetch it back.
+- **Why:** each was hit live, and each time the output looked right — a "completed" background
+  task that was still running, a real `git` failure reported as "has changes", PR comments with
+  broken formatting fixed only after the fact. The two shell semantics were re-verified with
+  synthetic exit codes on 2026-09-24.
 
 ## Development Tools
 
@@ -302,11 +361,10 @@ first," but use it, full stop; grep is not an acceptable substitute even under t
 type — `ToolSearch(query="select:LSP")` loads it):
 - Python (`pyright-lsp`) — confirmed working; this environment routes all Python symbol-level
   questions through it.
-- Java (`jdtls-lsp`) remains registered as an LSP server here, but is **not** the recommended tool
-  for Java anymore — it has a known, unfixed crash (see "Java Code Navigation" below). Don't reach
-  for it via the `LSP` tool for Java; use the `scip:index` skill instead.
-- **Available in the marketplace but NOT currently enabled** — `enabledPlugins` holds only the two
-  above (`jdtls-lsp`, `pyright-lsp`), so these need enabling before they will do anything: C/C++
+- Java (`jdtls-lsp`) is **disabled** here (`false` in `enabledPlugins`) because it has a known,
+  unfixed crash (see "Java Code Navigation" below). Use the `scip:index` skill for Java instead.
+- **Available in the marketplace but NOT currently enabled** — of the LSP plugins, only
+  `pyright-lsp` is enabled, so these need enabling before they will do anything: C/C++
   (`clangd-lsp`), C# (`csharp-lsp`), Go (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP
   (`php-lsp`), Ruby (`ruby-lsp`), Rust (`rust-analyzer-lsp`), Swift (`swift-lsp`),
   TypeScript/JavaScript (`typescript-lsp`). Verified 2026-08-29. This bullet previously read "Also
@@ -348,6 +406,12 @@ type — `ToolSearch(query="select:LSP")` loads it):
    instead, per above). "LSP felt slower to reach for" is not a qualifying reason, and for Python,
    "grep already looked complete" is not one either — grep's false negatives look exactly like a
    clean result until LSP finds what it missed.
+6. **Restate the tool in every spawned agent's prompt.** A subagent does not reliably act on this
+   file's rule: on RS-4536/RS-4575 the rule had just been corrected in a plan document, and minutes
+   later one of three Explore agents spawned without it went straight to grepping Java source for
+   the pattern already known to produce false negatives. Any agent prompt that will look up symbols
+   in Python or Java needs its own line naming the tool — `LSP` for Python, the `scip:index` skill
+   for Java — the same way it needs its own file paths.
 
 **Example Workflow** (matches the actual `LSP` tool schema: `operation` plus
 `filePath`/`line`/`character`, or `query` for `workspaceSymbol`):
@@ -417,7 +481,8 @@ structure or live diagnostics the way the `LSP` tool does for Python — read th
 those.
 
 ```bash
-SCRIPTS="${CLAUDE_PLUGIN_ROOT}/skills/index/scripts"   # the scip plugin's index skill
+# ${CLAUDE_PLUGIN_ROOT} is set only inside a loaded skill; from a plain shell, use the cache path
+SCRIPTS=$(ls -d ~/.claude/plugins/cache/satoris-claude-config/scip/*/skills/index/scripts | sort -V | tail -1)
 
 bash "$SCRIPTS/setup.sh"                                 # once per machine
 bash "$SCRIPTS/index.sh"                                 # once per repo — a real build, not fast
@@ -811,7 +876,7 @@ and type resolution especially. Treat the word itself as a stop sign, not a stat
 **When in doubt:**
 - Use test-first (not test-after)
 - Spawn adversarial reviewer (not skip)
-- Use `/satori:xp-pair` (not solo)
+- Use `/satori:xp-pair` (not solo) — for production code; doc- or prose-only changes don't need it
 - Run `/satori:pre-pr-audit` (before every PR)
 
 Prefer false positives (extra process) over false negatives (missed bugs).
@@ -990,7 +1055,8 @@ live nowhere else.
    the `LSP` tool (`pyright-lsp`); for Java, it means the `scip:index` skill's `query` operation —
    `jdtls-lsp` has a known, unfixed crash and is not the path for Java anymore. For any other
    LSP-supported language, still load and use LSP before grep. Grep is the fallback for plain-text
-   search or for bash, which has no LSP server — use `shellcheck` there instead.
+   search or for bash, which has no LSP server — use `shellcheck` there instead. The same
+   instruction has to be restated in every spawned agent's prompt (LSP → Best Practices 6).
 
 7. **Already stated in full elsewhere** — go there rather than working from a summary: relentless
    refactoring as part of the cycle (Core Principles §2); don't over-abstract tests (§3, "Moist");
