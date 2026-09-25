@@ -345,13 +345,26 @@ their target and do not split.
 - **Put repo facts in the repo, not in memory.** A repo's committed `CLAUDE.md` and docs load for
   every session that works there, whatever it launched from. Memory is for personal, cross-repo,
   and environment facts.
-- **Save a memory into the scope that will load it** — usually the one you launch from. A memory
-  written into another scope is read only by sessions launched there.
+- **Save a memory into the scope that will load it** — usually the one you launch from. Never
+  hand-write a memory into another scope: it is read only by sessions launched there, which is how
+  memories end up stranded where nothing loads them.
+- **Launch where the work is.** Sustained single-repo work gets a session launched in that repo's
+  directory (`repos/<group>/<repo>/`). When a workspace-root session turns into that kind of work,
+  hand it off with `/satori:handoff` at that point. Fleet and cross-repo work stays at the workspace
+  root. A quick single-repo fix does not need a handoff.
+- **One clone per repo.** Repos listed in a workspace's `repos/repos.json` live only inside that
+  workspace. Don't clone one again elsewhere under `~/github`: the second clone gets its own memory
+  scope, and the two drift apart.
 - **Don't save what git, a ticket, or a PR already records** — status, history, and merged work
   were the largest category deleted in the 2026-09 cleanup.
 - **Date claims about tools and versions that move fast, and re-check a memory before acting on
   it.** Almost every wrong memory the cleanup found was about a version, a plugin's behavior, or
   work in flight.
+- **Maintenance, when the user asks for a memory review:** a monthly mechanical pass (the
+  `satori:reasoning-audit` checker over the active scopes, fixes applied in one approval batch per
+  scope) and a quarterly judgment pass on the two or three busiest scopes (one read-only worker per
+  scope, then one approval batch; promotions batched into one PR per repo). Re-checking a memory
+  at the moment you act on it catches most drift between passes.
 - **Why:** a 2026-09 audit cut 221 memory files to 112. It found memories that had never loaded
   because they sat in scopes nobody launches from, two clones' scopes that had drifted apart, and
   several claims that were now false and would have misled a session that trusted them.
