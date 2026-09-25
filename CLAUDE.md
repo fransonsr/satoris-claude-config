@@ -25,9 +25,11 @@ deliberately — heavier model tiers and higher effort levels both draw the budg
 Fable 5.1 runs 2.5x Opus 5.5's per-token list price ($10/$50 vs $4/$20 per 1M in/out), and
 xhigh/max effort spends more than low/medium at any tier.
 
-**Default model:** `opus` (`"model": "opus"` in `~/.claude/settings.json`) — Opus 5.5 for both
-planning and execution. (`opusplan`, Opus in plan mode and Sonnet for execution, is the
-alternative; check the settings file rather than trusting this line.)
+**Default model:** `opusplan` — Opus for plan mode, Sonnet for execution. An instance may be
+pinned to another model on purpose. **Gotcha:** choosing a model in the UI (`/model`) can write
+`"model"` into `~/.claude/settings.json`, turning a per-instance choice into the global default
+with no notice. If the settings file disagrees with this line, ask before treating either one as
+the intended default.
 
 **When spawning agents:** no need to pin a model — let agents inherit the session model unless a
 task warrants otherwise.
@@ -51,8 +53,8 @@ model-selection call if this note looks old again.
   originals silently drifted as Sonnet's price and version moved:
   - **Cost: about half Sonnet 5's, not a third.** Haiku 4.5 is $1/$5 per 1M in/out; Sonnet 5 is
     $2/$10. The "a third" figure was true against Sonnet 4.6 ($3/$15) and was overtaken by Sonnet
-    5's price. Against Opus 5.5 ($4/$20), this environment's session model, Haiku is a quarter
-    of the price.
+    5's price. Sonnet 5 is the tier actually in play here, since `opusplan` runs Sonnet for
+    execution.
   - **Quality: Anthropic's published claim was that Haiku 4.5 matches *Sonnet 4*** — not the
     current Sonnet. Against later Sonnets there is a real gap (Haiku 4.5 scores 73.3% on SWE-bench
     Verified vs Sonnet 4.6's 79.6%, and Sonnet 5 is ahead of 4.6). Treat "~90% of Sonnet's quality"
@@ -335,6 +337,24 @@ error, which is why it survives inspection.
   task that was still running, a real `git` failure reported as "has changes", PR comments with
   broken formatting fixed only after the fact. The two shell semantics were re-verified with
   synthetic exit codes on 2026-09-24.
+
+**Memory Hygiene**: Claude Code keeps one memory scope per launch path and never merges scopes.
+A session launched at a workspace root and one launched in a nested repo, a second clone, or
+sometimes a worktree each write memories the other never loads. `--link` symlinks resolve to
+their target and do not split.
+- **Put repo facts in the repo, not in memory.** A repo's committed `CLAUDE.md` and docs load for
+  every session that works there, whatever it launched from. Memory is for personal, cross-repo,
+  and environment facts.
+- **Save a memory into the scope that will load it** — usually the one you launch from. A memory
+  written into another scope is read only by sessions launched there.
+- **Don't save what git, a ticket, or a PR already records** — status, history, and merged work
+  were the largest category deleted in the 2026-09 cleanup.
+- **Date claims about tools and versions that move fast, and re-check a memory before acting on
+  it.** Almost every wrong memory the cleanup found was about a version, a plugin's behavior, or
+  work in flight.
+- **Why:** a 2026-09 audit cut 221 memory files to 112. It found memories that had never loaded
+  because they sat in scopes nobody launches from, two clones' scopes that had drifted apart, and
+  several claims that were now false and would have misled a session that trusted them.
 
 ## Development Tools
 
