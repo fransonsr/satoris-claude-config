@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-09-25
+**Last Updated**: 2026-09-29
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -395,7 +395,8 @@ type — `ToolSearch(query="select:LSP")` loads it):
 - Python (`pyright-lsp`) — confirmed working; this environment routes all Python symbol-level
   questions through it.
 - Java (`jdtls-lsp`) is **disabled** here (`false` in `enabledPlugins`) because it has a known,
-  unfixed crash (see "Java Code Navigation" below). Use the `scip:index` skill for Java instead.
+  unfixed crash (see "Java Code Navigation" below). Use the `scip` plugin's `/scip:query` command
+  for Java instead.
 - **Available in the marketplace but NOT currently enabled** — of the LSP plugins, only
   `pyright-lsp` is enabled, so these need enabling before they will do anything: C/C++
   (`clangd-lsp`), C# (`csharp-lsp`), Go (`gopls-lsp`), Kotlin (`kotlin-lsp`), Lua (`lua-lsp`), PHP
@@ -429,8 +430,9 @@ type — `ToolSearch(query="select:LSP")` loads it):
 1. **For Python, use LSP instead of grep for symbol-level questions — this is required, not
    merely first-choice.** For any other supported language (once enabled), still load LSP before
    reaching for grep. If the task involves a named symbol rather than plain text, call
-   `ToolSearch(query="select:LSP")` and use it as the first tool. **For Java, use the `scip:index`
-   skill instead** — the `LSP` tool is not the path for Java symbol lookups in this environment.
+   `ToolSearch(query="select:LSP")` and use it as the first tool. **For Java, use the `scip`
+   plugin's `/scip:query` command instead** — the `LSP` tool is not the path for Java symbol
+   lookups in this environment.
 2. **Use for navigation**: finding definitions, references, implementations.
 3. **Use for refactoring**: renaming symbols across a project.
 4. **Use for diagnostics**: getting compile/type errors before building.
@@ -443,8 +445,8 @@ type — `ToolSearch(query="select:LSP")` loads it):
    file's rule: on RS-4536/RS-4575 the rule had just been corrected in a plan document, and minutes
    later one of three Explore agents spawned without it went straight to grepping Java source for
    the pattern already known to produce false negatives. Any agent prompt that will look up symbols
-   in Python or Java needs its own line naming the tool — `LSP` for Python, the `scip:index` skill
-   for Java — the same way it needs its own file paths.
+   in Python or Java needs its own line naming the tool — `LSP` for Python, the `scip` plugin's
+   `/scip:query` command for Java — the same way it needs its own file paths.
 
 **Example Workflow** (matches the actual `LSP` tool schema: `operation` plus
 `filePath`/`line`/`character`, or `query` for `workspaceSymbol`):
@@ -501,31 +503,37 @@ crashing the server. The two upstream issues that map to this (no clean LSP-serv
 across sessions, no way to exclude build directories from file-watching) are real and open, but
 both were closed by GitHub's stale-bot as `not_planned` — there is no upstream fix coming.
 
-Use the **`scip:index` skill** instead: it manages a [SCIP](https://github.com/scip-code/scip)
-index for the current repo — a precomputed, file-based index of definitions/references, built once
-via `scip-java`, then queried without any live server process. Since there's no long-running
-mutable server, there's nothing to accumulate corrupt state across sessions.
+Use the **`scip` plugin** instead (`cc-plugins` marketplace — the Java-only version that used to
+live in this repo was retired 2026-09-29 in favor of this multi-language rewrite; if `/scip:*`
+commands are missing, `claude plugin install scip`). It manages a
+[SCIP](https://github.com/scip-code/scip) index for the current repo — a precomputed, file-based
+index of definitions/references, built once, then queried without any live server process. Since
+there's no long-running mutable server, there's nothing to accumulate corrupt state across
+sessions. Unlike the retired Java-only version, it also covers JavaScript, TypeScript, and Python —
+Python's MUST-level tool remains LSP (`pyright-lsp`) per above; scip is Java's dedicated path and
+an available alternative for the other two.
 
 **This is a MUST for Java, the same way LSP is a MUST for Python** — the identical false-negative
 risk from grep/ripgrep applies to Java too (missed references split across lines, inherited/
-overridden members, aliased imports). Use `scip:index`'s `query` operation instead of grep for
-symbol-level questions (definition, references) on Java files. `scip:index` does not cover file
-structure or live diagnostics the way the `LSP` tool does for Python — read the file directly for
-those.
+overridden members, aliased imports). Use `/scip:query` instead of grep for symbol-level questions
+(definition, references, implementations, outline) on Java files. It does not cover live
+diagnostics the way the `LSP` tool does for Python — read the file directly for those.
 
-```bash
-# ${CLAUDE_PLUGIN_ROOT} is set only inside a loaded skill; from a plain shell, use the cache path
-SCRIPTS=$(ls -d ~/.claude/plugins/cache/satoris-claude-config/scip/*/skills/index/scripts | sort -V | tail -1)
-
-bash "$SCRIPTS/setup.sh"                                 # once per machine
-bash "$SCRIPTS/index.sh"                                 # once per repo — a real build, not fast
-bash "$SCRIPTS/query.sh" at path/to/File.java:LINE:COL   # go to definition / find references
-bash "$SCRIPTS/query.sh" symbol "ClassName#methodName"   # find by name when you don't have a location
+```
+/scip:setup                                          # detect/report missing indexer CLIs
+/scip:index                                          # build or refresh the cached index
+/scip:query definition path/to/File.java:LINE:COL    # go to definition
+/scip:query references path/to/File.java:LINE:COL    # find every reference
+/scip:query implementations path/to/InterfaceOrMethod
+/scip:query outline path/to/File.java
 ```
 
-Full details, known constraints (Maven-validated only; Gradle auto-detection unverified; module-
-scoping flags deliberately omitted from the default build), and troubleshooting: the `scip:index`
-skill's own SKILL.md.
+The `scip:symbol-navigation` skill backing these commands also auto-activates on plain-language
+navigation questions ("where is this defined", "find every reference to this") — the commands
+above are for explicit control over the index lifecycle.
+
+Full details, known constraints, and troubleshooting: the plugin's own SKILL.md and README
+(`cc-plugins` marketplace).
 
 ## Core Principles
 
@@ -1085,7 +1093,7 @@ live nowhere else.
    use different ones, and neither is optional.** Development Tools → LSP (Python) and → Java Code
    Navigation: scip, not LSP. Pattern matching against both languages has repeatedly produced false
    negatives (real references silently missed, not just noisy over-matches). For Python, that means
-   the `LSP` tool (`pyright-lsp`); for Java, it means the `scip:index` skill's `query` operation —
+   the `LSP` tool (`pyright-lsp`); for Java, it means the `scip` plugin's `/scip:query` command —
    `jdtls-lsp` has a known, unfixed crash and is not the path for Java anymore. For any other
    LSP-supported language, still load and use LSP before grep. Grep is the fallback for plain-text
    search or for bash, which has no LSP server — use `shellcheck` there instead. The same
