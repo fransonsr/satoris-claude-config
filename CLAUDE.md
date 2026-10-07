@@ -773,6 +773,17 @@ mvn clean compile test -pl <module>
 - [ ] Are error cases tested?
 - [ ] Is the code self-documenting?
 
+**Reviewing a PR: review locally, on the PR's actual head branch.** Fetch the clone and check out
+the PR head (in a worktree if the clone has other work) before reading full files or running
+scip/codeql, and confirm `git log -1` matches the PR's latest SHA. Check any claim about code
+outside the diff against that checkout, never against a clone sitting on the default branch or
+behind `origin`.
+- **Why:** on java-stack-identity#717 (2026-10-07) the located clone was on `master` and behind by
+  a merged PR. A review comment said an endpoint still put a token in the URL and tagged a
+  teammate about it; it had to be retracted. `golden-pr:review`'s preflight only *locates* a clone
+  — it does not fetch or check out the PR branch. A CodeQL database downloaded from CI reflects
+  the default branch too, so PR-specific questions need a local build or a direct read.
+
 ### PR Review Issue Patterns
 
 Review lenses applied in parallel by adversarial-review agents — some heuristic-based (specific
