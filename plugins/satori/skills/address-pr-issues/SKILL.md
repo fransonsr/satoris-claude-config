@@ -1826,6 +1826,35 @@ a sweep scoped to one known theme, not a broad re-run of all review classes.
 after you already fixed `git fetch` in Round 1. Widen from PR-changed-files to full file.
 Enumerate all `returncode != 0` blocks. Find 4 remaining sites. Fix all; class is closed.
 
+### Reproduce the Claim Before Acting
+
+Before fixing or declining any finding, check its claim yourself: run the command, read the code
+path, or build the example. A reviewer's example is sometimes already handled (so the real gap is
+a different case), and a claim that looks like a nit is sometimes a real bug. Seen in one session:
+a finding that `-Dmdep.includeScope=runtime` was ignored by Maven was correct (48 classpath
+entries against 2 with `-DincludeScope=runtime`), and a finding that `"{} {} ", id + userId, other`
+slipped through was already rejected by another check.
+
+State what you ran in the reply ("Fixed: reproduced with ..., test added"), and if the claim does
+not reproduce, say so instead of fixing it.
+
+### Fix-Induced Findings
+
+A fix that adds a new state, case, or list entry to a skill or spec creates a restatement burden:
+every gate list, summary, table, example, and CHANGELOG line that restates the rule has to change
+with it, or the next review round finds the stale copy. Before editing, list those places (grep the
+old wording and the neighboring states); change them in the same commit. If a fix would add a new
+state for a case the surrounding rules already imply, weigh whether the new state is worth the
+surface it adds before writing it.
+
+### Rounds in One Family: Ask Once
+
+After about three rounds in one family (the same area, a new sibling each round), stop deciding
+round by round: ask the user once for a standing rule (for example "fix functional and verified
+bugs only; decline doc-only findings with a one-line reason") and apply it for the rest of the PR.
+A single question replaces one per round. A finding that is a false-clean risk or touches an
+irreversible-action guard is never declined under such a rule.
+
 ### Mechanism-Level Diminishing Returns
 
 This is a different signal from Pattern Class Recurrence above — that section covers the same

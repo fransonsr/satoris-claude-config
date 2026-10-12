@@ -481,6 +481,20 @@ grep -B 5 "public.*method\|class\|enum" $CHANGED_FILES | grep "/\*\*" -A 3 > /tm
 # - @deprecated but still used
 ```
 
+**Version and date lines agree**: in every touched doc, the `Version`, `Last Updated`, and similar
+header and footer lines must agree with each other and with `plugin.json` / `pom.xml` / the
+CHANGELOG entry (a bump that updates only one of them is the commonest finding). A plain grep, no
+judgment needed:
+```bash
+git diff --name-only "$MERGE_BASE" | grep -E '\.md$' \
+  | xargs grep -n -E '^\*{0,2}(Version|Last Updated)\*{0,2}[: ]' 2>/dev/null
+```
+Compare the lines that come back per file.
+
+**Restated rules and states**: when the change adds or renames a state, gate, or rule, grep the old
+wording and its neighbors and confirm every gate list, summary, table, example, and CHANGELOG line
+that restates it was updated in the same change.
+
 ### Consistency Check #4: Centralization Opportunities
 
 **Detect Duplicated Logic**:
