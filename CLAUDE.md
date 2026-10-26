@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-09-29
+**Last Updated**: 2026-10-19
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -11,6 +11,13 @@
 **Terminal links**: Windows Terminal (with tmux inside) auto-links only URLs visible as text.
 Claude Code renders `[text](url)` as the label alone, so the link can't be clicked or copied.
 When a reader needs to open a PR, issue, or page from terminal output, print the bare URL.
+
+**Jira project key**: the Records Platform project key changed from `RS` to `RP` (noted 2026-10-19). Issue
+numbers did not change: `RS-4849` is now `RP-4849`, the same issue (verified through the Atlassian API: both keys return
+issue id 1520683, project `RP` "Records Platform"). Use `RP-` for new references, links and JQL (`project = RP`).
+Older tickets, PRs, commits, docs, memories and handoff files still say `RS-`; read them as the same number. When a search
+for an `RS-` reference finds nothing, retry with `RP-`, and the reverse. Other project keys seen alongside it (RD, RECMS,
+DATAEX) were still in use on 2026-10-19; this note does not say whether any of them changed.
 
 ## Model Access & Selection
 
