@@ -19,6 +19,16 @@ Older tickets, PRs, commits, docs, memories and handoff files still say `RS-`; r
 for an `RS-` reference finds nothing, retry with `RP-`, and the reverse. Other project keys seen alongside it (RD, RECMS,
 DATAEX) were still in use on 2026-10-19; this note does not say whether any of them changed.
 
+**Task tools (visual progress indicator)**: use `TaskCreate`/`TaskUpdate` on multi-step work so I can see
+progress in the Claude Code UI: create the tasks up front, mark one `in_progress` when starting it and
+`completed` when done. Skip them for trivial single-step requests. Claude Code 2.1.233 stopped offering these tools
+on newer models (Opus 4.8, Sonnet 5, Fable 5 and later; 2.1.268 narrowed the default set further), so
+`"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"` is set in the `env` block of `~/.claude/settings.json` (added 2026-10-27). The
+tools are deferred: load them with `ToolSearch` (`select:TaskCreate,TaskUpdate,TaskList,TaskGet`) before first use.
+If they are missing, check that env var and that the session started after it was set. If tracking starts costing
+more than it is worth (token or limit drain, noise on small jobs), raise it for discussion rather than silently
+dropping it.
+
 ## Model Access & Selection
 
 **License:** Claude Enterprise (migrated off Amazon Bedrock, June 2026). All current
