@@ -300,7 +300,17 @@ missed advisory.
 the advisory will keep firing every session.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/reasoning_audit_cadence.py" --record
+CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" python3 "${CLAUDE_PLUGIN_ROOT}/hooks/reasoning_audit_cadence.py" --record
+```
+
+**Check that it recorded.** The script exits 0 and prints nothing even when it wrote nothing: with
+`CLAUDE_PLUGIN_ROOT` unset in the environment it returns early, because it fails open on purpose for
+session start. A Bash call does not inherit that variable, which is why it is set on the command
+above. The pass is recorded only once the state file shows today's date and the current plugin
+version:
+
+```bash
+cat ~/.claude/satori-reasoning-audit.state
 ```
 
 State lives at `~/.claude/satori-reasoning-audit.state`. A corrupt or missing state file reads as
