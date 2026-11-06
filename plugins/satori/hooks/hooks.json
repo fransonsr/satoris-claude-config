@@ -1,5 +1,5 @@
 {
-  "description": "Advise at session start when a /satori:reasoning-audit pass is due (silent unless due)",
+  "description": "Session-start advisories, each silent unless needed: a /satori:reasoning-audit pass is due, and an MCP server entry in ~/.claude.json no longer matches ~/.claude/expected-mcp-servers.json",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,16 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/reasoning_audit_cadence.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/mcp_entry_guard.py\"",
             "timeout": 5
           }
         ]
