@@ -1,10 +1,10 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "satoris-claude-config",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "description": "Custom Claude Code plugins for Satori's development workflow",
   "owner": {
-    "name": "Satori Franson",
+    "name": "Scott Franson",
     "email": "fransonsr@familysearch.org"
   },
   "plugins": [
@@ -12,7 +12,7 @@
       "name": "satori",
       "description": "Satori's full development workflow as peer skills: xp-pair, handoff, continue, pre-pr-audit, address-pr-issues, adversarial-review, reasoning-audit",
       "author": {
-        "name": "Satori Franson"
+        "name": "Scott Franson"
       },
       "source": "./plugins/satori",
       "category": "development"
