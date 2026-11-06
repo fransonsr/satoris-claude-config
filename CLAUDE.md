@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-10-19
+**Last Updated**: 2026-11-06
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -330,6 +330,21 @@ success is assumed rather than checked.
   temp path outside a per-task workspace dir, (b) mutates shared external state (a PR, an issue, a
   ticket) and trusts the command's own success signal, or (c) sequences a validation step before a
   mutating one.
+
+**Unavailable Tools and Connections — stop, don't route around.** When a tool, MCP server, network
+connection (VPN, an internal host) or credential the task needs is unavailable or rejects the call
+(connection refused or timed out, 401/403, "command not found", a server that failed to connect),
+confirm the failure once, then **stop and tell the user**: what failed, the exact error, and what you
+would have done with the result. Do not infer the answer from a stale cache or an adjacent source,
+substitute a different tool or credential, or label the item "unverifiable" and carry on.
+- **Why:** stated by the user on 2026-11-06, partway through a claim re-check that needed the VPN
+  and internal Artifactory. The cause is usually a thing the user can fix in a minute (the VPN, Docker
+  Desktop's WSL integration, a token), and a result built around the gap is one they then have to
+  distrust.
+- **How to apply:** this does not override the standing notes that a credential is already present
+  in the environment (the SonarQube token) — look for it first. The rule starts when the call itself
+  fails or the thing is genuinely absent. Report the blocked item; do not decide for the user that
+  the rest can proceed without it.
 
 **Shell Gotchas That Fail Silently**: each of these produces plausible output rather than an
 error, which is why it survives inspection.
