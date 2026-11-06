@@ -7,6 +7,9 @@ chatters is worse than no cadence signal at all.
 
 import datetime
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +24,7 @@ from reasoning_audit_cadence import (
 )
 
 TODAY = datetime.date(2026, 8, 29)
+SCRIPT = Path(__file__).with_name("reasoning_audit_cadence.py")
 
 
 def write_plugin_json(root, version):
@@ -218,6 +222,27 @@ def test_main_emits_valid_json_only(tmp_path, capsys, monkeypatch):
     main([])
     out = capsys.readouterr().out
     json.loads(out)  # raises if anything extra was printed
+
+
+def test_main_emits_valid_json_when_stdout_cannot_encode_the_message(tmp_path):
+    """An ASCII-only stdout must not leave half a JSON object behind.
+
+    Every advisory contains non-ASCII characters (an emoji and em dashes). Streaming the JSON with
+    ensure_ascii=False wrote the opening bytes, hit the encode error on the first such character,
+    and the catch-all swallowed it: exit 0 with `{"systemMessage": ` on stdout, which the harness
+    cannot parse. Capture-based tests use a UTF-8 stream, so only a real subprocess shows it.
+    """
+    write_plugin_json(tmp_path, "1.0.99")
+    state = write_state(tmp_path / "cadence.state", "1.0.1")
+    env = {"CLAUDE_PLUGIN_ROOT": str(tmp_path), "SATORI_AUDIT_STATE": str(state),
+           "PYTHONIOENCODING": "ascii", "PATH": ""}
+
+    proc = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, timeout=10, env=env)
+
+    assert proc.returncode == 0
+    message = json.loads(proc.stdout)["systemMessage"]
+    assert "reasoning-audit pass is due" in message
+    assert any(ord(char) > 127 for char in message), "premise: the advisory has non-ASCII text"
 
 
 if __name__ == "__main__":
