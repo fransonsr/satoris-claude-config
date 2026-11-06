@@ -155,7 +155,10 @@ def _run(argv) -> int:
 
     message = advisory_for(read_state(path), current, args.threshold)
     if message:
-        json.dump({"systemMessage": message}, sys.stdout, ensure_ascii=False)
+        # Serialize first and write once: an encoding problem then fails before any byte is written
+        # (streaming used to leave half an object on stdout), and the default ASCII escaping suits
+        # any stdout encoding.
+        sys.stdout.write(json.dumps({"systemMessage": message}))
     return 0
 
 
