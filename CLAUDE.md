@@ -1,7 +1,7 @@
 # Coding Standards and Principles
 
 **Owner**: fransonsr
-**Last Updated**: 2026-11-06
+**Last Updated**: 2026-11-10
 **Scope**: All projects in this environment
 
 ## Environment Configuration
@@ -566,6 +566,54 @@ above are for explicit control over the index lifecycle.
 
 Full details, known constraints, and troubleshooting: the plugin's own SKILL.md and README
 (`cc-plugins` marketplace).
+
+### IntelliJ MCP: last in line, and the repo must be open in the IDE
+
+The IntelliJ MCP server (91 `mcp__intellij__*` tools) is configured at user scope as `intellij`
+(set up and verified 2026-11-10). It is the **last** tool to reach for, after `scip`/`LSP` for symbol
+lookups and CodeQL for semantic or data-flow questions. The rules above are unchanged.
+
+- **Use it for what those cannot do**: live IDE diagnostics (`get_file_problems`), IDE refactoring
+  (`rename_refactoring`, `optimize_imports`, `reformat_file`), run/debug/coverage, and the database
+  tools. `rename_refactoring` is the strongest fit: it resolves symbols semantically, so it avoids the
+  missed-reference failure that grep and manual edits have. No extract-method, move or
+  change-signature tool is exposed (checked by tool name only; `execute_tool` not inspected).
+- **Prompt the user to open the repo in the IDE** when you want these tools and the project is not
+  open, and also when the user wants to see code in the IDE. Give the UNC path, e.g.
+  `\\wsl.localhost\Ubuntu\home\fransonsr\github\records-platform-workspace\repos\<group>\<repo>`.
+  A call against an unknown project returns an error that lists the open projects, so use that to
+  tell whether a repo is open rather than guessing.
+- **Which project a call hits**: the entry's `IJ_MCP_SERVER_PROJECT_PATH` header pins
+  `//wsl.localhost/Ubuntu/home/fransonsr/github/records-platform-workspace`. Pass `projectPath` (same
+  UNC form, forward slashes) to reach another open project. The override worked on
+  `get_project_modules` on 2026-11-10 even though that tool's schema does not list the parameter;
+  other tools were not checked. Some tools take their own path argument instead
+  (`git_status` has `repositoryPathRelativeToProject`).
+- **Ask before anything that changes state or reaches outside the code**: `apply_patch`,
+  `execute_terminal_command`, run and debug sessions, and every database tool (they can run SQL
+  against whatever connections IntelliJ has configured). Reads need no prompt.
+- **Rename caveats**: it updates only the open project, so a shared library's public API still needs
+  a check of the downstream repos. Run it on a clean working tree or branch, review `git diff`, and
+  run the tests afterwards. Use `preview=true` first and compare `affects.usages` with the `scip`
+  reference count; read `applied` as the only success signal, then confirm with `git diff`.
+- **Trial result (2026-11-10, `sls-internal-workers`)**: a private-method rename
+  (`VersionsConfig#putIfNotNull`, 1 definition + 3 calls in one file) matched `scip` exactly and
+  changed only those 4 lines. The IDE saw a `git checkout` made from WSL immediately (the
+  `\\wsl.localhost` path did not leave it stale). **Not tested**: a rename spanning modules or test
+  sources, string/config references, and edits made with the Edit tool while the IDE is open. The
+  IDE's Maven model for that project was not fully imported (`get_file_problems` reported
+  unresolved Spring imports), so its diagnostics are noisy and a rename involving Spring-wired
+  types may be less reliable than `scip` there.
+- **Plumbing**: under WSL2 NAT, `127.0.0.1` in WSL is not Windows loopback and the IDE listens on
+  Windows loopback only. The `ij-mcp-relay` container (`restart: unless-stopped`, Dockerfile in
+  `docker/intellij-mcp-relay/` of this repo) forwards `127.0.0.1:65429` in WSL to Windows `:65428`
+  through `host.docker.internal`. The host port is 65429, not 65428, because Docker Desktop also binds
+  published ports on Windows, where IntelliJ already holds 65428. If the MCP will not connect, the
+  usual causes are Docker Desktop not running, the relay container stopped, or IntelliJ not running
+  (or on a different MCP port, which needs a rebuild with `--build-arg IJ_MCP_PORT=<port>`). Follow
+  "Unavailable Tools and Connections" above: confirm once, then stop and report.
+- **Why**: stated by the user on 2026-11-10 when setting this up: use the MCP only when the repo is
+  open in the IDE, prompt to open it when needed, and keep `scip`/CodeQL ahead of it.
 
 ## Core Principles
 
