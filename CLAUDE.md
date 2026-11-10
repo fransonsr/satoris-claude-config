@@ -610,8 +610,10 @@ lookups and CodeQL for semantic or data-flow questions. The rules above are unch
   through `host.docker.internal`. The host port is 65429, not 65428, because Docker Desktop also binds
   published ports on Windows, where IntelliJ already holds 65428. If the MCP will not connect, the
   usual causes are Docker Desktop not running, the relay container stopped, or IntelliJ not running
-  (or on a different MCP port, which needs a rebuild with `--build-arg IJ_MCP_PORT=<port>`). Follow
-  "Unavailable Tools and Connections" above: confirm once, then stop and report.
+  (or on a different MCP port, which needs a rebuild with `--build-arg IJ_MCP_PORT=<port>`). Run
+  `docker/intellij-mcp-relay/check.py` (in this repo; standard library only) to confirm once which layer
+  failed: exit 11 container, 12 relay port, 13 IntelliJ, 14 handshake, 15 project (it lists the open
+  projects). Then follow "Unavailable Tools and Connections" above: stop and report its output.
 - **Why**: stated by the user on 2026-11-10 when setting this up: use the MCP only when the repo is
   open in the IDE, prompt to open it when needed, and keep `scip`/CodeQL ahead of it.
 

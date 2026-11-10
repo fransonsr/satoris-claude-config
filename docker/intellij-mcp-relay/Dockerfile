@@ -23,6 +23,12 @@
 #     http://127.0.0.1:65429/sse \
 #     --header "IJ_MCP_SERVER_PROJECT_PATH: //wsl.localhost/Ubuntu/home/fransonsr/github/records-platform-workspace"
 #
+# Diagnose a broken connection, one layer at a time (container, relay port, IntelliJ, MCP
+# handshake, project). The exit code names the failing layer; see the script's docstring:
+#   docker/intellij-mcp-relay/check.py
+# Its tests need no Docker or IntelliJ:
+#   (cd docker/intellij-mcp-relay && python3 -m unittest -v test_check)
+#
 # If IntelliJ's MCP port changes (Settings > Tools > MCP Server), rebuild with
 #   --build-arg IJ_MCP_PORT=<port>
 # and publish that port's container side accordingly.
