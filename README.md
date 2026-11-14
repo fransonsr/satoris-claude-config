@@ -4,7 +4,8 @@ Private repository for Claude Code settings, skills, and workflows.
 
 ## Contents
 
-- **CLAUDE.md** - Global coding standards and development principles
+- **standards.md** - General coding standards and working practices, shared by every environment
+- **CLAUDE.md** - Work-environment notes (tools, credentials, hosts, session setup); imports `standards.md`
 - **plugins/satori/** - The `satori` plugin — all development workflow skills as peers:
   - `xp-pair` — XP pair programming (navigator + driver workflow)
   - `handoff` — Create comprehensive handoff documents for task continuity
@@ -25,7 +26,34 @@ cd satoris-claude-config
 ./install.sh
 ```
 
-This creates symlinks from `~/.claude/` to this repository.
+This creates symlinks from `~/.claude/` to this repository. That's the **work** setup:
+`~/.claude/CLAUDE.md` becomes the work file, which imports `standards.md`.
+
+### Personal Setup (standards only, no work context)
+
+Don't run `install.sh` for `CLAUDE.md`. Re-running it would back up the personal file and replace it
+with the work symlink. Instead, create a real `~/.claude/CLAUDE.md` that imports only the shared
+standards and adds personal notes:
+
+```markdown
+@~/github/satoris-claude-config/standards.md
+
+## Personal environment
+- ...
+```
+
+Register the plugin marketplace directly:
+
+```bash
+claude plugin marketplace add ~/github/satoris-claude-config
+claude plugin install satori@satoris-claude-config
+```
+
+On Windows, clone with `git clone -c core.autocrlf=false …` so the shell scripts keep LF line
+endings.
+
+**Imports must use a `~/` path, not a relative one.** When `CLAUDE.md` is read through a symlink,
+relative imports resolve from the link's directory (`~/.claude/`), not from this repo.
 
 ### Updating After Changes
 
